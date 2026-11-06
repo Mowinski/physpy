@@ -1,0 +1,38 @@
+# %% Stałe fizyczne i ciśnienie hydrostatyczne
+# Zmienne oznaczone `export` przechodzą do kolejnych komórek.
+# Pozostałe zmienne (np. h, p) są lokalne tylko dla tej komórki!
+export import math
+export \rho_0 = 1000.0        # gęstość wody [kg/m^3]
+export g = 9.81               # przyspieszenie ziemskie [m/s^2]
+
+h = 10.0                      # głębokość [m] (zmienna lokalna komórki)
+p = \rho_0 * g * h
+print(f"Hydrostatic pressure: {p:.1f} Pa")
+
+\alpha = 2*\rho_0 + 2(\rho_0 + g)^2
+print("alpha =", \alpha)
+
+# %% Wahadło matematyczne (korzysta z wyeksportowanych `g` oraz `math`)
+L = 2.0
+export \omega_0 = math.sqrt(g / L)
+export T = 2 * math.pi / \omega_0
+print("Period:", T |> round, "s")
+
+# %% Wykres tłumionych drgań harmonicznych (`plot plt`)
+import numpy as np
+import matplotlib.pyplot as plt
+
+\gamma = 0.25                 # współczynnik tłumienia [1/s]
+t = np.linspace(0, 12, 400)
+\theta = np.exp(-\gamma * t) * np.cos(\omega_0 * t)
+
+plt.figure(figsize=(6.5, 3.2))
+plt.plot(t, \theta, label=r"$\theta(t) = e^{-\gamma t}\cos(\omega_0 t)$")
+plt.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+plt.xlabel("t [s]")
+plt.ylabel("θ [rad]")
+plt.title("Tłumione wahadło")
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+plot plt

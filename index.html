@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PhysPy</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="toolbar">
+        <button id="btn-open" title="Open file">Open<kbd>⌘O</kbd></button>
+        <button id="btn-save" title="Save file">Save<kbd>⌘S</kbd></button>
+        <div class="toolbar-sep"></div>
+        <button id="btn-run-all" class="primary" title="Reset session and run all cells">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
+        <button id="btn-reset" title="Clear exported variables">↻ Reset</button>
+        <button id="btn-add-cell" title="Add new cell at the end">+ Cell</button>
+        <div class="toolbar-spacer"></div>
+        <button id="btn-python" title="Toggle generated Python preview">Python<kbd>⌘P</kbd></button>
+      </div>
+      <div id="exports-bar">
+        <span class="exports-label">Session exports:</span>
+        <div id="exports-list"><span class="exports-empty">none (use <code>export x = …</code> in a cell)</span></div>
+      </div>
+      <div id="main">
+        <div id="notebook"></div>
+        <div id="python-pane" hidden>
+          <div class="pane-title">Generated Python</div>
+          <div id="python"></div>
+        </div>
+      </div>
+      <div id="statusbar"><span id="status"></span></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
