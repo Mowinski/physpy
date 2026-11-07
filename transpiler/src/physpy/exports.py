@@ -1,15 +1,16 @@
-"""Explicit variable export across cells: ``export \\rho_0 = 1000``.
+"""Explicit export declarations across notebook cells.
 
-Cells in PhysPy are isolated by default: local variables die at the end of the
-cell. Only variables marked with ``export`` are copied into ``__exports__`` and
-made available to subsequent cells.
+Cells in PhysPy are isolated by default: local variables and plain imports stay
+inside the cell where they were defined. Marking a statement with ``export``
+makes it shared across all cells in the file:
 
-Supported forms (at statement start):
-- ``export x = expr``           -> ``__exports__['x'] = x = expr``
-- ``export x, y = expr``        -> ``__exports__['x'], __exports__['y'] = x, y = expr``
-- ``export x, y``               -> ``__exports__.update({'x': x, 'y': y})``
-- ``export import math``        -> ``import math; __exports__['math'] = math``
-- ``export def f(...): ...``    -> ``def f(...): ...`` + records ``f`` in ``__exports__``
+- ``export import math``
+- ``export import numpy as np``
+- ``export from math import sqrt, pi``
+- ``export \\rho_0 = 1000``
+- ``export x, y = 1, 2``
+- ``export x, y``
+- ``export def f(...): ...``
 """
 
 from __future__ import annotations
@@ -52,23 +53,20 @@ def rewrite_exports(src: str) -> str:
         if tok.type == tokenize.NAME and tok.string == EXPORT_KW and _is_stmt_start(prev):
             nxt = toks[i + 1] if i + 1 < n else None
             if nxt is None or nxt.type in (tokenize.NEWLINE, tokenize.NL, tokenize.ENDMARKER):
-                raise TranspileError("expected variable name or statement after 'export'", *tok.start)
+                raise TranspileError("expected statement or variable name after 'export'", *tok.start)
 
             # Case 1: `export def name...` or `export class name...`
             if nxt.type == tokenize.NAME and nxt.string in ("def", "class"):
                 name_tok = toks[i + 2] if i + 2 < n else None
                 if name_tok is None or name_tok.type != tokenize.NAME:
                     raise TranspileError(f"expected name after 'export {nxt.string}'", *nxt.start)
-                # Decorate with @__physpy_export__ on the same line is invalid in Python,
-                # so we replace `export ` with nothing and transform in AST using line number,
-                # OR we wrap via AST pass. Let's mark the def/class name with a prefix!
                 edits.append((tok.start, nxt.start, ""))
                 edits.append((name_tok.start, name_tok.end, f"{EXPORT_MARKER}{name_tok.string}"))
                 i += 3
                 continue
 
-            # Case 2: `export import a, b as c`
-            if nxt.type == tokenize.NAME and nxt.string == "import":
+            # Case 2: `export import a, b as c` or `export from x import y`
+            if nxt.type == tokenize.NAME and nxt.string in ("import", "from"):
                 edits.append((tok.start, nxt.start, f"{EXPORT_MARKER} = 1; "))
                 i += 2
                 continue
@@ -105,7 +103,7 @@ def rewrite_exports(src: str) -> str:
                 raise TranspileError("invalid 'export' target", *tok.start)
 
             if eq_tok is not None:
-                # `export a, b = expr` -> `__physpy_export__[a, b] = a, b = expr` (valid Subscript target)
+                # `export a, b = expr` -> `__physpy_export__[a, b] = a, b = expr`
                 target_str = ", ".join(names)
                 edits.append(
                     (
@@ -166,23 +164,28 @@ class ExportTransformer(ast.NodeTransformer):
         while i < len(stmts):
             stmt = self.visit(stmts[i])
 
-            # `export import ...` -> marker `__physpy_export__ = 1` followed by `import ...`
+            # `global import ...` or `global from ... import ...`
             if (
                 isinstance(stmt, ast.Assign)
                 and len(stmt.targets) == 1
                 and isinstance(stmt.targets[0], ast.Name)
                 and stmt.targets[0].id == EXPORT_MARKER
                 and i + 1 < len(stmts)
-                and isinstance(stmts[i + 1], ast.Import)
+                and isinstance(stmts[i + 1], (ast.Import, ast.ImportFrom))
             ):
                 imp = stmts[i + 1]
-                names = [alias.asname or alias.name.split(".")[0] for alias in imp.names]
+                names = [
+                    alias.asname or alias.name.split(".")[0]
+                    for alias in imp.names
+                    if alias.name != "*"
+                ]
                 out.append(imp)
-                out.append(_export_dict_update(names, imp))
+                if names:
+                    out.append(_export_dict_update(names, imp))
                 i += 2
                 continue
 
-            # `export x = expr` -> `__physpy_export__[x] = x = expr`
+            # `global x = expr` / `export x = expr` -> `__physpy_export__[x] = x = expr`
             if (
                 isinstance(stmt, ast.Assign)
                 and len(stmt.targets) >= 2
@@ -199,7 +202,7 @@ class ExportTransformer(ast.NodeTransformer):
                 i += 1
                 continue
 
-            # `export x, y` -> Expr(Call(__physpy_export__, [x, y]))
+            # `global x, y` / `export x, y` -> Expr(Call(__physpy_export__, [x, y]))
             if (
                 isinstance(stmt, ast.Expr)
                 and isinstance(stmt.value, ast.Call)
@@ -211,7 +214,7 @@ class ExportTransformer(ast.NodeTransformer):
                 i += 1
                 continue
 
-            # `export def f` / `export class C`
+            # `global def f` / `global class C`
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and stmt.name.startswith(
                 EXPORT_MARKER
             ):

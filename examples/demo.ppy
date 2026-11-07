@@ -1,29 +1,26 @@
-# %% Stałe fizyczne i ciśnienie hydrostatyczne
-# Zmienne oznaczone `export` przechodzą do kolejnych komórek.
-# Pozostałe zmienne (np. h, p) są lokalne tylko dla tej komórki!
-export import math
-export \rho_0 = 1000.0        # gęstość wody [kg/m^3]
-export g = 9.81               # przyspieszenie ziemskie [m/s^2]
+# %% Stałe fizyczne i ciśnienie hydrostatyczne (z jednostkami `pint`)
+# Zmienne i importy oznaczone `export` są współdzielone między komórkami.
+# Zapis `LICZBA [jednostka]` tworzy wielkość fizyczną (`pint.Quantity`) z kontrolą wymiarową!
+export import numpy as np
+export const \rho_0 = 1000.0 [kg/m^3]  # stała gęstość wody (`const` blokuje nadpisanie!)
+export const g = 9.81 [m/s^2]          # stałe przyspieszenie ziemskie
 
-h = 10.0                      # głębokość [m] (zmienna lokalna komórki)
-p = \rho_0 * g * h
-print(f"Hydrostatic pressure: {p:.1f} Pa")
+h = 12.5 [m]                           # głębokość (zmienna lokalna komórki)
+p = (\rho_0 * g * h).to("kPa")
+print(f"Ciśnienie hydrostatyczne: {p:.2f}")
 
-\alpha = 2*\rho_0 + 2(\rho_0 + g)^2
-print("alpha =", \alpha)
-
-# %% Wahadło matematyczne (korzysta z wyeksportowanych `g` oraz `math`)
-L = 2.0
-export \omega_0 = math.sqrt(g / L)
-export T = 2 * math.pi / \omega_0
-print("Period:", T |> round, "s")
+# %% Wahadło matematyczne (korzysta z wyeksportowanych `g` oraz `np`)
+L = 2.0 [m]
+export \omega_0 = np.sqrt(g / L)
+export T = (2 * np.pi / \omega_0).to("s")
+print(f"Częstość kołowa: {\omega_0:.3f}")
+print(f"Okres drgań:     {T:.2f}")
 
 # %% Wykres tłumionych drgań harmonicznych (`plot plt`)
-import numpy as np
 import matplotlib.pyplot as plt
 
-\gamma = 0.25                 # współczynnik tłumienia [1/s]
-t = np.linspace(0, 12, 400)
+\gamma = 0.25 [1/s]                    # współczynnik tłumienia
+t = np.linspace(0, 12, 400) * 1 [s]
 \theta = np.exp(-\gamma * t) * np.cos(\omega_0 * t)
 
 plt.figure(figsize=(6.5, 3.2))

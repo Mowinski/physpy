@@ -32,6 +32,26 @@ pub struct CellOutput {
     plots: Vec<String>,
 }
 
+#[derive(Serialize)]
+pub struct DirEntryItem {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PythonInterpreterInfo {
+    path: String,
+    version: String,
+    label: String,
+}
+
+#[derive(Serialize)]
+pub struct PythonListResponse {
+    current: String,
+    interpreters: Vec<PythonInterpreterInfo>,
+}
+
 struct WorkerProcess {
     child: Child,
     stdin: ChildStdin,
@@ -92,6 +112,11 @@ impl Drop for WorkerProcess {
 /// Directory put on PYTHONPATH (must contain the `physpy` package). Resolved once at startup.
 static TRANSPILER_PATH: OnceLock<PathBuf> = OnceLock::new();
 static WORKER: OnceLock<Mutex<Option<WorkerProcess>>> = OnceLock::new();
+static SELECTED_PYTHON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn selected_python_mutex() -> &'static Mutex<Option<String>> {
+    SELECTED_PYTHON.get_or_init(|| Mutex::new(None))
+}
 
 fn worker_mutex() -> &'static Mutex<Option<WorkerProcess>> {
     WORKER.get_or_init(|| Mutex::new(None))
@@ -111,6 +136,11 @@ fn with_worker<T>(f: impl FnOnce(&mut WorkerProcess) -> Result<T, String>) -> Re
 }
 
 fn python_exe() -> String {
+    if let Ok(guard) = selected_python_mutex().lock() {
+        if let Some(chosen) = guard.as_ref() {
+            return chosen.clone();
+        }
+    }
     if let Ok(p) = std::env::var("PHYSPY_PYTHON") {
         return p;
     }
@@ -130,6 +160,32 @@ fn python_exe() -> String {
         }
     }
     "python3".to_string()
+}
+
+fn probe_python(path: &str) -> Result<PythonInterpreterInfo, String> {
+    let out = Command::new(path)
+        .arg("-c")
+        .arg("import sys; print(sys.version.split()[0])")
+        .output()
+        .map_err(|e| format!("Cannot execute '{path}': {e}"))?;
+    if !out.status.success() {
+        return Err(format!("'{path}' exited with status {}", out.status));
+    }
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let label = if path.contains(".venv") || path.contains("/venv/") {
+        format!("Python {version} (venv)")
+    } else if path.contains("homebrew") {
+        format!("Python {version} (Homebrew)")
+    } else if path.contains("conda") || path.contains("miniforge") {
+        format!("Python {version} (Conda)")
+    } else {
+        format!("Python {version}")
+    };
+    Ok(PythonInterpreterInfo {
+        path: path.to_string(),
+        version,
+        label,
+    })
 }
 
 /// `PHYSPY_PATH` > bundled resource (`<resources>/physpy`) > source tree (dev).
@@ -197,6 +253,7 @@ async fn run_cell(
     source: String,
     path: Option<String>,
     cell_index: usize,
+    doc_source: Option<String>,
 ) -> Result<CellOutput, String> {
     blocking(move || {
         with_worker(|w| {
@@ -205,6 +262,7 @@ async fn run_cell(
                 "source": source,
                 "path": path,
                 "cell_index": cell_index,
+                "doc_source": doc_source.unwrap_or_default(),
             }))?;
             if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(resp
@@ -268,6 +326,182 @@ fn write_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("{path}: {e}"))
 }
 
+#[tauri::command]
+fn create_dir(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("{path}: {e}"))
+}
+
+#[tauri::command]
+fn rename_path(from: String, to: String) -> Result<(), String> {
+    std::fs::rename(&from, &to).map_err(|e| format!("{from} -> {to}: {e}"))
+}
+
+#[tauri::command]
+fn delete_path(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.is_dir() {
+        std::fs::remove_dir_all(p).map_err(|e| format!("{path}: {e}"))
+    } else {
+        std::fs::remove_file(p).map_err(|e| format!("{path}: {e}"))
+    }
+}
+
+#[tauri::command]
+fn initial_root_dir() -> Result<String, String> {
+    if let Ok(cwd) = std::env::current_dir() {
+        let s = cwd.to_string_lossy();
+        // macOS sets cwd to "/" when launching a `.app` bundle from Finder.
+        if cwd != Path::new("/") && !s.contains(".app/Contents") {
+            return Ok(s.into_owned());
+        }
+    }
+    let repo_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    if let Ok(canon) = repo_dir.canonicalize() {
+        if canon.is_dir() {
+            return Ok(canon.to_string_lossy().into_owned());
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        return Ok(PathBuf::from(home).to_string_lossy().into_owned());
+    }
+    Ok(".".to_string())
+}
+
+const IGNORED_NAMES: &[&str] = &[
+    ".git",
+    ".DS_Store",
+    "node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+];
+
+#[tauri::command]
+fn list_dir(path: String) -> Result<Vec<DirEntryItem>, String> {
+    let entries = std::fs::read_dir(&path).map_err(|e| format!("{path}: {e}"))?;
+    let mut items: Vec<DirEntryItem> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if IGNORED_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        items.push(DirEntryItem {
+            name,
+            path: entry.path().to_string_lossy().into_owned(),
+            is_dir,
+        });
+    }
+    items.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(items)
+}
+
+#[tauri::command]
+async fn list_python_interpreters(
+    workspace_dir: Option<String>,
+) -> Result<PythonListResponse, String> {
+    blocking(move || {
+        let current = python_exe();
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        candidates.push(PathBuf::from(&current));
+        if let Some(ws) = workspace_dir {
+            let ws_path = PathBuf::from(ws);
+            candidates.push(ws_path.join(".venv/bin/python3"));
+            candidates.push(ws_path.join("venv/bin/python3"));
+            candidates.push(ws_path.join("transpiler/.venv/bin/python3"));
+        }
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../transpiler/.venv/bin/python3"),
+        );
+        for std_path in [
+            "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+            "/usr/bin/python3",
+        ] {
+            candidates.push(PathBuf::from(std_path));
+        }
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let home_path = PathBuf::from(home);
+            for base in ["miniconda3/envs", "miniforge3/envs", "anaconda3/envs", ".pyenv/versions"]
+            {
+                if let Ok(entries) = std::fs::read_dir(home_path.join(base)) {
+                    for e in entries.flatten() {
+                        candidates.push(e.path().join("bin/python3"));
+                    }
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut interpreters = Vec::new();
+        for cand in candidates {
+            let s = cand.to_string_lossy().into_owned();
+            if !cand.is_file() && s != current {
+                continue;
+            }
+            // Deduplicate by exact path string so venv symlinks remain distinct from system python
+            let norm = if cand.exists() {
+                std::fs::canonicalize(cand.parent().unwrap_or(Path::new(".")))
+                    .map(|p| p.join(cand.file_name().unwrap_or_default()))
+                    .unwrap_or(cand)
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                s.clone()
+            };
+            if !seen.insert(norm.clone()) {
+                continue;
+            }
+            if let Ok(info) = probe_python(&norm) {
+                interpreters.push(info);
+            }
+        }
+
+        let active_norm = Path::new(&current)
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .and_then(|p| Path::new(&current).file_name().map(|f| p.join(f)))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(current);
+
+        Ok(PythonListResponse {
+            current: active_norm,
+            interpreters,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_python_interpreter(path: String) -> Result<PythonInterpreterInfo, String> {
+    blocking(move || {
+        let trimmed = path.trim().to_string();
+        if trimmed.is_empty() {
+            return Err("Python path cannot be empty".into());
+        }
+        let info = probe_python(&trimmed)?;
+        {
+            let mut sel = selected_python_mutex().lock().map_err(|e| e.to_string())?;
+            *sel = Some(info.path.clone());
+        }
+        // Restart the persistent worker so it runs on the newly chosen interpreter
+        {
+            let mut guard = worker_mutex().lock().map_err(|e| e.to_string())?;
+            *guard = None;
+        }
+        Ok(info)
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -282,7 +516,14 @@ pub fn run() {
             run_code,
             transpile,
             read_file,
-            write_file
+            write_file,
+            create_dir,
+            rename_path,
+            delete_path,
+            initial_root_dir,
+            list_dir,
+            list_python_interpreters,
+            set_python_interpreter
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,8 +18,10 @@ from .errors import TranspileError
 from .pipeline import compile_source
 from .plotting import PLOT_FN, render_plot_png_base64
 from .symbols import IDENTIFIERS
+from .units import UNIT_FN, make_quantity
 
 CELL_HEADER_RE = re.compile(r"^# %%[^\S\n]*(.*)$", re.MULTILINE)
+EXPORT_IMPORT_RE = re.compile(r"^[ \t]*export[ \t]+(?:import|from)\b.*$", re.MULTILINE)
 
 # Reverse map: normalized Greek identifier -> `\name` for pretty display in UI badges
 REVERSE_SYMBOLS: dict[str, str] = {ident: f"\\{name}" for name, ident in IDENTIFIERS.items()}
@@ -70,28 +72,33 @@ def split_cells(src: str) -> list[Cell]:
 
 def _short_repr(val: Any) -> str:
     try:
-        r = repr(val)
+        if hasattr(val, "_REGISTRY") and hasattr(val, "magnitude") and hasattr(val, "units"):
+            r = f"{val:~P}"
+        else:
+            r = repr(val)
     except Exception:
         r = f"<{type(val).__name__}>"
     return r if len(r) <= 48 else r[:45] + "..."
 
 
 class NotebookSession:
-    """Holds only explicitly `export`-ed variables between cell runs."""
+    """Holds only explicitly `export`-ed variables (and exported `const` names) between cell runs."""
 
     def __init__(self) -> None:
         os.environ.setdefault("MPLBACKEND", "Agg")
         self.exports: dict[str, Any] = {}
+        self.consts: set[str] = set()
 
     def reset(self) -> None:
         self.exports.clear()
+        self.consts.clear()
 
     def run_cell(self, source: str, filename: str = "<cell>") -> CellResult:
         out_buf = io.StringIO()
         err_buf = io.StringIO()
 
         try:
-            code = compile_source(source, filename)
+            code = compile_source(source, filename, predeclared_consts=self.consts)
         except TranspileError as exc:
             return CellResult(
                 stdout="",
@@ -120,6 +127,7 @@ class NotebookSession:
         importer.install()
 
         cell_exports: dict[str, Any] = {}
+        cell_consts: set[str] = set()
         cell_plots: list[str] = []
 
         def _capture_plot(target: Any) -> None:
@@ -132,7 +140,9 @@ class NotebookSession:
             "__builtins__": __builtins__,
             **self.exports,
             "__exports__": cell_exports,
+            "__consts__": cell_consts,
             PLOT_FN: _capture_plot,
+            UNIT_FN: make_quantity,
         }
 
         exit_code = 0
@@ -151,8 +161,9 @@ class NotebookSession:
                 err_buf.write(tb[0] + "".join(user_frames))
                 exit_code = 1
 
-        # Commit exports from this cell into the session
+        # Commit exports and consts from this cell into the session
         self.exports.update(cell_exports)
+        self.consts.update(cell_consts)
         return CellResult(
             stdout=out_buf.getvalue(),
             stderr=err_buf.getvalue(),
@@ -161,6 +172,25 @@ class NotebookSession:
             all_exports=self.summary(),
             plots=cell_plots,
         )
+
+    def ensure_global_imports(self, full_document: str) -> None:
+        """Ensure any `export import ...` / `export from ... import ...` in the file are loaded."""
+        lines = EXPORT_IMPORT_RE.findall(full_document)
+        if not lines:
+            return
+        snippet = "\n".join(line.lstrip() for line in lines) + "\n"
+        try:
+            code = compile_source(snippet, "<exported-imports>")
+            cell_exports: dict[str, Any] = {}
+            ns: dict[str, Any] = {
+                "__builtins__": __builtins__,
+                **self.exports,
+                "__exports__": cell_exports,
+            }
+            exec(code, ns)
+            self.exports.update(cell_exports)
+        except Exception:
+            pass
 
     def summary(self) -> dict[str, str]:
         return {k: _short_repr(v) for k, v in self.exports.items()}
@@ -188,6 +218,7 @@ def run_worker() -> int:
             path = req.get("path")
             cell_index = req.get("cell_index", 1)
             source = req.get("source", "")
+            doc_source = req.get("doc_source", "")
             if path and os.path.exists(path):
                 script_dir = os.path.dirname(os.path.abspath(path))
                 if script_dir not in sys.path:
@@ -195,6 +226,8 @@ def run_worker() -> int:
                 label = f"{os.path.basename(path)}#cell-{cell_index}"
             else:
                 label = f"<cell {cell_index}>"
+            if doc_source:
+                session.ensure_global_imports(doc_source)
             res = session.run_cell(source, label)
             resp = {
                 "ok": True,

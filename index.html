@@ -8,21 +8,66 @@
   <body>
     <div id="app">
       <div id="toolbar">
-        <button id="btn-open" title="Open file">Open<kbd>⌘O</kbd></button>
-        <button id="btn-save" title="Save file">Save<kbd>⌘S</kbd></button>
+        <button id="btn-sidebar" type="button" title="Toggle file explorer (Cmd+B)">☰ Files<kbd>⌘B</kbd></button>
         <div class="toolbar-sep"></div>
-        <button id="btn-run-all" class="primary" title="Reset session and run all cells">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
-        <button id="btn-reset" title="Clear exported variables">↻ Reset</button>
-        <button id="btn-add-cell" title="Add new cell at the end">+ Cell</button>
+        <button id="btn-open" type="button" title="Open file">Open<kbd>⌘O</kbd></button>
+        <button id="btn-save" type="button" title="Save file">Save<kbd>⌘S</kbd></button>
+        <div class="toolbar-sep"></div>
+        <button id="btn-run-all" type="button" class="primary" title="Reset session and run all cells">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
+        <button id="btn-reset" type="button" title="Clear exported variables">↻ Reset</button>
+        <button id="btn-add-cell" type="button" title="Add new cell at the end">+ Cell</button>
         <div class="toolbar-spacer"></div>
-        <button id="btn-python" title="Toggle generated Python preview">Python<kbd>⌘P</kbd></button>
-      </div>
-      <div id="exports-bar">
-        <span class="exports-label">Session exports:</span>
-        <div id="exports-list"><span class="exports-empty">none (use <code>export x = …</code> in a cell)</span></div>
+        <button id="btn-variables" type="button" title="Toggle exported variables panel (Cmd+J)" aria-expanded="false">
+          𝑥 Variables<span id="variables-count" class="var-count-badge" hidden>0</span><kbd>⌘J</kbd>
+        </button>
+        <button id="btn-interpreter" type="button" title="Select Python interpreter for executing cells">
+          🐍 <span id="interpreter-label">Python</span>
+        </button>
+        <button id="btn-python" type="button" title="Toggle generated Python preview">Code<kbd>⌘P</kbd></button>
       </div>
       <div id="main">
-        <div id="notebook"></div>
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <span id="sidebar-root-name" class="sidebar-title" title="">Files</span>
+            <div class="sidebar-actions">
+              <button id="btn-change-folder" type="button" class="sidebar-icon-btn" title="Open another folder">📂</button>
+              <button id="btn-refresh-tree" type="button" class="sidebar-icon-btn" title="Refresh file tree">↻</button>
+              <button id="btn-collapse-sidebar" type="button" class="sidebar-icon-btn" title="Collapse sidebar (Cmd+B)">«</button>
+            </div>
+          </div>
+          <div id="file-tree"></div>
+        </aside>
+        <div id="workspace-center">
+          <div id="tabs-bar">
+            <div id="tabs-list" role="tablist" aria-label="Open files"></div>
+            <button id="btn-new-tab" type="button" class="tab-new-btn" title="New untitled tab (Cmd+N)">+</button>
+          </div>
+          <div id="notebook"></div>
+          <section id="variables-drawer" hidden aria-labelledby="variables-drawer-title">
+            <div class="drawer-header">
+              <span id="variables-drawer-title" class="drawer-title">Exported Variables</span>
+              <div class="drawer-actions">
+                <button id="btn-close-variables" type="button" class="sidebar-icon-btn" aria-label="Close variables panel" title="Close panel (Cmd+J)">✕</button>
+              </div>
+            </div>
+            <div tabindex="0" role="region" aria-labelledby="variables-drawer-title" class="table-wrapper">
+              <table id="variables-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Variable</th>
+                    <th scope="col">Defined in</th>
+                    <th scope="col">Value</th>
+                  </tr>
+                </thead>
+                <tbody id="variables-tbody">
+                  <tr>
+                    <td colspan="3" class="exports-empty">No exported variables in this file (use <code>export x = …</code> in a cell)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
         <div id="python-pane" hidden>
           <div class="pane-title">Generated Python</div>
           <div id="python"></div>
@@ -30,6 +75,41 @@
       </div>
       <div id="statusbar"><span id="status"></span></div>
     </div>
+
+    <!-- Context menu (Popover API + focusgroup menu pattern) -->
+    <div id="context-menu" popover="manual">
+      <div id="context-menu-group" focusgroup="menu nomemory" aria-label="Context actions"></div>
+    </div>
+
+    <dialog id="python-dialog" closedby="any" aria-labelledby="python-dialog-title">
+      <form method="dialog" id="python-dialog-form">
+        <h2 id="python-dialog-title">Select Python Interpreter</h2>
+        <p class="dialog-hint">
+          Choose which Python environment executes notebook cells (e.g. a virtualenv with
+          <code>numpy</code> / <code>matplotlib</code> / <code>scipy</code>). The PhysPy transpiler is attached
+          automatically via <code>PYTHONPATH</code>.
+        </p>
+        <div id="python-list" class="python-list"></div>
+        <div class="dialog-custom-row">
+          <label for="python-custom-input">Executable path:</label>
+          <div class="dialog-input-group">
+            <input
+              id="python-custom-input"
+              type="text"
+              placeholder="/path/to/venv/bin/python3"
+              autofocus
+            />
+            <button id="btn-browse-python" type="button">Browse…</button>
+          </div>
+        </div>
+        <p id="python-dialog-error" class="dialog-error" hidden></p>
+        <div class="dialog-footer">
+          <button type="submit" value="cancel">Cancel</button>
+          <button type="submit" value="apply" class="primary">Use Interpreter</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

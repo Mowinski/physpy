@@ -5,6 +5,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { mathSymbols } from "./mathSymbols";
 import { symbolCompletions } from "./completion";
+import { constLinter } from "./constLint";
 
 export interface EditorOptions {
   parent: HTMLElement;
@@ -20,6 +21,7 @@ export function createEditor({ parent, doc, onChange, keys = [] }: EditorOptions
     python(),
     symbolCompletions,
     mathSymbols,
+    constLinter,
     oneDark,
     EditorView.updateListener.of((u) => {
       if (u.docChanged) onChange?.(u.state.doc.toString());

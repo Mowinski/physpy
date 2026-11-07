@@ -26,6 +26,27 @@ def test_export_import():
     assert "import math" in out
     assert "__exports__.update({'math': math})" in out
 
+    out_from = transpile("export from math import sqrt, pi as PI\n")
+    assert "from math import sqrt, pi as PI" in out_from
+    assert "__exports__.update({'sqrt': sqrt, 'PI': PI})" in out_from
+
+
+def test_exported_import_available_across_all_cells():
+    doc = "# %% Cell 1\nexport import math\n\n# %% Cell 2\nprint(round(math.pi, 2))\n"
+    session = NotebookSession()
+    session.ensure_global_imports(doc)
+    # Even if we run Cell 2 directly without running Cell 1 first, `math` is available!
+    r2 = session.run_cell("print(round(math.pi, 2))\n")
+    assert r2.code == 0
+    assert r2.stdout.strip() == "3.14"
+
+
+def test_function_local_global_untouched():
+    src = "def f():\n    global x\n    x = 1\n"
+    out = transpile(src)
+    assert "global x" in out
+    assert "__exports__" not in out
+
 
 def test_export_function():
     out = transpile("export def f(x):\n    return x^2\n")

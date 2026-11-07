@@ -54,8 +54,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     sys.argv = [filename]
 
     cells = split_cells(src)
-    # Multi-cell or `export`-using file: run cell by cell with isolated scopes
+    # Multi-cell or `export`/`global`-using file: run cell by cell with isolated scopes
     session = NotebookSession()
+    session.ensure_global_imports(src)
     for idx, cell in enumerate(cells, start=1):
         label = filename if len(cells) == 1 else f"{filename}#cell-{idx}"
         res = session.run_cell(cell.source, label)

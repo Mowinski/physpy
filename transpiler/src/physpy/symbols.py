@@ -33,21 +33,49 @@ IDENTIFIERS: dict[str, str] = {
 SYMBOL_RE = re.compile(r"\\([A-Za-z]+)(\w*)")
 
 # Optional string prefix + opening quote.
-STRING_START_RE = re.compile(r"(?i)(?:rb|br|fr|rf|tr|rt|[rbuft])?('''|\"\"\"|'|\")")
+STRING_START_RE = re.compile(r"(?i)([rbuft]{0,2})('''|\"\"\"|'|\")")
 
 
-def _skip_string(src: str, i: int, quote: str) -> int:
-    """Return the index just past the string whose body starts at ``i``."""
+def _scan_string(src: str, i: int, quote: str, is_fstring: bool, out: list[str]) -> int:
+    """Append string body starting at ``i`` to ``out`` and return index past closing quote."""
     n = len(src)
+    brace_depth = 0
     while i < n:
         c = src[i]
-        if c == "\\":  # escapes (also in raw strings, for tokenization purposes)
+        if brace_depth == 0 and src.startswith(quote, i):
+            out.append(quote)
+            return i + len(quote)
+        if len(quote) == 1 and c == "\n" and brace_depth == 0:
+            return i
+        if is_fstring:
+            if c == "{":
+                if i + 1 < n and src[i + 1] == "{":
+                    out.append("{{")
+                    i += 2
+                    continue
+                brace_depth += 1
+                out.append(c)
+                i += 1
+                continue
+            if c == "}" and brace_depth > 0:
+                brace_depth -= 1
+                out.append(c)
+                i += 1
+                continue
+            if brace_depth > 0 and c == "\\":
+                m = SYMBOL_RE.match(src, i)
+                if m:
+                    name, tail = m.groups()
+                    if name not in IDENTIFIERS:
+                        raise TranspileError(f"unknown symbol \\{name}", *position(src, i))
+                    out.append(IDENTIFIERS[name] + tail)
+                    i = m.end()
+                    continue
+        if c == "\\":
+            out.append(src[i : i + 2])
             i += 2
             continue
-        if src.startswith(quote, i):
-            return i + len(quote)
-        if len(quote) == 1 and c == "\n":  # unterminated - let Python report it
-            return i
+        out.append(c)
         i += 1
     return n
 
@@ -69,9 +97,10 @@ def rewrite_symbols(src: str) -> str:
             prev_is_ident = i > 0 and (src[i - 1].isalnum() or src[i - 1] == "_")
             m = None if prev_is_ident else STRING_START_RE.match(src, i)
             if m:
-                end = _skip_string(src, m.end(), m.group(1))
-                out.append(src[i:end])
-                i = end
+                prefix, quote = m.groups()
+                out.append(m.group(0))
+                is_fstring = "f" in prefix.lower() and "r" not in prefix.lower()
+                i = _scan_string(src, m.end(), quote, is_fstring, out)
                 continue
 
         if c == "\\":
