@@ -83,10 +83,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: "PhysPy v__VERSION__"
+          tagName: v__VERSION__-build.${{ github.run_number }}
+          releaseName: "PhysPy v__VERSION__ (build #${{ github.run_number }})"
           releaseBody: "Automated desktop builds from `main`."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 

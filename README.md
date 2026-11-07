@@ -5,6 +5,8 @@ Piszesz czytelny kod matematyczno-fizyczny w czystym ASCII (`\rho_0`, `x^2`, `10
 
 **Stack:** Tauri 2 (Rust) · CodeMirror 6 + KaTeX (TypeScript/Vite) · Transpiler `physpy` w Pythonie (`ast` + `tokenize` + `pint` + `matplotlib`)
 
+![PhysPy Screenshot](docs/screenshot.png)
+
 ---
 
 ## Najważniejsze możliwości

@@ -62,9 +62,23 @@ class MathWidget extends WidgetType {
   }
 }
 
-function inStringOrComment(tree: Tree, pos: number): boolean {
+function inStringOrComment(state: EditorView["state"], tree: Tree, pos: number): boolean {
   for (let node: any = tree.resolveInner(pos, 1); node; node = node.parent) {
-    if (/String|Comment/.test(node.name)) return true;
+    if (/Comment/.test(node.name)) return true;
+    if (/String/.test(node.name)) {
+      const strText = state.doc.sliceString(node.from, node.to);
+      if (/^[bBuU]*[fF]/.test(strText)) {
+        const offset = pos - node.from;
+        const before = strText.slice(0, offset);
+        const after = strText.slice(offset);
+        const openIdx = before.lastIndexOf("{");
+        const closeBefore = before.lastIndexOf("}");
+        if (openIdx > closeBefore && after.includes("}")) {
+          return false;
+        }
+      }
+      return true;
+    }
   }
   return false;
 }
@@ -90,7 +104,7 @@ function buildDecorations(view: EditorView): DecorationSet {
       const end = start + m[0].length;
       const [raw, name, tail] = m;
       if (!(name in SYMBOLS)) continue;
-      if (inStringOrComment(tree, start) || cursorTouches(start, end)) continue;
+      if (inStringOrComment(state, tree, start) || cursorTouches(start, end)) continue;
       items.push({
         from: start,
         to: end,
@@ -102,7 +116,7 @@ function buildDecorations(view: EditorView): DecorationSet {
       const start = from + m.index!;
       const end = start + m[0].length;
       const [raw, , exp] = m;
-      if (inStringOrComment(tree, start) || cursorTouches(start, end)) continue;
+      if (inStringOrComment(state, tree, start) || cursorTouches(start, end)) continue;
       items.push({
         from: start,
         to: end,
