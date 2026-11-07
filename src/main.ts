@@ -999,7 +999,7 @@ function renderSessionExports(allExports?: Record<string, string>) {
     } else {
       const pending = document.createElement("span");
       pending.className = "var-pending";
-      pending.textContent = "brak wartości (nie uruchomiono komórki)";
+      pending.textContent = "no value yet (cell not run)";
       tdVal.append(pending);
     }
 

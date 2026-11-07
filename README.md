@@ -1,126 +1,126 @@
 # PhysPy
 
-Wieloplatformowy edytor i notatnik Pythona stworzony do obliczeń fizycznych i inżynierskich.
-Piszesz czytelny kod matematyczno-fizyczny w czystym ASCII (`\rho_0`, `x^2`, `1000.0 [kg/m^3]`), edytor na żywo renderuje go jako notację fizyczną ($\rho_0$, $x^2$, `[kg/m³]`), a transpiler w locie tłumaczy go na czysty kod Pythona.
+A multi-platform desktop Python notebook and IDE built for physics and engineering calculations.
+Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2`, `1000.0 [kg/m^3]`) — the editor renders them live as mathematical notation ($\rho_0$, $x^2$, `[kg/m³]`), and the transpiler converts them on the fly into standard Python.
 
-**Stack:** Tauri 2 (Rust) · CodeMirror 6 + KaTeX (TypeScript/Vite) · Transpiler `physpy` w Pythonie (`ast` + `tokenize` + `pint` + `matplotlib`)
+**Stack:** Tauri 2 (Rust) · CodeMirror 6 + KaTeX (TypeScript/Vite) · `physpy` Python transpiler (`ast` + `tokenize` + `pint` + `matplotlib`)
 
 ![PhysPy Screenshot](docs/screenshot.png)
 
 ---
 
-## Najważniejsze możliwości
+## Key Features
 
-### 1. Składnia fizyczna i matematyczna
-| Składnia PhysPy | Transpilowany Python | Opis |
+### 1. Physics & Math Syntax Extensions
+| PhysPy Syntax | Transpiled Python | Description |
 |---|---|---|
-| `\rho_0`, `\omega_0`, `\Delta x` | `ρ_0`, `ω_0`, `Δx` | Symbole greckie i fizyczne renderowane przez KaTeX (z autouzupełnianiem po wpisaniu `\`) |
-| `1000.0 [kg/m^3]`, `p.to("kPa")` | `__physpy_unit__(1000.0, 'kg/m^3')` | Jednostki fizyczne oparte o `pint` (`pint.Quantity`) z automatyczną kontrolą wymiarową i konwersją `.to(...)` |
-| `const g = 9.81 [m/s^2]` | stała niemodyfikowalna | Blokuje nadpisanie stałej na poziomie AST oraz **natychmiast podkreśla próbę zmiany na czerwono w edytorze** |
-| `export x = ...`, `export const ...`, `export import ...` | zapis do sesji `__exports__` | Jawne współdzielenie zmiennych, stałych, funkcji, klas i importów między komórkami `# %%` |
-| `2(\rho_0 + g)` | `2*(ρ_0 + g)` | Domyślne mnożenie przed nawiasem po literale liczbowym |
-| `x^2`, `x^(n+1)` | `x**2`, `x**(n+1)` | Potęgowanie z symbolem `^` renderowane w edytorze jako indeks górny ($x^2$, $x^{n+1}$) |
-| `x \|> f \|> g` | `g(f(x))` | Operator potoku (pipe) |
-| `plot plt`, `plot fig`, `plot ax` | `__physpy_plot__(plt)` | Renderowanie wykresów `matplotlib` bezpośrednio pod komórką w notatniku |
+| `\rho_0`, `\omega_0`, `\Delta x` | `ρ_0`, `ω_0`, `Δx` | Greek and physics symbols rendered live via KaTeX (with `\` autocomplete) |
+| `1000.0 [kg/m^3]`, `p.to("kPa")` | `__physpy_unit__(1000.0, 'kg/m^3')` | Physical units powered by `pint` (`pint.Quantity`) with automatic dimensional analysis and `.to(...)` conversion |
+| `const g = 9.81 [m/s^2]` | immutable constant | Blocks reassignment at the AST level and **immediately underlines reassignment attempts in red in the editor** |
+| `export x = ...`, `export const ...`, `export import ...` | stored in `__exports__` | Explicit sharing of variables, constants, functions, classes, and imports across `# %%` cells |
+| `2(\rho_0 + g)` | `2*(ρ_0 + g)` | Implicit multiplication after numeric literals before `(` |
+| `x^2`, `x^(n+1)` | `x**2`, `x**(n+1)` | Exponentiation with `^` rendered as superscripts ($x^2$, $x^{n+1}$) in the editor |
+| `x \|> f \|> g` | `g(f(x))` | Pipe operator |
+| `plot plt`, `plot fig`, `plot ax` | `__physpy_plot__(plt)` | Inline rendering of `matplotlib` figures directly below the notebook cell |
 
-### 2. Notatnik komórkowy (`# %%`) z izolacją zakresów
-- Pliki `.ppy` dzielone są na komórki za pomocą `# %% Tytuł komórki` (zostają zwykłymi plikami tekstowymi przyjaznymi dla Gita).
-- Domyślnie zmienne pomocnicze wewnątrz komórki są **lokalne tylko dla tej komórki** — nie zaśmiecają globalnej przestrzeni nazw.
-- Aby przekazać zmienną, stałą, funkcję lub import do kolejnych komórek, użyj słowa kluczowego `export`:
+### 2. Cell Notebook (`# %%`) with Isolated Scopes
+- `.ppy` files are split into cells using `# %% Cell Title` markers while remaining plain, Git-friendly text files.
+- By default, helper variables inside a cell are **local to that cell** — preventing namespace pollution across cells.
+- Use the `export` keyword to explicitly share a variable, constant, function, class, or import with subsequent cells:
   ```python
-  # %% Stałe fizyczne i ciśnienie hydrostatyczne
+  # %% Physical constants and hydrostatic pressure
   export import numpy as np
   export const \rho_0 = 1000.0 [kg/m^3]
   export const g = 9.81 [m/s^2]
 
   h = 12.5 [m]
   p = (\rho_0 * g * h).to("kPa")
-  print(f"Ciśnienie hydrostatyczne: {p:.2f}")
+  print(f"Hydrostatic pressure: {p:.2f}")
 
-  # %% Wahadło matematyczne
+  # %% Simple pendulum
   L = 2.0 [m]
   export \omega_0 = np.sqrt(g / L)
   export T = (2 * np.pi / \omega_0).to("s")
-  print(f"Okres drgań: {T:.2f}")
+  print(f"Period: {T:.2f}")
   ```
 
-### 3. Środowisko desktopowe (IDE)
-- **Zwijane drzewo plików (`⌘B`)** z obsługą tworzenia, zmiany nazw i usuwania plików/folderów z menu kontekstowego.
-- **Karty edytora (Taby)** w stylu VS Code (`⌘N`, `⌘W`, środkowy przycisk myszy, menu pod prawym przyciskiem myszy).
-- **Dolny panel Variables (`⌘J`)** — skanuje na żywo wszystkie deklaracje `export` oraz `export const` w pliku, pokazuje ich aktualne wartości (wraz z jednostkami `pint`), oznacza zmienne oczekujące na uruchomienie komórki oraz ostrzega o zduplikowanych eksportach.
-- **Wybór interpretera Pythona** — okno modalne pozwalające przełączać środowisko Pythona (`.venv`, Conda, Homebrew, systemowy lub własna ścieżka).
-- **Podgląd wygenerowanego Pythona** — boczny panel pokazujący wynik transpilacji w czasie rzeczywistym.
+### 3. Desktop IDE Features
+- **Collapsible File Explorer (`⌘B`)** — browse workspace folders and create, rename, or delete files and directories via the context menu.
+- **VS Code-Style Editor Tabs** — open multiple files in tabs (`⌘N`, `⌘W`, middle-click to close, right-click tab context menu).
+- **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, showing current runtime values (including `pint` units), pending unexecuted exports, and duplicate export warnings.
+- **Python Interpreter Selector** — modal dialog to switch the active Python environment (`.venv`, Conda, Homebrew, system Python, or custom binary path).
+- **Transpiled Python Preview (`⌘P`)** — live side panel displaying the generated plain Python code.
 
 ---
 
-## Struktura projektu
+## Project Structure
 
 ```text
 ├── index.html, src/            # Frontend (Vite + TypeScript + CodeMirror 6 + KaTeX)
-│   ├── main.ts                 # UI: komórki, taby, drzewo plików, panel Variables, dialog Pythona
-│   ├── backend.ts              # Wrappery na komendy Tauri
+│   ├── main.ts                 # UI: notebook cells, tabs, file tree, Variables drawer, Python dialog
+│   ├── backend.ts              # Tauri command wrappers
 │   └── editor/
-│       ├── mathSymbols.ts      # Renderowanie \rho_0 → ρ₀ oraz x^2 → x² (KaTeX)
-│       ├── constLint.ts        # Podświetlanie const/export, jednostek [unit] oraz błędów nadpisania const
-│       ├── completion.ts       # Autouzupełnianie symboli po wpisaniu "\"
-│       ├── symbols.ts          # Tabela symboli + konwersja do LaTeX
-│       └── setup.ts            # Konfiguracja CodeMirror 6
-├── src-tauri/                  # Backend desktopowy (Rust / Tauri 2)
-│   └── src/lib.rs              # Proces roboczy Pythona (JSON-RPC), operacje plikowe, wykrywanie Pythona
-├── transpiler/                 # Pakiet Pythona `physpy`
+│       ├── mathSymbols.ts      # Live rendering for \rho_0 → ρ₀ and x^2 → x² (KaTeX)
+│       ├── constLint.ts        # Highlighting for const/export, [unit] literals, and const reassignment errors
+│       ├── completion.ts       # Symbol autocomplete triggered on "\"
+│       ├── symbols.ts          # Symbol table + LaTeX conversion
+│       └── setup.ts            # CodeMirror 6 configuration
+├── src-tauri/                  # Desktop backend (Rust / Tauri 2)
+│   └── src/lib.rs              # Persistent Python worker (JSON-RPC), filesystem commands, Python discovery
+├── transpiler/                 # Python package `physpy`
 │   ├── src/physpy/
-│   │   ├── symbols.json        # Wspólna tabela symboli (współdzielona z frontendem)
-│   │   ├── symbols.py          # \rho_0 → ρ_0 (w tym wewnątrz f-stringów)
-│   │   ├── consts.py           # Obsługa słowa kluczowego `const` + walidacja AST
-│   │   ├── exports.py          # Obsługa słowa kluczowego `export` między komórkami
-│   │   ├── units.py            # Jednostki fizyczne `1000.0 [kg/m^3]` (pint)
-│   │   ├── plotting.py         # Komenda `plot plt` / `plot fig` (matplotlib → PNG)
-│   │   ├── implicit_mul.py     # Domyślne mnożenie `2(a + b)` → `2*(a + b)`
-│   │   ├── power.py            # Potęgowanie `x^2` → `x**2`
-│   │   ├── pipe.py             # Operator potoku `x |> f` → `f(x)`
-│   │   ├── notebook.py         # Dzielenie na komórki `# %%` i sesja wykonawcza
-│   │   ├── pipeline.py         # Rejestr przebiegów transpilacji
-│   │   ├── importer.py         # Import hook pozwalający robić `import modul` dla plików `.ppy`
+│   │   ├── symbols.json        # Shared symbol table (used by both frontend and Python transpiler)
+│   │   ├── symbols.py          # \rho_0 → ρ_0 (including inside f-string interpolations)
+│   │   ├── consts.py           # `const` keyword rewrite + AST immutability enforcement
+│   │   ├── exports.py          # `export` keyword rewrite across notebook cells
+│   │   ├── units.py            # Physical unit literals `1000.0 [kg/m^3]` (powered by `pint`)
+│   │   ├── plotting.py         # `plot plt` / `plot fig` command (matplotlib → base64 PNG)
+│   │   ├── implicit_mul.py     # Implicit multiplication `2(a + b)` → `2*(a + b)`
+│   │   ├── power.py            # Exponentiation `x^2` → `x**2`
+│   │   ├── pipe.py             # Pipe operator `x |> f` → `f(x)`
+│   │   ├── notebook.py         # `# %%` cell splitter and isolated session runner
+│   │   ├── pipeline.py         # Source & AST transpilation pipeline
+│   │   ├── importer.py         # Import hook allowing `import module` for `.ppy` files
 │   │   └── cli.py              # CLI: `physpy run`, `physpy transpile`, `physpy worker`
-│   └── tests/                  # Testy jednostkowe pytest
-├── examples/demo.ppy           # Przykładowy notatnik fizyczny
-└── .github/workflows/build.yml # CI/CD budujące instalatory na macOS, Windows i Linux
+│   └── tests/                  # Pytest unit test suite
+├── examples/demo.ppy           # Example physics notebook
+└── .github/workflows/build.yml # CI/CD workflow building macOS, Windows, and Linux bundles on push to main
 ```
 
 ---
 
-## Uruchomienie lokalne
+## Getting Started
 
-### Wymagania
+### Prerequisites
 - **Node.js** 20+
 - **Rust** (stable toolchain)
-- **Python** 3.10+ oraz [`uv`](https://docs.astral.sh/uv/)
+- **Python** 3.10+ and [`uv`](https://docs.astral.sh/uv/)
 
-### Instalacja i start
+### Local Development & Build
 
 ```bash
-# 1. Przygotowanie środowiska Pythona z bibliotekami (numpy, matplotlib, pint, pytest)
+# 1. Create the Python virtual environment with dependencies (numpy, matplotlib, pint, pytest)
 cd transpiler && uv sync && cd ..
 
-# 2. Instalacja zależności frontendu
+# 2. Install frontend dependencies
 npm install
 
-# 3. Uruchomienie aplikacji desktopowej w trybie deweloperskim
+# 3. Run the desktop app in development mode
 npm run tauri dev
 
-# 4. Zbudowanie gotowej aplikacji desktopowej (.app / .dmg / .msi / .deb / .AppImage)
+# 4. Build production desktop bundles (.app / .dmg / .msi / .deb / .AppImage)
 npm run tauri build
 ```
 
-### Użycie samego transpilera z linii komend (CLI)
+### Using the Transpiler CLI Standalone
 
 ```bash
-# Uruchomienie pliku .ppy
+# Execute a .ppy file directly
 cd transpiler && uv run physpy run ../examples/demo.ppy
 
-# Podgląd wygenerowanego kodu Pythona
+# Print the transpiled plain Python code
 cd transpiler && uv run physpy transpile ../examples/demo.ppy
 
-# Uruchomienie testów
+# Run the test suite
 cd transpiler && uv run pytest
 ```

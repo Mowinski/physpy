@@ -1,25 +1,25 @@
-# %% Stałe fizyczne i ciśnienie hydrostatyczne (z jednostkami `pint`)
-# Zmienne i importy oznaczone `export` są współdzielone między komórkami.
-# Zapis `LICZBA [jednostka]` tworzy wielkość fizyczną (`pint.Quantity`) z kontrolą wymiarową!
+# %% Physical constants and hydrostatic pressure (with `pint` units)
+# Variables and imports marked with `export` are shared across cells.
+# Writing `NUMBER [unit]` creates a physical quantity (`pint.Quantity`) with dimensional checking!
 export import numpy as np
-export const \rho_0 = 1000.0 [kg/m^3]  # stała gęstość wody (`const` blokuje nadpisanie!)
-export const g = 9.81 [m/s^2]          # stałe przyspieszenie ziemskie
+export const \rho_0 = 1000.0 [kg/m^3]  # water density (`const` prevents reassignment!)
+export const g = 9.81 [m/s^2]          # standard gravity
 
-h = 12.5 [m]                           # głębokość (zmienna lokalna komórki)
+h = 12.5 [m]                           # depth (cell-local variable)
 p = (\rho_0 * g * h).to("kPa")
-print(f"Ciśnienie hydrostatyczne: {p:.2f}")
+print(f"Hydrostatic pressure: {p:.2f}")
 
-# %% Wahadło matematyczne (korzysta z wyeksportowanych `g` oraz `np`)
+# %% Simple pendulum (uses exported `g` and `np`)
 L = 2.0 [m]
 export \omega_0 = np.sqrt(g / L)
 export T = (2 * np.pi / \omega_0).to("s")
-print(f"Częstość kołowa: {\omega_0:.3f}")
-print(f"Okres drgań:     {T:.2f}")
+print(f"Angular frequency: {\omega_0:.3f}")
+print(f"Oscillation period: {T:.2f}")
 
-# %% Wykres tłumionych drgań harmonicznych (`plot plt`)
+# %% Damped harmonic oscillator plot (`plot plt`)
 import matplotlib.pyplot as plt
 
-\gamma = 0.25 [1/s]                    # współczynnik tłumienia
+\gamma = 0.25 [1/s]                    # damping coefficient
 t = np.linspace(0, 12, 400) * 1 [s]
 \theta = np.exp(-\gamma * t) * np.cos(\omega_0 * t)
 
@@ -28,7 +28,7 @@ plt.plot(t, \theta, label=r"$\theta(t) = e^{-\gamma t}\cos(\omega_0 t)$")
 plt.axhline(0, color="gray", linewidth=0.8, linestyle="--")
 plt.xlabel("t [s]")
 plt.ylabel("θ [rad]")
-plt.title("Tłumione wahadło")
+plt.title("Damped Pendulum")
 plt.legend()
 plt.grid(True, alpha=0.3)
 
