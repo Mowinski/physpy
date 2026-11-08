@@ -722,15 +722,17 @@ async function refreshFileTree() {
   await renderTreeBranch(fileTreeEl, rootDir, 0);
 }
 
-async function changeRootFolder() {
-  if (!requireTauri()) return;
+async function changeRootFolder(): Promise<boolean> {
+  if (!requireTauri()) return true;
   const picked = await backend.pickFolder();
   if (picked) {
     rootDir = picked;
     expandedDirs.clear();
+    sidebarEl.hidden = false;
     await refreshFileTree();
     setStatus(`Opened folder ${picked}`);
   }
+  return true;
 }
 
 async function openFileByPath(path: string) {
@@ -1114,6 +1116,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
       { key: "Mod-Shift-Enter", run: () => (void runAllCells(), true) },
       { key: "Mod-s", run: () => (void saveFile(), true) },
       { key: "Mod-o", run: () => (void openFile(), true) },
+      { key: "Mod-Shift-o", run: () => (void changeRootFolder(), true) },
       { key: "Mod-n", run: () => (createNewTab(), true) },
       { key: "Mod-w", run: () => (closeTab(activeTabId), true) },
       { key: "Mod-b", run: () => toggleSidebar() },
@@ -1428,6 +1431,7 @@ $("btn-change-folder").addEventListener("click", () => void changeRootFolder());
 $("btn-refresh-tree").addEventListener("click", () => void refreshFileTree());
 $("btn-new-tab").addEventListener("click", () => createNewTab());
 $("btn-open").addEventListener("click", wrap(openFile));
+$("btn-open-folder").addEventListener("click", wrap(changeRootFolder));
 $("btn-save").addEventListener("click", wrap(saveFile));
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));

@@ -348,21 +348,18 @@ fn delete_path(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn initial_root_dir() -> Result<String, String> {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let p = PathBuf::from(home);
+        if p.is_dir() {
+            return Ok(p.to_string_lossy().into_owned());
+        }
+    }
     if let Ok(cwd) = std::env::current_dir() {
         let s = cwd.to_string_lossy();
         // macOS sets cwd to "/" when launching a `.app` bundle from Finder.
         if cwd != Path::new("/") && !s.contains(".app/Contents") {
             return Ok(s.into_owned());
         }
-    }
-    let repo_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    if let Ok(canon) = repo_dir.canonicalize() {
-        if canon.is_dir() {
-            return Ok(canon.to_string_lossy().into_owned());
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        return Ok(PathBuf::from(home).to_string_lossy().into_owned());
     }
     Ok(".".to_string())
 }
