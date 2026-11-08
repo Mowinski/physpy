@@ -252,6 +252,7 @@ async fn blocking<T: Send + 'static>(
 async fn run_cell(
     source: String,
     path: Option<String>,
+    cwd: Option<String>,
     cell_index: usize,
     doc_source: Option<String>,
 ) -> Result<CellOutput, String> {
@@ -261,6 +262,7 @@ async fn run_cell(
                 "cmd": "run_cell",
                 "source": source,
                 "path": path,
+                "cwd": cwd,
                 "cell_index": cell_index,
                 "doc_source": doc_source.unwrap_or_default(),
             }))?;
@@ -322,8 +324,26 @@ fn read_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn read_binary_file(path: String, base_dir: Option<String>) -> Result<Vec<u8>, String> {
+    let p = Path::new(&path);
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(base) = base_dir {
+        Path::new(&base).join(p)
+    } else {
+        p.to_path_buf()
+    };
+    std::fs::read(&resolved).map_err(|e| format!("{}: {e}", resolved.display()))
+}
+
+#[tauri::command]
 fn write_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| format!("{path}: {e}"))
+}
+
+#[tauri::command]
+fn write_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, bytes).map_err(|e| format!("{path}: {e}"))
 }
 
 #[tauri::command]
@@ -513,7 +533,9 @@ pub fn run() {
             run_code,
             transpile,
             read_file,
+            read_binary_file,
             write_file,
+            write_binary_file,
             create_dir,
             rename_path,
             delete_path,

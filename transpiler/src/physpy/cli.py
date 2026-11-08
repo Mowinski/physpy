@@ -49,6 +49,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     src = _read(args.file)
 
     script_dir = os.path.dirname(os.path.abspath(filename)) if os.path.exists(filename) else os.getcwd()
+    try:
+        os.chdir(script_dir)
+    except OSError:
+        pass
     sys.path.insert(0, script_dir)
     importer.install()
     sys.argv = [filename]

@@ -42,9 +42,10 @@ const FILTERS = [{ name: "PhysPy", extensions: ["ppy", "py"] }];
 export const runCell = (
   source: string,
   path: string | null,
+  cwd: string | null,
   cellIndex: number,
   docSource: string,
-) => invoke<CellOutput>("run_cell", { source, path, cellIndex, docSource });
+) => invoke<CellOutput>("run_cell", { source, path, cwd, cellIndex, docSource });
 
 export const resetSession = () => invoke<void>("reset_session");
 
@@ -58,6 +59,23 @@ export const initialRootDir = () => invoke<string>("initial_root_dir");
 export const listDir = (path: string) => invoke<DirEntryItem[]>("list_dir", { path });
 
 export const readFileByPath = (path: string) => invoke<string>("read_file", { path });
+
+export const readBinaryFile = (path: string, baseDir: string | null) =>
+  invoke<number[]>("read_binary_file", { path, baseDir });
+
+export async function pickMediaFile(): Promise<string | null> {
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    filters: [
+      {
+        name: "PDF & Images",
+        extensions: ["pdf", "png", "jpg", "jpeg", "webp", "svg", "gif"],
+      },
+    ],
+  });
+  return typeof picked === "string" ? picked : null;
+}
 
 export const writeFileByPath = (path: string, contents: string) =>
   invoke<void>("write_file", { path, contents });
@@ -94,5 +112,28 @@ export async function saveFile(contents: string, path: string | null): Promise<s
   const target = path ?? (await save({ filters: FILTERS, defaultPath: "untitled.ppy" }));
   if (!target) return null;
   await invoke("write_file", { path: target, contents });
+  return target;
+}
+
+export async function pickSavePpyPath(defaultPath: string): Promise<string | null> {
+  const target = await save({
+    filters: [{ name: "PhysPy Notebook", extensions: ["ppy"] }],
+    defaultPath,
+  });
+  return typeof target === "string" ? target : null;
+}
+
+export async function savePlotPng(base64Png: string, defaultPath: string): Promise<string | null> {
+  const target = await save({
+    filters: [{ name: "PNG Image", extensions: ["png"] }],
+    defaultPath,
+  });
+  if (typeof target !== "string" || !target) return null;
+  const binStr = atob(base64Png);
+  const bytes = new Array<number>(binStr.length);
+  for (let i = 0; i < binStr.length; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  await invoke("write_binary_file", { path: target, bytes });
   return target;
 }

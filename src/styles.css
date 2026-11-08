@@ -595,6 +595,38 @@ body {
   user-select: none;
 }
 
+.cell-kind-select {
+  background: #21252b;
+  color: #c8ccd4;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.cell-kind-select:hover,
+.cell-kind-select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.cell-card.kind-markdown {
+  border-left: 3px solid #c678dd;
+}
+
+.cell-card.kind-media {
+  border-left: 3px solid #e5c07b;
+}
+
+.cell-card.kind-markdown .cell-badge {
+  color: #c678dd;
+}
+
+.cell-card.kind-media .cell-badge {
+  color: #e5c07b;
+}
+
 .cell-title {
   flex: 1;
   background: transparent;
@@ -647,6 +679,12 @@ body {
   color: var(--danger);
 }
 
+.cell-editor[hidden],
+.cell-md-preview[hidden],
+.cell-media-wrap[hidden] {
+  display: none;
+}
+
 .cell-editor .cm-editor {
   height: auto;
   min-height: 54px;
@@ -655,6 +693,191 @@ body {
 
 .cell-editor .cm-scroller {
   overflow-y: hidden;
+}
+
+/* Rendered Markdown + LaTeX cell preview */
+.cell-md-preview {
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #dcdfe4;
+  background: #21252b;
+  cursor: text;
+}
+
+.cell-md-preview:hover {
+  background: #232830;
+}
+
+.cell-md-preview .md-empty {
+  margin: 0;
+  font-style: italic;
+  opacity: 0.55;
+}
+
+.cell-md-preview h1,
+.cell-md-preview h2,
+.cell-md-preview h3,
+.cell-md-preview h4 {
+  margin: 0.45em 0 0.35em;
+  color: #ffffff;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.cell-md-preview h1:first-child,
+.cell-md-preview h2:first-child,
+.cell-md-preview h3:first-child {
+  margin-top: 0;
+}
+
+.cell-md-preview h1 {
+  font-size: 1.4em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.cell-md-preview h2 {
+  font-size: 1.2em;
+}
+
+.cell-md-preview h3 {
+  font-size: 1.06em;
+}
+
+.cell-md-preview p {
+  margin: 0.45em 0;
+}
+
+.cell-md-preview ul,
+.cell-md-preview ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+
+.cell-md-preview blockquote {
+  margin: 0.5em 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent);
+  background: rgba(97, 175, 239, 0.08);
+  color: #b8c0cc;
+}
+
+.cell-md-preview code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: #1b1e23;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #e5c07b;
+}
+
+.cell-md-preview .md-codeblock {
+  margin: 0.6em 0;
+  padding: 8px 12px;
+  background: #1b1e23;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow-x: auto;
+}
+
+.cell-md-preview .md-codeblock code {
+  background: transparent;
+  padding: 0;
+  color: #d7dae0;
+}
+
+.cell-md-preview .md-math-block {
+  margin: 0.65em 0;
+  padding: 6px 8px;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.cell-md-preview .md-table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 13px;
+}
+
+.cell-md-preview .md-table th,
+.cell-md-preview .md-table td {
+  border: 1px solid var(--border-subtle);
+  padding: 5px 10px;
+}
+
+.cell-md-preview .md-table th {
+  background: #282c34;
+  color: #ffffff;
+}
+
+/* Embedded PDF / Image media cell */
+.cell-media-wrap {
+  display: flex;
+  flex-direction: column;
+  background: #1b1e23;
+}
+
+.cell-media-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #21252b;
+  border-bottom: 1px solid var(--border);
+}
+
+.cell-media-input {
+  flex: 1;
+  background: #1b1e23;
+  color: #d7dae0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.cell-media-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.cell-media-viewer {
+  padding: 10px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 80px;
+}
+
+.cell-pdf-frame {
+  width: 100%;
+  height: 480px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.cell-pdf-frame.tall {
+  height: 760px;
+}
+
+.cell-media-img {
+  max-width: 100%;
+  max-height: 640px;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: #ffffff;
+  padding: 4px;
+}
+
+.cell-media-empty {
+  padding: 20px;
+  font-size: 13px;
+  opacity: 0.7;
+  text-align: center;
 }
 
 .cell-output-wrap {
@@ -808,20 +1031,94 @@ dialog::backdrop {
   backdrop-filter: blur(2px);
 }
 
-#python-dialog[open] {
+#python-dialog[open],
+#ipynb-dialog[open] {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 18px 20px;
-  width: min(560px, 92vw);
+  width: min(620px, 92vw);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
-#python-dialog h2 {
-  margin: 0 0 8px;
+#python-dialog h2,
+#ipynb-dialog h2 {
+  margin: 0 0 10px;
   font-size: 16px;
   color: #ffffff;
+}
+
+.ipynb-status-banner {
+  padding: 9px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-subtle);
+}
+
+.ipynb-status-banner.is-ok {
+  background: rgba(152, 195, 121, 0.12);
+  border-color: rgba(152, 195, 121, 0.45);
+  color: #b5e496;
+}
+
+.ipynb-status-banner.is-error {
+  background: rgba(224, 108, 117, 0.14);
+  border-color: rgba(224, 108, 117, 0.5);
+  color: #f28b94;
+}
+
+.ipynb-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.ipynb-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ipynb-checkbox input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.ipynb-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+
+.ipynb-preview-label {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.ipynb-preview {
+  margin: 0;
+  padding: 10px 12px;
+  background: #1b1e23;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d7dae0;
+  white-space: pre;
 }
 
 .dialog-hint {

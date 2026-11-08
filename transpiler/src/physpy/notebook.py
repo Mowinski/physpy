@@ -216,16 +216,28 @@ def run_worker() -> int:
             resp: dict[str, Any] = {"ok": True, "all_exports": {}}
         elif cmd == "run_cell":
             path = req.get("path")
+            cwd = req.get("cwd")
             cell_index = req.get("cell_index", 1)
             source = req.get("source", "")
             doc_source = req.get("doc_source", "")
+            work_dir: str | None = None
             if path and os.path.exists(path):
-                script_dir = os.path.dirname(os.path.abspath(path))
-                if script_dir not in sys.path:
-                    sys.path.insert(0, script_dir)
+                work_dir = os.path.dirname(os.path.abspath(path))
+                label = f"{os.path.basename(path)}#cell-{cell_index}"
+            elif path and os.path.isdir(os.path.dirname(os.path.abspath(path))):
+                work_dir = os.path.dirname(os.path.abspath(path))
                 label = f"{os.path.basename(path)}#cell-{cell_index}"
             else:
+                if cwd and os.path.isdir(cwd):
+                    work_dir = os.path.abspath(cwd)
                 label = f"<cell {cell_index}>"
+            if work_dir:
+                try:
+                    os.chdir(work_dir)
+                except OSError:
+                    pass
+                if work_dir not in sys.path:
+                    sys.path.insert(0, work_dir)
             if doc_source:
                 session.ensure_global_imports(doc_source)
             res = session.run_cell(source, label)

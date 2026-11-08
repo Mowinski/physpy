@@ -16,7 +16,10 @@
         <div class="toolbar-sep"></div>
         <button id="btn-run-all" type="button" class="primary" title="Reset session and run all cells">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
         <button id="btn-reset" type="button" title="Clear exported variables">↻ Reset</button>
-        <button id="btn-add-cell" type="button" title="Add new cell at the end">+ Cell</button>
+        <div class="toolbar-sep"></div>
+        <button id="btn-add-cell" type="button" title="Add new code cell">+ Code</button>
+        <button id="btn-add-md-cell" type="button" title="Add new Markdown + LaTeX cell">+ Markdown</button>
+        <button id="btn-add-media-cell" type="button" title="Add embedded PDF or image cell">+ PDF / Image</button>
         <div class="toolbar-spacer"></div>
         <button id="btn-variables" type="button" title="Toggle exported variables panel (Cmd+J)" aria-expanded="false">
           𝑥 Variables<span id="variables-count" class="var-count-badge" hidden>0</span><kbd>⌘J</kbd>
@@ -107,6 +110,44 @@
         <div class="dialog-footer">
           <button type="submit" value="cancel">Cancel</button>
           <button type="submit" value="apply" class="primary">Use Interpreter</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="ipynb-dialog" closedby="any" aria-labelledby="ipynb-dialog-title">
+      <form method="dialog" id="ipynb-dialog-form">
+        <h2 id="ipynb-dialog-title">Import Jupyter Notebook (.ipynb → .ppy)</h2>
+        <div id="ipynb-status-banner" class="ipynb-status-banner"></div>
+        <div class="ipynb-options">
+          <label class="ipynb-checkbox">
+            <input id="ipynb-opt-export" type="checkbox" checked />
+            <span>Auto-add <code>export</code> to top-level imports &amp; variables used across cells</span>
+          </label>
+          <label class="ipynb-checkbox">
+            <input id="ipynb-opt-plt" type="checkbox" checked />
+            <span>Convert <code>plt.show()</code> into <code>plot plt</code></span>
+          </label>
+        </div>
+        <div class="dialog-custom-row">
+          <label for="ipynb-target-input">Save imported PhysPy file as:</label>
+          <div class="dialog-input-group">
+            <input
+              id="ipynb-target-input"
+              type="text"
+              placeholder="/path/to/notebook.ppy"
+              autofocus
+            />
+            <button id="btn-browse-ipynb-target" type="button">Browse…</button>
+          </div>
+        </div>
+        <div class="ipynb-preview-wrap">
+          <span class="ipynb-preview-label">Preview (.ppy):</span>
+          <pre id="ipynb-preview" class="ipynb-preview"></pre>
+        </div>
+        <p id="ipynb-dialog-error" class="dialog-error" hidden></p>
+        <div class="dialog-footer">
+          <button type="submit" value="cancel">Cancel</button>
+          <button id="btn-save-ipynb" type="submit" value="save" class="primary">Save &amp; Open .ppy</button>
         </div>
       </form>
     </dialog>

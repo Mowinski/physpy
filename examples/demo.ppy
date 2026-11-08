@@ -1,3 +1,10 @@
+# %% [markdown] Hydrostatics & Damped Harmonic Oscillator
+# ## Physical Model
+# Hydrostatic pressure at depth $h$ in a fluid of density $\rho_0$ is given by:
+# $$\Delta p = \rho_0 g h$$
+# For a damped pendulum with natural frequency $\omega_0 = \sqrt{g / L}$ and damping $\gamma$, the angular displacement is:
+# $$\theta(t) = \theta_0 e^{-\gamma t} \cos(\omega_0 t)$$
+
 # %% Physical constants and hydrostatic pressure (with `pint` units)
 # Variables and imports marked with `export` are shared across cells.
 # Writing `NUMBER [unit]` creates a physical quantity (`pint.Quantity`) with dimensional checking!

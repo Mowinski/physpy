@@ -6,16 +6,32 @@ import * as backend from "./backend";
 import { createEditor, createViewer, setDoc } from "./editor/setup";
 import { SYMBOLS, SYMBOL_RE } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
+import { convertIpynbToPpy } from "./ipynbImport";
+import { renderMarkdownWithLatex } from "./markdownLatex";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
+type CellKind = "code" | "markdown" | "media";
+
 interface CellState {
   id: number;
+  kind: CellKind;
   title: string;
   view: EditorView;
   el: HTMLElement;
   badgeEl: HTMLSpanElement;
+  kindSelect: HTMLSelectElement;
   titleInput: HTMLInputElement;
+  editorHost: HTMLDivElement;
+  mdPreviewEl: HTMLDivElement;
+  mdEditing: boolean;
+  mediaWrap: HTMLDivElement;
+  mediaInput: HTMLInputElement;
+  mediaViewer: HTMLDivElement;
+  mediaPath: string;
+  mediaBlobUrl: string | null;
+  pdfTall: boolean;
+  btnRun: HTMLButtonElement;
   outputWrap: HTMLDivElement;
   outputPre: HTMLPreElement;
   plotsWrap: HTMLDivElement;
@@ -60,6 +76,14 @@ const pythonDialog = $<HTMLDialogElement>("python-dialog");
 const pythonListEl = $<HTMLDivElement>("python-list");
 const pythonCustomInput = $<HTMLInputElement>("python-custom-input");
 const pythonDialogError = $<HTMLParagraphElement>("python-dialog-error");
+const ipynbDialog = $<HTMLDialogElement>("ipynb-dialog");
+const ipynbStatusBanner = $<HTMLDivElement>("ipynb-status-banner");
+const ipynbOptExport = $<HTMLInputElement>("ipynb-opt-export");
+const ipynbOptPlt = $<HTMLInputElement>("ipynb-opt-plt");
+const ipynbTargetInput = $<HTMLInputElement>("ipynb-target-input");
+const ipynbPreviewEl = $<HTMLPreElement>("ipynb-preview");
+const ipynbDialogError = $<HTMLParagraphElement>("ipynb-dialog-error");
+const btnSaveIpynb = $<HTMLButtonElement>("btn-save-ipynb");
 const contextMenuEl = $<HTMLDivElement>("context-menu");
 const contextMenuGroupEl = $<HTMLDivElement>("context-menu-group");
 const viewer = createViewer($("python"));
@@ -396,19 +420,23 @@ function closeTabsWhere(predicate: (t: TabDoc, idx: number) => boolean) {
 // --- Python Interpreter Modal Dialog --------------------------------------
 
 // Fallback for browsers without native `<dialog closedby="any">` support (e.g. WebKit)
-if (!("closedBy" in HTMLDialogElement.prototype)) {
-  const outside = (e: PointerEvent, dialog: HTMLDialogElement) => {
+function attachDialogLightDismiss(dialog: HTMLDialogElement) {
+  if ("closedBy" in HTMLDialogElement.prototype) return;
+  const outside = (e: PointerEvent) => {
     const r = dialog.getBoundingClientRect();
     return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
   };
   let pressedOutside = false;
-  pythonDialog.addEventListener("pointerdown", (e) => {
-    pressedOutside = outside(e, pythonDialog);
+  dialog.addEventListener("pointerdown", (e) => {
+    pressedOutside = outside(e);
   });
-  pythonDialog.addEventListener("pointerup", (e) => {
-    if (pressedOutside && outside(e, pythonDialog)) pythonDialog.close();
+  dialog.addEventListener("pointerup", (e) => {
+    if (pressedOutside && outside(e)) dialog.close();
   });
 }
+
+attachDialogLightDismiss(pythonDialog);
+attachDialogLightDismiss(ipynbDialog);
 
 async function refreshInterpreterBadge() {
   if (!backend.inTauri) return;
@@ -421,6 +449,25 @@ async function refreshInterpreterBadge() {
     }
   } catch {
     // ignore at startup
+  }
+}
+
+async function autoSelectWorkspacePython(folderPath: string) {
+  if (!backend.inTauri) return;
+  try {
+    const res = await backend.listPythonInterpreters(folderPath);
+    const wsVenv = res.interpreters.find((i) => i.label.includes("(workspace "));
+    if (wsVenv && wsVenv.path !== res.current) {
+      const info = await backend.setPythonInterpreter(wsVenv.path);
+      interpreterLabelEl.textContent = info.label;
+      $("btn-interpreter").title = `Active Python: ${info.path}`;
+      await resetSession(true);
+      setStatus(`Opened folder ${folderPath} · Switched Python to ${info.label}`);
+    } else {
+      await refreshInterpreterBadge();
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -495,6 +542,113 @@ $("btn-browse-python").addEventListener("click", async () => {
   }
 });
 
+// --- Jupyter Notebook (.ipynb -> .ppy) Import Modal Dialog ----------------
+
+let activeIpynbRawJson = "";
+let activeIpynbConvertedPpy = "";
+
+function refreshIpynbPreview() {
+  if (!activeIpynbRawJson) return;
+  const res = convertIpynbToPpy(activeIpynbRawJson, {
+    autoExport: ipynbOptExport.checked,
+    convertPltShow: ipynbOptPlt.checked,
+  });
+  activeIpynbConvertedPpy = res.ppySource;
+
+  if (!res.ok) {
+    ipynbStatusBanner.className = "ipynb-status-banner is-error";
+    ipynbStatusBanner.textContent = `✗ Import failed: ${res.error ?? "Unknown error"}`;
+    ipynbPreviewEl.textContent = "";
+    btnSaveIpynb.disabled = true;
+    return;
+  }
+
+  const details: string[] = [
+    `${res.codeCellCount} code cell${res.codeCellCount === 1 ? "" : "s"}`,
+  ];
+  if (res.markdownCellCount > 0) {
+    details.push(`${res.markdownCellCount} markdown block${res.markdownCellCount === 1 ? "" : "s"}`);
+  }
+  if (res.autoExportedNames.length > 0) {
+    details.push(`auto-exported: ${res.autoExportedNames.join(", ")}`);
+  }
+  if (res.convertedPlotsCount > 0) {
+    details.push(`${res.convertedPlotsCount} plt.show() → plot plt`);
+  }
+
+  ipynbStatusBanner.className = "ipynb-status-banner is-ok";
+  ipynbStatusBanner.textContent = `✓ Successfully converted to PhysPy format (${details.join(" · ")})`;
+  ipynbPreviewEl.textContent = res.ppySource;
+  btnSaveIpynb.disabled = false;
+}
+
+async function openIpynbImportDialog(ipynbPath: string) {
+  if (!requireTauri()) return;
+  ipynbDialogError.hidden = true;
+  activeIpynbRawJson = "";
+  activeIpynbConvertedPpy = "";
+  const defaultTarget = ipynbPath.replace(/\.ipynb$/i, "") + ".ppy";
+  ipynbTargetInput.value = defaultTarget;
+  ipynbStatusBanner.className = "ipynb-status-banner";
+  ipynbStatusBanner.textContent = "Reading Jupyter Notebook…";
+  ipynbPreviewEl.textContent = "";
+  btnSaveIpynb.disabled = true;
+  ipynbDialog.returnValue = "";
+  ipynbDialog.showModal();
+
+  try {
+    activeIpynbRawJson = await backend.readFileByPath(ipynbPath);
+    refreshIpynbPreview();
+  } catch (e) {
+    ipynbStatusBanner.className = "ipynb-status-banner is-error";
+    ipynbStatusBanner.textContent = `✗ Could not read file: ${String(e)}`;
+    btnSaveIpynb.disabled = true;
+  }
+}
+
+async function saveImportedIpynb() {
+  const targetPath = ipynbTargetInput.value.trim();
+  if (!targetPath) {
+    ipynbDialogError.hidden = false;
+    ipynbDialogError.textContent = "Please provide a destination .ppy file path.";
+    return;
+  }
+  if (!activeIpynbConvertedPpy) return;
+  const finalPath = targetPath.endsWith(".ppy") ? targetPath : `${targetPath}.ppy`;
+  try {
+    await backend.writeFileByPath(finalPath, activeIpynbConvertedPpy);
+    ipynbDialog.close();
+    await refreshFileTree();
+    await openFileByPath(finalPath);
+    setStatus(`Imported Jupyter Notebook to ${finalPath}`);
+  } catch (e) {
+    ipynbDialogError.hidden = false;
+    ipynbDialogError.textContent = `Failed to save file: ${String(e)}`;
+  }
+}
+
+ipynbOptExport.addEventListener("change", refreshIpynbPreview);
+ipynbOptPlt.addEventListener("change", refreshIpynbPreview);
+
+$("btn-browse-ipynb-target").addEventListener("click", async () => {
+  const picked = await backend.pickSavePpyPath(ipynbTargetInput.value.trim() || "imported.ppy");
+  if (picked) {
+    ipynbTargetInput.value = picked;
+  }
+});
+
+ipynbDialog.addEventListener("close", () => {
+  ipynbDialog.returnValue = "";
+});
+
+$<HTMLFormElement>("ipynb-dialog-form").addEventListener("submit", (e) => {
+  const submitter = e.submitter as HTMLButtonElement | null;
+  if (submitter?.value === "save") {
+    e.preventDefault();
+    void saveImportedIpynb();
+  }
+});
+
 // --- Collapsible File Explorer Sidebar ------------------------------------
 
 function toggleSidebar(): boolean {
@@ -508,11 +662,19 @@ function highlightActiveFileInTree() {
   }
 }
 
+function isMediaFilename(name: string): boolean {
+  return /\.(pdf|png|jpe?g|webp|svg|gif)$/i.test(name);
+}
+
 function fileIcon(name: string): string {
-  if (name.endsWith(".ppy")) return "⚛";
-  if (name.endsWith(".py")) return "🐍";
-  if (name.endsWith(".md") || name.endsWith(".txt")) return "📄";
-  if (name.endsWith(".json") || name.endsWith(".toml") || name.endsWith(".yaml")) return "⚙";
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".ppy")) return "⚛";
+  if (lower.endsWith(".ipynb")) return "📓";
+  if (lower.endsWith(".py")) return "🐍";
+  if (lower.endsWith(".pdf")) return "📕";
+  if (/\.(png|jpe?g|webp|svg|gif)$/.test(lower)) return "🖼";
+  if (lower.endsWith(".md") || lower.endsWith(".txt")) return "📄";
+  if (lower.endsWith(".json") || lower.endsWith(".toml") || lower.endsWith(".yaml")) return "⚙";
   return "•";
 }
 
@@ -665,16 +827,48 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
         ]);
       });
     } else {
+      const isIpynb = entry.name.toLowerCase().endsWith(".ipynb");
+      const isMedia = isMediaFilename(entry.name);
       icon.textContent = fileIcon(entry.name);
       row.addEventListener("click", () => {
-        void openFileByPath(entry.path);
+        if (isIpynb) {
+          void openIpynbImportDialog(entry.path);
+        } else if (isMedia) {
+          insertMediaCellWithFile(entry.path);
+        } else {
+          void openFileByPath(entry.path);
+        }
       });
       row.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();
         const parentDir = entry.path.replace(/[\\/][^\\/]+$/, "");
-        openContextMenu(e.clientX, e.clientY, [
-          { label: "Open in Tab", run: () => openFileByPath(entry.path) },
+        const actions: MenuAction[] = [];
+        if (isIpynb) {
+          actions.push(
+            {
+              label: "✨ Import to PhysPy (.ppy)…",
+              run: () => openIpynbImportDialog(entry.path),
+            },
+            { separator: true },
+          );
+        }
+        if (isMedia) {
+          actions.push(
+            {
+              label: "📄 Embed in Notebook as Media Cell",
+              run: () => insertMediaCellWithFile(entry.path),
+            },
+            { separator: true },
+          );
+        }
+        if (!isMedia) {
+          actions.push({
+            label: isIpynb ? "Open Raw JSON in Tab" : "Open in Tab",
+            run: () => openFileByPath(entry.path),
+          });
+        }
+        actions.push(
           { label: "New File…", run: () => promptNewFileIn(parentDir) },
           { label: "New Folder…", run: () => promptNewFolderIn(parentDir) },
           { separator: true },
@@ -685,7 +879,8 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
             label: "Copy Path",
             run: () => void navigator.clipboard?.writeText(entry.path),
           },
-        ]);
+        );
+        openContextMenu(e.clientX, e.clientY, actions);
       });
     }
 
@@ -731,6 +926,7 @@ async function changeRootFolder(): Promise<boolean> {
     sidebarEl.hidden = false;
     await refreshFileTree();
     setStatus(`Opened folder ${picked}`);
+    await autoSelectWorkspacePython(picked);
   }
   return true;
 }
@@ -769,41 +965,99 @@ async function openFileByPath(path: string) {
 // --- Parsing & serializing `# %%` cells ------------------------------------
 
 interface ParsedCell {
+  kind: CellKind;
   title: string;
   source: string;
 }
 
 const CELL_HEADER_RE = /^# %%[^\S\n]*(.*)$/gm;
 
+function uncommentMarkdownBlock(raw: string): string {
+  const lines = raw.split("\n");
+  const allCommented = lines.every((l) => !l.trim() || /^\s*#/.test(l));
+  if (!allCommented) return raw;
+  return lines.map((l) => l.replace(/^\s*# ?/, "")).join("\n");
+}
+
+function looksLikeCommentedMarkdownCell(raw: string): boolean {
+  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return false;
+  if (!lines.every((l) => /^\s*#/.test(l))) return false;
+  return lines.some((l) => /^\s*#\s*(\$\$|\\\[|#{1,6}\s)/.test(l));
+}
+
+function extractMediaPathFromBlock(raw: string): string {
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*#\s*@media:\s*(.+)$/);
+    if (m) return m[1].trim();
+  }
+  const stripped = uncommentMarkdownBlock(raw).trim();
+  return stripped.split("\n")[0]?.trim() ?? "";
+}
+
+function parseCellHeaderTag(rawTitle: string): { kind: CellKind; title: string } {
+  const mdMatch = rawTitle.match(/^\[(?:markdown|md)\]\s*(.*)$/i);
+  if (mdMatch) return { kind: "markdown", title: mdMatch[1].trim() };
+  const mediaMatch = rawTitle.match(/^\[(?:media|pdf|image)\]\s*(.*)$/i);
+  if (mediaMatch) return { kind: "media", title: mediaMatch[1].trim() };
+  return { kind: "code", title: rawTitle.trim() };
+}
+
 function parseDocument(src: string): ParsedCell[] {
   const matches = [...src.matchAll(CELL_HEADER_RE)];
   if (matches.length === 0) {
-    return [{ title: "", source: src }];
+    return [{ kind: "code", title: "", source: src }];
   }
   const out: ParsedCell[] = [];
   if (matches[0].index! > 0) {
     const pre = src.slice(0, matches[0].index!);
     if (pre.trim()) {
-      out.push({ title: "", source: pre.replace(/\n+$/, "") });
+      out.push({ kind: "code", title: "", source: pre.replace(/\n+$/, "") });
     }
   }
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i];
-    const title = m[1].trim();
+    let { kind, title } = parseCellHeaderTag(m[1].trim());
     let bodyStart = m.index! + m[0].length;
     if (src[bodyStart] === "\n") bodyStart++;
     const bodyEnd = i + 1 < matches.length ? matches[i + 1].index! : src.length;
-    const body = src.slice(bodyStart, bodyEnd).replace(/\n+$/, "");
-    out.push({ title, source: body });
+    const rawBody = src.slice(bodyStart, bodyEnd).replace(/\n+$/, "");
+    if (kind === "code" && looksLikeCommentedMarkdownCell(rawBody)) {
+      kind = "markdown";
+    }
+    let source = rawBody;
+    if (kind === "markdown") {
+      source = uncommentMarkdownBlock(rawBody);
+    } else if (kind === "media") {
+      source = extractMediaPathFromBlock(rawBody);
+    }
+    out.push({ kind, title, source });
   }
-  return out.length ? out : [{ title: "", source: "" }];
+  return out.length ? out : [{ kind: "code", title: "", source: "" }];
 }
 
 function serializeDocument(): string {
   return (
     cells
       .map((c) => {
-        const header = c.title.trim() ? `# %% ${c.title.trim()}` : "# %%";
+        const t = c.title.trim();
+        if (c.kind === "markdown") {
+          const header = t ? `# %% [markdown] ${t}` : "# %% [markdown]";
+          const rawMd = c.view.state.doc.toString().replace(/\n+$/, "");
+          const commented = rawMd
+            ? rawMd
+                .split("\n")
+                .map((line) => (line.length > 0 ? `# ${line}` : "#"))
+                .join("\n")
+            : "#";
+          return `${header}\n${commented}\n`;
+        }
+        if (c.kind === "media") {
+          const header = t ? `# %% [media] ${t}` : "# %% [media]";
+          const p = c.mediaPath.trim();
+          return `${header}\n# @media: ${p}\n`;
+        }
+        const header = t ? `# %% ${t}` : "# %%";
         const body = c.view.state.doc.toString().replace(/\n+$/, "");
         return `${header}\n${body}\n`;
       })
@@ -868,6 +1122,7 @@ function scanExportsInCells(): Map<string, ScannedExport> {
   };
 
   cells.forEach((cell, idx) => {
+    if (cell.kind !== "code") return;
     const cellIndex = idx + 1;
     const lines = cell.view.state.doc.toString().split("\n");
     lines.forEach((rawLine, lineIdx) => {
@@ -1014,9 +1269,15 @@ function renderSessionExports(allExports?: Record<string, string>) {
 
 function renumberCells() {
   cells.forEach((c, idx) => {
-    const num = c.runCount ?? " ";
-    c.badgeEl.textContent = `In [${num}]`;
-    c.badgeEl.title = `Cell ${idx + 1}`;
+    if (c.kind === "markdown") {
+      c.badgeEl.textContent = "M↓ [md]";
+    } else if (c.kind === "media") {
+      c.badgeEl.textContent = "📄 [doc]";
+    } else {
+      const num = c.runCount ?? " ";
+      c.badgeEl.textContent = `In [${num}]`;
+    }
+    c.badgeEl.title = `Cell ${idx + 1} (${c.kind})`;
   });
 }
 
@@ -1026,6 +1287,142 @@ function markDirty() {
   renderSessionExports();
   clearTimeout(transpileTimer);
   transpileTimer = window.setTimeout(refreshPython, 400);
+}
+
+function mimeForPath(filePath: string): string {
+  const lower = filePath.toLowerCase().split("?")[0];
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+function toWorkspaceRelativeIfPossible(absPath: string): string {
+  const baseDir = currentPath
+    ? currentPath.replace(/[\\/][^\\/]+$/, "")
+    : (rootDir ?? "");
+  if (!baseDir) return absPath;
+  const normBase = baseDir.replace(/\/+$/, "") + "/";
+  if (absPath.startsWith(normBase)) {
+    return absPath.slice(normBase.length);
+  }
+  return absPath;
+}
+
+async function renderMediaCellViewer(cell: CellState) {
+  if (cell.mediaBlobUrl) {
+    URL.revokeObjectURL(cell.mediaBlobUrl);
+    cell.mediaBlobUrl = null;
+  }
+  cell.mediaViewer.innerHTML = "";
+  const rawPath = cell.mediaPath.trim();
+  if (!rawPath) {
+    const empty = document.createElement("div");
+    empty.className = "cell-media-empty";
+    empty.textContent = "No PDF or image selected yet. Click “📂 Choose PDF / Image…” above to embed an instruction manual or figure.";
+    cell.mediaViewer.append(empty);
+    return;
+  }
+
+  const mime = mimeForPath(rawPath);
+  const isPdf = mime === "application/pdf";
+
+  if (/^(https?:|data:|blob:)/i.test(rawPath)) {
+    if (isPdf) {
+      const iframe = document.createElement("iframe");
+      iframe.className = "cell-pdf-frame" + (cell.pdfTall ? " tall" : "");
+      iframe.src = rawPath;
+      cell.mediaViewer.append(iframe);
+    } else {
+      const img = document.createElement("img");
+      img.className = "cell-media-img";
+      img.src = rawPath;
+      img.alt = cell.title || rawPath;
+      cell.mediaViewer.append(img);
+    }
+    return;
+  }
+
+  if (!backend.inTauri) {
+    const empty = document.createElement("div");
+    empty.className = "cell-media-empty";
+    empty.textContent = `Local file preview requires the desktop app: ${rawPath}`;
+    cell.mediaViewer.append(empty);
+    return;
+  }
+
+  try {
+    const baseDir = currentPath
+      ? currentPath.replace(/[\\/][^\\/]+$/, "")
+      : rootDir;
+    const bytes = await backend.readBinaryFile(rawPath, baseDir);
+    const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+    const url = URL.createObjectURL(blob);
+    cell.mediaBlobUrl = url;
+
+    if (isPdf) {
+      const iframe = document.createElement("iframe");
+      iframe.className = "cell-pdf-frame" + (cell.pdfTall ? " tall" : "");
+      iframe.src = url;
+      iframe.title = cell.title || rawPath;
+      cell.mediaViewer.append(iframe);
+    } else {
+      const img = document.createElement("img");
+      img.className = "cell-media-img";
+      img.src = url;
+      img.alt = cell.title || rawPath;
+      cell.mediaViewer.append(img);
+    }
+  } catch (e) {
+    const err = document.createElement("div");
+    err.className = "cell-media-empty";
+    err.style.color = "var(--danger)";
+    err.textContent = `Could not load "${rawPath}": ${String(e)}`;
+    cell.mediaViewer.append(err);
+  }
+}
+
+function updateMarkdownPreview(cell: CellState) {
+  cell.mdPreviewEl.innerHTML = renderMarkdownWithLatex(cell.view.state.doc.toString());
+}
+
+function applyCellKindUI(cell: CellState) {
+  cell.el.classList.remove("kind-code", "kind-markdown", "kind-media");
+  cell.el.classList.add(`kind-${cell.kind}`);
+  cell.kindSelect.value = cell.kind;
+
+  if (cell.kind === "code") {
+    cell.editorHost.hidden = false;
+    cell.mdPreviewEl.hidden = true;
+    cell.mediaWrap.hidden = true;
+    cell.btnRun.innerHTML = "▶ Run <kbd>⌘↵</kbd>";
+    cell.btnRun.title = "Run this code cell (Cmd+Enter or Shift+Enter)";
+  } else if (cell.kind === "markdown") {
+    cell.mediaWrap.hidden = true;
+    cell.outputWrap.hidden = true;
+    updateMarkdownPreview(cell);
+    cell.editorHost.hidden = !cell.mdEditing;
+    cell.mdPreviewEl.hidden = cell.mdEditing;
+    if (cell.mdEditing) {
+      cell.btnRun.innerHTML = "✓ Render <kbd>⌘↵</kbd>";
+      cell.btnRun.title = "Render Markdown + LaTeX (Cmd+Enter or Shift+Enter)";
+    } else {
+      cell.btnRun.innerHTML = "✎ Edit";
+      cell.btnRun.title = "Edit Markdown + LaTeX source (or double-click preview)";
+    }
+  } else {
+    cell.editorHost.hidden = true;
+    cell.mdPreviewEl.hidden = true;
+    cell.outputWrap.hidden = true;
+    cell.mediaWrap.hidden = false;
+    cell.btnRun.innerHTML = "📂 Choose File…";
+    cell.btnRun.title = "Choose a PDF or image file to embed in this cell";
+    void renderMediaCellViewer(cell);
+  }
+  renumberCells();
 }
 
 function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
@@ -1039,6 +1436,16 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   const badgeEl = document.createElement("span");
   badgeEl.className = "cell-badge";
   badgeEl.textContent = "In [ ]";
+
+  const kindSelect = document.createElement("select");
+  kindSelect.className = "cell-kind-select";
+  kindSelect.title = "Cell type (Code, Markdown + LaTeX, or PDF / Image)";
+  kindSelect.innerHTML = `
+    <option value="code">⚛ Code</option>
+    <option value="markdown">M↓ Markdown + LaTeX</option>
+    <option value="media">📄 PDF / Image</option>
+  `;
+  kindSelect.value = initial.kind;
 
   const titleInput = document.createElement("input");
   titleInput.type = "text";
@@ -1084,10 +1491,45 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnDel.title = "Delete cell";
 
   actions.append(btnRun, btnAdd, btnUp, btnDown, btnDel);
-  header.append(badgeEl, titleInput, actions);
+  header.append(badgeEl, kindSelect, titleInput, actions);
 
   const editorHost = document.createElement("div");
   editorHost.className = "cell-editor";
+
+  const mdPreviewEl = document.createElement("div");
+  mdPreviewEl.className = "cell-md-preview";
+  mdPreviewEl.hidden = true;
+  mdPreviewEl.title = "Double-click to edit Markdown + LaTeX";
+
+  const mediaWrap = document.createElement("div");
+  mediaWrap.className = "cell-media-wrap";
+  mediaWrap.hidden = true;
+
+  const mediaBar = document.createElement("div");
+  mediaBar.className = "cell-media-bar";
+
+  const mediaInput = document.createElement("input");
+  mediaInput.type = "text";
+  mediaInput.className = "cell-media-input";
+  mediaInput.placeholder = "Path to .pdf or image (.png, .jpg, .svg, .webp)…";
+  mediaInput.value = initial.kind === "media" ? initial.source : "";
+
+  const btnBrowseMedia = document.createElement("button");
+  btnBrowseMedia.type = "button";
+  btnBrowseMedia.className = "cell-btn";
+  btnBrowseMedia.textContent = "📂 Choose PDF / Image…";
+
+  const btnToggleTall = document.createElement("button");
+  btnToggleTall.type = "button";
+  btnToggleTall.className = "cell-btn";
+  btnToggleTall.textContent = "↕ Expand Height";
+  btnToggleTall.title = "Toggle taller PDF viewer height";
+
+  mediaBar.append(mediaInput, btnBrowseMedia, btnToggleTall);
+
+  const mediaViewer = document.createElement("div");
+  mediaViewer.className = "cell-media-viewer";
+  mediaWrap.append(mediaBar, mediaViewer);
 
   const outputWrap = document.createElement("div");
   outputWrap.className = "cell-output-wrap";
@@ -1105,11 +1547,11 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   plotsWrap.hidden = true;
 
   outputWrap.append(exportedBar, outputPre, plotsWrap);
-  card.append(header, editorHost, outputWrap);
+  card.append(header, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
     parent: editorHost,
-    doc: initial.source,
+    doc: initial.kind === "media" ? "" : initial.source,
     keys: [
       { key: "Mod-Enter", run: () => (void runSingleCell(state, false), true) },
       { key: "Shift-Enter", run: () => (void runSingleCell(state, true), true) },
@@ -1128,11 +1570,23 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
 
   const state: CellState = {
     id,
+    kind: initial.kind,
     title: initial.title,
     view,
     el: card,
     badgeEl,
+    kindSelect,
     titleInput,
+    editorHost,
+    mdPreviewEl,
+    mdEditing: initial.kind === "markdown" ? !initial.source.trim() : true,
+    mediaWrap,
+    mediaInput,
+    mediaViewer,
+    mediaPath: initial.kind === "media" ? initial.source.trim() : "",
+    mediaBlobUrl: null,
+    pdfTall: false,
+    btnRun,
     outputWrap,
     outputPre,
     plotsWrap,
@@ -1140,10 +1594,90 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     runCount: null,
   };
 
-  btnRun.addEventListener("click", () => void runSingleCell(state, false));
+  kindSelect.addEventListener("change", () => {
+    const newKind = kindSelect.value as CellKind;
+    state.kind = newKind;
+    if (newKind === "markdown") {
+      const curDoc = state.view.state.doc.toString();
+      const uncommented = uncommentMarkdownBlock(curDoc);
+      if (uncommented !== curDoc) {
+        setDoc(state.view, uncommented);
+      }
+      state.mdEditing = !uncommented.trim();
+    }
+    applyCellKindUI(state);
+    markDirty();
+  });
+
+  mdPreviewEl.addEventListener("dblclick", () => {
+    state.mdEditing = true;
+    applyCellKindUI(state);
+    state.view.focus();
+  });
+
+  const pickMediaForCell = async () => {
+    if (!requireTauri()) return;
+    const picked = await backend.pickMediaFile();
+    if (picked) {
+      const rel = toWorkspaceRelativeIfPossible(picked);
+      state.mediaPath = rel;
+      state.mediaInput.value = rel;
+      if (!state.title.trim()) {
+        const baseName = picked.split(/[\\/]/).pop() ?? "";
+        state.title = baseName;
+        state.titleInput.value = baseName;
+      }
+      await renderMediaCellViewer(state);
+      markDirty();
+    }
+  };
+
+  btnBrowseMedia.addEventListener("click", () => void pickMediaForCell());
+  mediaInput.addEventListener("change", () => {
+    state.mediaPath = mediaInput.value.trim();
+    void renderMediaCellViewer(state);
+    markDirty();
+  });
+  mediaInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      state.mediaPath = mediaInput.value.trim();
+      void renderMediaCellViewer(state);
+      markDirty();
+    }
+  });
+  btnToggleTall.addEventListener("click", () => {
+    state.pdfTall = !state.pdfTall;
+    btnToggleTall.textContent = state.pdfTall ? "↕ Compact Height" : "↕ Expand Height";
+    const frame = state.mediaViewer.querySelector(".cell-pdf-frame");
+    if (frame) {
+      frame.classList.toggle("tall", state.pdfTall);
+    }
+  });
+
+  btnRun.addEventListener("click", () => {
+    if (state.kind === "markdown") {
+      if (state.mdEditing) {
+        const curDoc = state.view.state.doc.toString();
+        if (looksLikeCommentedMarkdownCell(curDoc)) {
+          setDoc(state.view, uncommentMarkdownBlock(curDoc));
+        }
+      }
+      state.mdEditing = !state.mdEditing;
+      applyCellKindUI(state);
+      if (state.mdEditing) state.view.focus();
+      return;
+    }
+    if (state.kind === "media") {
+      void pickMediaForCell();
+      return;
+    }
+    void runSingleCell(state, false);
+  });
+
   btnAdd.addEventListener("click", () => {
     const idx = cells.indexOf(state);
-    const created = createCellCard({ title: "", source: "" }, idx + 1);
+    const created = createCellCard({ kind: "code", title: "", source: "" }, idx + 1);
     markDirty();
     created.view.focus();
   });
@@ -1156,30 +1690,64 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     e.stopPropagation();
     const idx = cells.indexOf(state);
     openContextMenu(e.clientX, e.clientY, [
-      { label: "▶ Run Cell", shortcut: "⌘↵", run: () => void runSingleCell(state, false) },
+      {
+        label:
+          state.kind === "markdown"
+            ? state.mdEditing
+              ? "✓ Render Markdown"
+              : "✎ Edit Markdown"
+            : state.kind === "media"
+              ? "📂 Choose PDF / Image…"
+              : "▶ Run Cell",
+        shortcut: state.kind === "media" ? undefined : "⌘↵",
+        run: () => void runSingleCell(state, false),
+      },
       { label: "▶▶ Run All Cells", shortcut: "⇧⌘↵", run: () => void runAllCells() },
       { separator: true },
       {
-        label: "Insert Cell Above",
+        label: "Insert Code Cell Below",
         run: () => {
-          const created = createCellCard({ title: "", source: "" }, idx);
+          const created = createCellCard({ kind: "code", title: "", source: "" }, idx + 1);
           markDirty();
           created.view.focus();
         },
       },
       {
-        label: "Insert Cell Below",
+        label: "Insert Markdown + LaTeX Cell Below",
         run: () => {
-          const created = createCellCard({ title: "", source: "" }, idx + 1);
+          const created = createCellCard(
+            {
+              kind: "markdown",
+              title: "Notes",
+              source: "## Formula\n\n$$E = m c^2$$",
+            },
+            idx + 1,
+          );
+          created.mdEditing = true;
+          applyCellKindUI(created);
           markDirty();
           created.view.focus();
         },
       },
+      {
+        label: "Insert PDF / Image Cell Below",
+        run: () => {
+          const created = createCellCard({ kind: "media", title: "", source: "" }, idx + 1);
+          markDirty();
+          void runSingleCell(created, false);
+        },
+      },
+      { separator: true },
       {
         label: "Duplicate Cell",
         run: () => {
           const created = createCellCard(
-            { title: state.title, source: state.view.state.doc.toString() },
+            {
+              kind: state.kind,
+              title: state.title,
+              source:
+                state.kind === "media" ? state.mediaPath : state.view.state.doc.toString(),
+            },
             idx + 1,
           );
           markDirty();
@@ -1219,8 +1787,21 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     notebookEl.append(card);
     cells.push(state);
   }
-  renumberCells();
+  applyCellKindUI(state);
   return state;
+}
+
+function insertMediaCellWithFile(filePath: string) {
+  const rel = toWorkspaceRelativeIfPossible(filePath);
+  const fileName = filePath.split(/[\\/]/).pop() ?? "Media";
+  const created = createCellCard({
+    kind: "media",
+    title: fileName,
+    source: rel,
+  });
+  markDirty();
+  created.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  setStatus(`Embedded ${fileName} in media cell`);
 }
 
 function moveCell(cell: CellState, delta: -1 | 1) {
@@ -1239,11 +1820,19 @@ function moveCell(cell: CellState, delta: -1 | 1) {
 }
 
 function deleteCell(cell: CellState) {
+  if (cell.mediaBlobUrl) {
+    URL.revokeObjectURL(cell.mediaBlobUrl);
+    cell.mediaBlobUrl = null;
+  }
   if (cells.length <= 1) {
+    cell.kind = "code";
     setDoc(cell.view, "");
     cell.titleInput.value = "";
     cell.title = "";
+    cell.mediaPath = "";
+    cell.mediaInput.value = "";
     cell.outputWrap.hidden = true;
+    applyCellKindUI(cell);
     markDirty();
     return;
   }
@@ -1258,6 +1847,7 @@ function deleteCell(cell: CellState) {
 
 function loadDocumentIntoCells(src: string) {
   for (const c of cells) {
+    if (c.mediaBlobUrl) URL.revokeObjectURL(c.mediaBlobUrl);
     c.view.destroy();
     c.el.remove();
   }
@@ -1271,8 +1861,28 @@ function loadDocumentIntoCells(src: string) {
 // --- Execution -------------------------------------------------------------
 
 async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<boolean> {
-  if (!requireTauri()) return true;
   const idx = cells.indexOf(cell);
+
+  if (cell.kind === "markdown") {
+    const curDoc = cell.view.state.doc.toString();
+    if (looksLikeCommentedMarkdownCell(curDoc)) {
+      setDoc(cell.view, uncommentMarkdownBlock(curDoc));
+    }
+    cell.mdEditing = false;
+    applyCellKindUI(cell);
+    setStatus(`Rendered Markdown cell ${idx + 1}`);
+    if (advanceFocus && idx + 1 < cells.length) {
+      cells[idx + 1].view.focus();
+    }
+    return true;
+  }
+
+  if (cell.kind === "media") {
+    await renderMediaCellViewer(cell);
+    return true;
+  }
+
+  if (!requireTauri()) return true;
   setStatus(`Running cell ${idx + 1}…`);
   cell.el.classList.add("running");
 
@@ -1280,6 +1890,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     const res = await backend.runCell(
       cell.view.state.doc.toString(),
       currentPath,
+      rootDir,
       idx + 1,
       serializeDocument(),
     );
@@ -1306,13 +1917,58 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
 
     cell.plotsWrap.innerHTML = "";
     const plots = res.plots ?? [];
-    for (const b64 of plots) {
+    plots.forEach((b64, plotIdx) => {
       const img = document.createElement("img");
       img.className = "cell-plot";
       img.src = `data:image/png;base64,${b64}`;
       img.alt = "matplotlib plot";
+      img.title = "Right-click to save or copy plot image";
+      img.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const baseDir = currentPath
+          ? currentPath.replace(/[\\/][^\\/]+$/, "")
+          : (rootDir ?? "");
+        const stem = (cell.title || `cell-${idx + 1}`)
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "_")
+          .replace(/^_+|_+$/g, "") || `plot_${idx + 1}`;
+        const fileName = plots.length > 1 ? `${stem}_${plotIdx + 1}.png` : `${stem}.png`;
+        const defaultPath = baseDir ? `${baseDir.replace(/\/+$/, "")}/${fileName}` : fileName;
+
+        openContextMenu(e.clientX, e.clientY, [
+          {
+            label: "💾 Save Plot Image As…",
+            run: async () => {
+              try {
+                const saved = await backend.savePlotPng(b64, defaultPath);
+                if (saved) {
+                  setStatus(`Saved plot to ${saved}`);
+                  await refreshFileTree();
+                }
+              } catch (err) {
+                setStatus(`Failed to save plot: ${String(err)}`);
+              }
+            },
+          },
+          {
+            label: "📋 Copy Image to Clipboard",
+            run: async () => {
+              try {
+                const resp = await fetch(`data:image/png;base64,${b64}`);
+                const blob = await resp.blob();
+                await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+                setStatus("Copied plot image to clipboard");
+              } catch (err) {
+                setStatus(`Could not copy image: ${String(err)}`);
+              }
+            },
+          },
+        ]);
+      });
       cell.plotsWrap.append(img);
-    }
+    });
     cell.plotsWrap.hidden = plots.length === 0;
 
     const hasOut = Boolean(
@@ -1328,7 +1984,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
       if (idx + 1 < cells.length) {
         cells[idx + 1].view.focus();
       } else {
-        const next = createCellCard({ title: "", source: "" });
+        const next = createCellCard({ kind: "code", title: "", source: "" });
         markDirty();
         next.view.focus();
       }
@@ -1363,6 +2019,15 @@ async function runAllCells(): Promise<boolean> {
   if (!requireTauri()) return true;
   await resetSession(true);
   for (const c of cells) {
+    if (c.kind === "markdown") {
+      c.mdEditing = false;
+      applyCellKindUI(c);
+      continue;
+    }
+    if (c.kind === "media") {
+      await renderMediaCellViewer(c);
+      continue;
+    }
     const ok = await runSingleCell(c, false);
     if (!ok) break;
   }
@@ -1436,9 +2101,38 @@ $("btn-save").addEventListener("click", wrap(saveFile));
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
 $("btn-add-cell").addEventListener("click", () => {
-  const c = createCellCard({ title: "", source: "" });
+  const c = createCellCard({ kind: "code", title: "", source: "" });
   markDirty();
   c.view.focus();
+});
+$("btn-add-md-cell").addEventListener("click", () => {
+  const c = createCellCard({
+    kind: "markdown",
+    title: "Notes",
+    source: "## Theoretical Background\n\nEnter Markdown and LaTeX formulas, e.g. $\\eta = \\frac{\\pi R^4 \\Delta p}{8 L Q}$ or:\n\n$$E = m c^2$$",
+  });
+  c.mdEditing = true;
+  applyCellKindUI(c);
+  markDirty();
+  c.view.focus();
+});
+$("btn-add-media-cell").addEventListener("click", async () => {
+  let pickedPath = "";
+  let title = "Attachment";
+  if (backend.inTauri) {
+    const picked = await backend.pickMediaFile();
+    if (picked) {
+      pickedPath = toWorkspaceRelativeIfPossible(picked);
+      title = picked.split(/[\\/]/).pop() ?? "Attachment";
+    }
+  }
+  const c = createCellCard({
+    kind: "media",
+    title,
+    source: pickedPath,
+  });
+  markDirty();
+  c.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 });
 $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-close-variables").addEventListener("click", wrap(toggleVariablesDrawer));
