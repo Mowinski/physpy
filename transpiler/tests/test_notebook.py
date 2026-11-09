@@ -85,3 +85,19 @@ def test_split_cells():
     assert cells[0].title == "Constants"
     assert "export \\rho_0" in cells[0].source
     assert cells[1].title == "Pressure"
+
+
+def test_warnings_captured_in_stderr():
+    session = NotebookSession()
+    res = session.run_cell("import warnings\nwarnings.warn('test warning')\n")
+    assert res.code == 0
+    assert "UserWarning: test warning" in res.stderr
+
+
+def test_matplotlib_figures_closed_between_cells():
+    session = NotebookSession()
+    session.run_cell("import matplotlib.pyplot as plt\nfig = plt.figure()\n")
+    import matplotlib.pyplot as plt
+
+    # The figure should have been closed automatically
+    assert len(plt.get_fignums()) == 0

@@ -1,5 +1,6 @@
 /** Thin wrapper around Tauri commands (see src-tauri/src/lib.rs). */
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 export interface RunOutput {
@@ -34,10 +35,64 @@ export interface PythonListResponse {
   interpreters: PythonInterpreterInfo[];
 }
 
+export interface InstallResult {
+  success: boolean;
+  log: string;
+  requirements_file_written: boolean;
+}
+
+export interface AppConfig {
+  font_family: string;
+  font_size: number;
+  line_numbers: boolean;
+  python_path: string;
+  startup_dir: string;
+  startup_mode: "restore" | "empty" | "demo" | "file";
+  startup_file: string;
+  resolved_startup_dir: string;
+  global_config_path: string;
+  workspace_config_path: string | null;
+}
+
+export interface ConfigScopeData {
+  scope: "global" | "workspace";
+  file_path: string;
+  exists: boolean;
+  raw_yaml: string;
+  parsed: AppConfig;
+  effective: AppConfig;
+}
+
 /** False when the frontend runs in a plain browser (`npm run dev`). */
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
 const FILTERS = [{ name: "PhysPy", extensions: ["ppy", "py"] }];
+
+export const loadConfig = (workspaceDir: string | null) =>
+  invoke<AppConfig>("load_config", { workspaceDir });
+
+export const readConfigScope = (
+  scope: "global" | "workspace",
+  workspaceDir: string | null,
+) => invoke<ConfigScopeData>("read_config_scope", { scope, workspaceDir });
+
+export const saveConfigScope = (
+  scope: "global" | "workspace",
+  workspaceDir: string | null,
+  rawYaml: string,
+) => invoke<ConfigScopeData>("save_config_scope", { scope, workspaceDir, rawYaml });
+
+export function onMenuOpenSettings(handler: () => void): void {
+  if (!inTauri) return;
+  void listen("menu-open-settings", () => handler());
+}
+
+export function onMenuAction(handler: (actionId: string) => void): void {
+  if (!inTauri) return;
+  void listen<string>("menu-action", (event) => {
+    if (event.payload) handler(event.payload);
+  });
+}
 
 export const runCell = (
   source: string,
@@ -92,13 +147,25 @@ export const listPythonInterpreters = (workspaceDir: string | null) =>
 export const setPythonInterpreter = (path: string) =>
   invoke<PythonInterpreterInfo>("set_python_interpreter", { path });
 
-export async function pickPythonBinary(): Promise<string | null> {
-  const file = await open({ multiple: false, directory: false });
+export async function pickPythonBinary(defaultDir: string | null = null): Promise<string | null> {
+  try {
+    const picked = await invoke<string | null>("pick_file_with_hidden", { defaultDir });
+    if (picked !== undefined) return picked;
+  } catch {
+    // fallback below
+  }
+  const file = await open({ multiple: false, directory: false, defaultPath: defaultDir ?? undefined });
   return typeof file === "string" ? file : null;
 }
 
-export async function pickFolder(): Promise<string | null> {
-  const dir = await open({ multiple: false, directory: true });
+export async function pickFolder(defaultDir: string | null = null): Promise<string | null> {
+  try {
+    const picked = await invoke<string | null>("pick_folder_with_hidden", { defaultDir });
+    if (picked !== undefined) return picked;
+  } catch {
+    // fallback below
+  }
+  const dir = await open({ multiple: false, directory: true, defaultPath: defaultDir ?? undefined });
   return typeof dir === "string" ? dir : null;
 }
 
@@ -137,3 +204,25 @@ export async function savePlotPng(base64Png: string, defaultPath: string): Promi
   await invoke("write_binary_file", { path: target, bytes });
   return target;
 }
+
+export const createVenv = (baseDir: string, name?: string) =>
+  invoke<PythonInterpreterInfo>("create_venv", { baseDir, name });
+
+export const installRequirements = (
+  pythonPath: string,
+  requirements: string,
+  baseDir?: string | null,
+  syncFile = true,
+) =>
+  invoke<InstallResult>("install_requirements", {
+    pythonPath,
+    requirements,
+    baseDir: baseDir ?? null,
+    syncFile,
+  });
+
+export const resolveVenv = (baseDir: string, venvRel: string) =>
+  invoke<PythonInterpreterInfo | null>("resolve_venv", { baseDir, venvRel });
+
+export const computeRelativePath = (baseDir: string, targetPath: string) =>
+  invoke<string>("compute_relative_path", { baseDir, targetPath });

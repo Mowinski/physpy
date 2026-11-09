@@ -2,11 +2,18 @@ import type { CompletionContext, CompletionResult } from "@codemirror/autocomple
 import { pythonLanguage } from "@codemirror/lang-python";
 import { SYMBOLS } from "./symbols";
 
-const OPTIONS = Object.entries(SYMBOLS).map(([name, char]) => ({
-  label: `\\${name}`,
-  detail: char,
-  type: "variable",
-}));
+const OPTIONS = [
+  ...Object.entries(SYMBOLS).map(([name, char]) => ({
+    label: `\\${name}`,
+    detail: char,
+    type: "variable",
+  })),
+  {
+    label: "\\i",
+    detail: "i (imaginary unit 1j)",
+    type: "constant",
+  },
+];
 
 /** Typing `\rh` suggests `\rho  ρ`. */
 function symbolCompletion(ctx: CompletionContext): CompletionResult | null {

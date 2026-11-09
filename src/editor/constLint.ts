@@ -14,7 +14,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { SYMBOLS, SYMBOL_RE } from "./symbols";
+import { replaceSymbolsInIdent } from "./symbols";
 
 export interface ConstLocation {
   cellIndex: number;
@@ -37,11 +37,7 @@ export function setNotebookExportedConsts(
 }
 
 function normalizeIdent(raw: string): string {
-  return raw
-    .trim()
-    .replace(SYMBOL_RE, (full, name: string, tail: string) =>
-      name in SYMBOLS ? SYMBOLS[name].normalize("NFKC") + tail : full,
-    );
+  return replaceSymbolsInIdent(raw.trim());
 }
 
 class InlineErrorWidget extends WidgetType {

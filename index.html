@@ -8,18 +8,8 @@
   <body>
     <div id="app">
       <div id="toolbar">
-        <button id="btn-sidebar" type="button" title="Toggle file explorer (Cmd+B)">☰ Files<kbd>⌘B</kbd></button>
-        <div class="toolbar-sep"></div>
-        <button id="btn-open" type="button" title="Open file (Cmd+O)">Open<kbd>⌘O</kbd></button>
-        <button id="btn-open-folder" type="button" title="Open folder in file explorer (Shift+Cmd+O)">Open Folder<kbd>⇧⌘O</kbd></button>
-        <button id="btn-save" type="button" title="Save file (Cmd+S)">Save<kbd>⌘S</kbd></button>
-        <div class="toolbar-sep"></div>
-        <button id="btn-run-all" type="button" class="primary" title="Reset session and run all cells">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
+        <button id="btn-run-all" type="button" class="primary" title="Reset session and run all cells (Shift+Cmd+Enter)">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
         <button id="btn-reset" type="button" title="Clear exported variables">↻ Reset</button>
-        <div class="toolbar-sep"></div>
-        <button id="btn-add-cell" type="button" title="Add new code cell">+ Code</button>
-        <button id="btn-add-md-cell" type="button" title="Add new Markdown + LaTeX cell">+ Markdown</button>
-        <button id="btn-add-media-cell" type="button" title="Add embedded PDF or image cell">+ PDF / Image</button>
         <div class="toolbar-spacer"></div>
         <button id="btn-variables" type="button" title="Toggle exported variables panel (Cmd+J)" aria-expanded="false">
           𝑥 Variables<span id="variables-count" class="var-count-badge" hidden>0</span><kbd>⌘J</kbd>
@@ -27,7 +17,7 @@
         <button id="btn-interpreter" type="button" title="Select Python interpreter for executing cells">
           🐍 <span id="interpreter-label">Python</span>
         </button>
-        <button id="btn-python" type="button" title="Toggle generated Python preview">Code<kbd>⌘P</kbd></button>
+        <button id="btn-python" type="button" title="Toggle generated Python preview (Cmd+P)">Code<kbd>⌘P</kbd></button>
       </div>
       <div id="main">
         <aside id="sidebar">
@@ -43,10 +33,123 @@
         </aside>
         <div id="workspace-center">
           <div id="tabs-bar">
+            <button id="btn-sidebar" type="button" class="tab-sidebar-btn" title="Toggle file explorer (Cmd+B)">☰ Files</button>
             <div id="tabs-list" role="tablist" aria-label="Open files"></div>
             <button id="btn-new-tab" type="button" class="tab-new-btn" title="New untitled tab (Cmd+N)">+</button>
           </div>
           <div id="notebook"></div>
+          <div id="settings-view" hidden>
+            <div class="settings-container">
+              <div class="settings-top-bar">
+                <div class="settings-title-group">
+                  <h2>⚙ PhysPy Configuration</h2>
+                  <p class="settings-subtitle">
+                    Hierarchical YAML configuration: Global (<code>$HOME/.physpy/config.yaml</code>) is loaded first, then overridden by Local Workspace (<code>.physpy-config.yaml</code>).
+                  </p>
+                </div>
+                <div class="settings-actions">
+                  <button id="btn-cfg-reload" type="button">↻ Reload from Disk</button>
+                  <button id="btn-cfg-save" type="button" class="primary">💾 Save &amp; Apply<kbd>⌘S</kbd></button>
+                </div>
+              </div>
+
+              <div class="settings-scope-switcher" role="tablist" aria-label="Configuration file scope">
+                <button id="btn-cfg-scope-global" type="button" class="scope-btn active">
+                  🌐 Global Config (<code>~/.physpy/config.yaml</code>)
+                </button>
+                <button id="btn-cfg-scope-workspace" type="button" class="scope-btn">
+                  📁 Local Workspace Config (<code>.physpy-config.yaml</code>)
+                </button>
+              </div>
+
+              <div class="settings-path-bar">
+                <span class="settings-path-label">Editing file:</span>
+                <code id="cfg-file-path" class="settings-path-code">~/.physpy/config.yaml</code>
+                <span id="cfg-file-badge" class="settings-badge">Active</span>
+              </div>
+
+              <div class="settings-grid">
+                <div class="settings-card">
+                  <h3>1. Editor Font</h3>
+                  <div class="settings-field">
+                    <label for="cfg-font-family">Font Family (<code>font_family</code>)</label>
+                    <input
+                      id="cfg-font-family"
+                      type="text"
+                      placeholder='ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+                    />
+                  </div>
+                  <div class="settings-field">
+                    <label for="cfg-font-size">Font Size in px (<code>font_size</code>)</label>
+                    <input id="cfg-font-size" type="number" min="8" max="48" step="0.5" value="14.5" />
+                  </div>
+                </div>
+
+                <div class="settings-card">
+                  <h3>2. Cell Line Numbers</h3>
+                  <div class="settings-field">
+                    <label class="ipynb-checkbox">
+                      <input id="cfg-line-numbers" type="checkbox" checked />
+                      <span>Display line numbers inside notebook cells (<code>line_numbers</code>)</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="settings-card">
+                  <h3>3. Default Python Interpreter</h3>
+                  <div class="settings-field">
+                    <label for="cfg-python-path">Python Executable Path (<code>python_path</code>)</label>
+                    <div class="dialog-input-group">
+                      <input
+                        id="cfg-python-path"
+                        type="text"
+                        placeholder="Leave empty for auto-detection, or e.g. .venv/bin/python3"
+                      />
+                      <button id="btn-cfg-browse-python" type="button">Browse…</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="settings-card">
+                  <h3>4. Default Startup Directory</h3>
+                  <div class="settings-field">
+                    <label for="cfg-startup-dir">Startup Folder Path (<code>startup_dir</code>)</label>
+                    <div class="dialog-input-group">
+                      <input id="cfg-startup-dir" type="text" placeholder="~" />
+                      <button id="btn-cfg-browse-dir" type="button">Browse Folder…</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="settings-card">
+                  <h3>5. Startup Action &amp; Session Restore</h3>
+                  <div class="settings-field">
+                    <label for="cfg-startup-mode">On Startup (<code>startup_mode</code>)</label>
+                    <select id="cfg-startup-mode" class="settings-select">
+                      <option value="restore">Restore previously opened files and folder</option>
+                      <option value="empty">Start clean (empty notebook, do not restore)</option>
+                      <option value="demo">Open demo.ppy</option>
+                      <option value="file">Open specific file (configured below)</option>
+                    </select>
+                  </div>
+                  <div class="settings-field" id="cfg-startup-file-row">
+                    <label for="cfg-startup-file">Specific File to Open (<code>startup_file</code>)</label>
+                    <div class="dialog-input-group">
+                      <input id="cfg-startup-file" type="text" placeholder="/path/to/notebook.ppy" />
+                      <button id="btn-cfg-browse-startup-file" type="button">Browse…</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-yaml-section">
+                <div class="settings-yaml-header">
+                  <label for="cfg-raw-yaml">Raw YAML Content (synchronized with options above)</label>
+                </div>
+                <textarea id="cfg-raw-yaml" class="settings-yaml-textarea" spellcheck="false"></textarea>
+              </div>
+            </div>
+          </div>
           <section id="variables-drawer" hidden aria-labelledby="variables-drawer-title">
             <div class="drawer-header">
               <span id="variables-drawer-title" class="drawer-title">Exported Variables</span>

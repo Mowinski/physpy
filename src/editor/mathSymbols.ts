@@ -17,7 +17,7 @@ import {
 } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
 import katex from "katex";
-import { SYMBOLS, SYMBOL_RE, toLatex } from "./symbols";
+import { SYMBOL_RE, isValidSymbol, toLatex } from "./symbols";
 
 /**
  * Matches exponentiation after a base character (alphanumeric, `_`, `)`):
@@ -103,7 +103,7 @@ function buildDecorations(view: EditorView): DecorationSet {
       const start = from + m.index!;
       const end = start + m[0].length;
       const [raw, name, tail] = m;
-      if (!(name in SYMBOLS)) continue;
+      if (!isValidSymbol(name, tail)) continue;
       if (inStringOrComment(state, tree, start) || cursorTouches(start, end)) continue;
       items.push({
         from: start,

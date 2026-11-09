@@ -1,0 +1,15 @@
+# PhysPy Workspace Configuration (.physpy-config.yaml)
+# Overrides settings from $HOME/.physpy/config.yaml for this folder.
+
+# 1. Editor font family and size (px)
+font_family: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+font_size: 14.5
+
+# 2. Show line numbers in notebook cells (true / false)
+line_numbers: true
+
+# 3. Default Python interpreter path for this workspace (relative or absolute)
+python_path: "transpiler/.venv/bin/python3"
+
+# 4. Default directory where PhysPy opens on startup (~ expands to $HOME)
+startup_dir: "~"

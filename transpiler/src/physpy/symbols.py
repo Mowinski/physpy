@@ -29,11 +29,32 @@ IDENTIFIERS: dict[str, str] = {
     name: unicodedata.normalize("NFKC", char) for name, char in SYMBOLS.items()
 }
 
-# \name followed by an optional identifier tail, e.g. \rho_0, \omega_max
+# \name followed by an optional identifier tail, e.g. \rho_0, \omega_max, \m_0, \i
 SYMBOL_RE = re.compile(r"\\([A-Za-z]+)(\w*)")
 
 # Optional string prefix + opening quote.
 STRING_START_RE = re.compile(r"(?i)([rbuft]{0,2})('''|\"\"\"|'|\")")
+
+# Check if preceding text ends with a numeric literal (int or float)
+NUMERIC_END_RE = re.compile(r"(?:^|[^\w.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)\s*$")
+
+
+def resolve_symbol(name: str, tail: str, src: str, i: int) -> str:
+    """Resolve \\name tail to its Python equivalent.
+
+    - \\i -> '1j' (or '* 1j' if immediately preceded by a number literal, e.g. 2\\i -> 2* 1j)
+    - \\rho_0 -> 'ρ_0' (known Greek letters and special symbols from symbols.json)
+    - \\m_0, \\m_e, \\v_max -> 'm_0', 'm_e', 'v_max' (Latin variables with subscripts)
+    """
+    if name == "i" and not tail:
+        if NUMERIC_END_RE.search(src[:i]):
+            return "* 1j"
+        return "1j"
+    if name in IDENTIFIERS:
+        return IDENTIFIERS[name] + tail
+    if tail.startswith("_"):
+        return f"{name}{tail}"
+    raise TranspileError(f"unknown symbol \\{name}", *position(src, i))
 
 
 def _scan_string(src: str, i: int, quote: str, is_fstring: bool, out: list[str]) -> int:
@@ -66,9 +87,7 @@ def _scan_string(src: str, i: int, quote: str, is_fstring: bool, out: list[str])
                 m = SYMBOL_RE.match(src, i)
                 if m:
                     name, tail = m.groups()
-                    if name not in IDENTIFIERS:
-                        raise TranspileError(f"unknown symbol \\{name}", *position(src, i))
-                    out.append(IDENTIFIERS[name] + tail)
+                    out.append(resolve_symbol(name, tail, src, i))
                     i = m.end()
                     continue
         if c == "\\":
@@ -107,9 +126,7 @@ def rewrite_symbols(src: str) -> str:
             m = SYMBOL_RE.match(src, i)
             if m:
                 name, tail = m.groups()
-                if name not in IDENTIFIERS:
-                    raise TranspileError(f"unknown symbol \\{name}", *position(src, i))
-                out.append(IDENTIFIERS[name] + tail)
+                out.append(resolve_symbol(name, tail, src, i))
                 i = m.end()
                 continue
 

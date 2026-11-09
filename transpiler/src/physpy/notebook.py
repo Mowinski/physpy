@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import traceback
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -70,14 +71,20 @@ def split_cells(src: str) -> list[Cell]:
     return cells or [Cell(title="", source="", start_line=1)]
 
 
+RPC_PREFIX = "__PHYSPY_RPC_RES__:"
+
+
 def _short_repr(val: Any) -> str:
     try:
         if hasattr(val, "_REGISTRY") and hasattr(val, "magnitude") and hasattr(val, "units"):
             r = f"{val:~P}"
         else:
             r = repr(val)
-    except Exception:
-        r = f"<{type(val).__name__}>"
+    except BaseException:
+        try:
+            r = f"<{type(val).__name__}>"
+        except BaseException:
+            r = "<unknown>"
     return r if len(r) <= 48 else r[:45] + "..."
 
 
@@ -85,13 +92,26 @@ class NotebookSession:
     """Holds only explicitly `export`-ed variables (and exported `const` names) between cell runs."""
 
     def __init__(self) -> None:
-        os.environ.setdefault("MPLBACKEND", "Agg")
+        os.environ["MPLBACKEND"] = "Agg"
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg", force=True)
+        except Exception:
+            pass
         self.exports: dict[str, Any] = {}
         self.consts: set[str] = set()
 
     def reset(self) -> None:
         self.exports.clear()
         self.consts.clear()
+        linecache.clearcache()
+        try:
+            import matplotlib.pyplot as plt
+
+            plt.close("all")
+        except Exception:
+            pass
 
     def run_cell(self, source: str, filename: str = "<cell>") -> CellResult:
         out_buf = io.StringIO()
@@ -145,21 +165,39 @@ class NotebookSession:
             UNIT_FN: make_quantity,
         }
 
+        # Intercept warnings so they land cleanly in cell's stderr instead of polluting stdout
+        def _showwarning(message: Any, category: Any, fpath: str, lno: int, file: Any = None, line: Any = None) -> None:
+            formatted = warnings.formatwarning(message, category, fpath, lno, line)
+            err_buf.write(formatted)
+
+        old_showwarning = warnings.showwarning
+        warnings.showwarning = _showwarning
+
         exit_code = 0
-        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+        try:
+            with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+                try:
+                    exec(code, cell_ns)
+                except SystemExit as exc:
+                    exit_code = exc.code if isinstance(exc.code, int) else 0
+                except BaseException:
+                    tb = traceback.format_exc().splitlines(keepends=True)
+                    user_frames = tb[1:]
+                    for i, line in enumerate(user_frames):
+                        if f'File "{filename}"' in line:
+                            user_frames = user_frames[i:]
+                            break
+                    err_buf.write(tb[0] + "".join(user_frames))
+                    exit_code = 1
+        finally:
+            warnings.showwarning = old_showwarning
+            # Clean up all matplotlib figures to prevent figure leaks and memory accumulation
             try:
-                exec(code, cell_ns)
-            except SystemExit as exc:
-                exit_code = exc.code if isinstance(exc.code, int) else 0
-            except BaseException:
-                tb = traceback.format_exc().splitlines(keepends=True)
-                user_frames = tb[1:]
-                for i, line in enumerate(user_frames):
-                    if f'File "{filename}"' in line:
-                        user_frames = user_frames[i:]
-                        break
-                err_buf.write(tb[0] + "".join(user_frames))
-                exit_code = 1
+                import matplotlib.pyplot as plt
+
+                plt.close("all")
+            except Exception:
+                pass
 
         # Commit exports and consts from this cell into the session
         self.exports.update(cell_exports)
@@ -206,14 +244,15 @@ def run_worker() -> int:
         try:
             req = json.loads(raw_line)
         except Exception as exc:
-            sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
+            sys.stdout.write(f"{RPC_PREFIX}{json.dumps({'ok': False, 'error': str(exc)})}\n")
             sys.stdout.flush()
             continue
 
         cmd = req.get("cmd")
+        resp: dict[str, Any]
         if cmd == "reset":
             session.reset()
-            resp: dict[str, Any] = {"ok": True, "all_exports": {}}
+            resp = {"ok": True, "all_exports": {}}
         elif cmd == "run_cell":
             path = req.get("path")
             cwd = req.get("cwd")
@@ -231,28 +270,41 @@ def run_worker() -> int:
                 if cwd and os.path.isdir(cwd):
                     work_dir = os.path.abspath(cwd)
                 label = f"<cell {cell_index}>"
-            if work_dir:
+
+            orig_dir = os.getcwd()
+            try:
+                if work_dir:
+                    try:
+                        os.chdir(work_dir)
+                    except OSError:
+                        pass
+                    if work_dir not in sys.path:
+                        sys.path.insert(0, work_dir)
+                if doc_source:
+                    session.ensure_global_imports(doc_source)
+                res = session.run_cell(source, label)
+                resp = {
+                    "ok": True,
+                    "stdout": res.stdout,
+                    "stderr": res.stderr,
+                    "code": res.code,
+                    "exported": res.exported,
+                    "all_exports": res.all_exports,
+                    "plots": res.plots,
+                }
+            except Exception as exc:
+                resp = {
+                    "ok": False,
+                    "error": f"Internal execution error: {traceback.format_exc()}",
+                }
+            finally:
                 try:
-                    os.chdir(work_dir)
+                    os.chdir(orig_dir)
                 except OSError:
                     pass
-                if work_dir not in sys.path:
-                    sys.path.insert(0, work_dir)
-            if doc_source:
-                session.ensure_global_imports(doc_source)
-            res = session.run_cell(source, label)
-            resp = {
-                "ok": True,
-                "stdout": res.stdout,
-                "stderr": res.stderr,
-                "code": res.code,
-                "exported": res.exported,
-                "all_exports": res.all_exports,
-                "plots": res.plots,
-            }
         else:
             resp = {"ok": False, "error": f"unknown command: {cmd}"}
 
-        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.write(f"{RPC_PREFIX}{json.dumps(resp)}\n")
         sys.stdout.flush()
     return 0

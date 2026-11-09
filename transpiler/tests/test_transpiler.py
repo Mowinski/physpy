@@ -32,8 +32,25 @@ def test_line_numbers_preserved():
 
 def test_unknown_symbol_reports_position():
     with pytest.raises(TranspileError) as exc:
-        to_source("x = 1\ny = \\foo_1\n")
+        to_source("x = 1\ny = \\foo\n")
     assert (exc.value.line, exc.value.col) == (2, 5)
+
+
+def test_subscript_variables():
+    assert to_source("\\m_0 = 10\n") == "m_0 = 10\n"
+    assert to_source("\\m_e = 1822\n") == "m_e = 1822\n"
+    assert to_source("\\v_max = 300\n") == "v_max = 300\n"
+    assert to_source("\\E_kin = 0.5 * \\m_0 * \\v_max**2\n") == "E_kin = 0.5 * m_0 * v_max**2\n"
+
+
+def test_imaginary_unit():
+    assert to_source("z = \\i\n") == "z = 1j\n"
+    assert to_source("z = 2 * \\i\n") == "z = 2 * 1j\n"
+    assert to_source("z = 2\\i\n") == "z = 2* 1j\n"
+    assert to_source("z = 3.5\\i\n") == "z = 3.5* 1j\n"
+    assert to_source("z = \\i_0\n") == "z = i_0\n"
+    assert to_source("z = (1 + 2\\i)\n") == "z = (1 + 2* 1j)\n"
+    assert to_source("z = -\\i\n") == "z = -1j\n"
 
 
 def test_identifiers_are_valid_and_unique():

@@ -4,14 +4,14 @@ import type { EditorView } from "@codemirror/view";
 import demo from "../examples/demo.ppy?raw";
 import * as backend from "./backend";
 import { createEditor, createViewer, setDoc } from "./editor/setup";
-import { SYMBOLS, SYMBOL_RE } from "./editor/symbols";
+import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex } from "./markdownLatex";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-type CellKind = "code" | "markdown" | "media";
+type CellKind = "code" | "markdown" | "media" | "deps";
 
 interface CellState {
   id: number;
@@ -31,6 +31,11 @@ interface CellState {
   mediaPath: string;
   mediaBlobUrl: string | null;
   pdfTall: boolean;
+  depsWrap: HTMLDivElement;
+  depsVenvBadge: HTMLSpanElement;
+  depsLogPre: HTMLPreElement;
+  venvPath: string;
+  depsInstalling: boolean;
   btnRun: HTMLButtonElement;
   outputWrap: HTMLDivElement;
   outputPre: HTMLPreElement;
@@ -41,6 +46,7 @@ interface CellState {
 
 interface TabDoc {
   id: number;
+  kind?: "notebook" | "settings";
   path: string | null;
   untitledName: string;
   content: string;
@@ -59,8 +65,23 @@ const cells: CellState[] = [];
 const tabs: TabDoc[] = [];
 let activeTabId = 0;
 const expandedDirs = new Set<string>();
+let activeSettingsScope: "global" | "workspace" = "global";
 
 const notebookEl = $<HTMLDivElement>("notebook");
+const settingsViewEl = $<HTMLDivElement>("settings-view");
+const btnCfgScopeGlobal = $<HTMLButtonElement>("btn-cfg-scope-global");
+const btnCfgScopeWorkspace = $<HTMLButtonElement>("btn-cfg-scope-workspace");
+const cfgFilePathEl = $<HTMLElement>("cfg-file-path");
+const cfgFileBadgeEl = $<HTMLSpanElement>("cfg-file-badge");
+const cfgFontFamilyInput = $<HTMLInputElement>("cfg-font-family");
+const cfgFontSizeInput = $<HTMLInputElement>("cfg-font-size");
+const cfgLineNumbersInput = $<HTMLInputElement>("cfg-line-numbers");
+const cfgPythonPathInput = $<HTMLInputElement>("cfg-python-path");
+const cfgStartupDirInput = $<HTMLInputElement>("cfg-startup-dir");
+const cfgStartupModeSelect = $<HTMLSelectElement>("cfg-startup-mode");
+const cfgStartupFileInput = $<HTMLInputElement>("cfg-startup-file");
+const cfgStartupFileRow = $<HTMLDivElement>("cfg-startup-file-row");
+const cfgRawYamlInput = $<HTMLTextAreaElement>("cfg-raw-yaml");
 const tabsListEl = $<HTMLDivElement>("tabs-list");
 const sidebarEl = $<HTMLElement>("sidebar");
 const fileTreeEl = $<HTMLDivElement>("file-tree");
@@ -88,6 +109,15 @@ const contextMenuEl = $<HTMLDivElement>("context-menu");
 const contextMenuGroupEl = $<HTMLDivElement>("context-menu-group");
 const viewer = createViewer($("python"));
 
+let activeInterpreterPath: string | null = null;
+
+function updateActiveInterpreterUI(info: backend.PythonInterpreterInfo) {
+  activeInterpreterPath = info.path;
+  interpreterLabelEl.textContent = info.label;
+  const btn = $("btn-interpreter");
+  if (btn) btn.title = `Active Python: ${info.path}`;
+}
+
 function setStatus(text: string) {
   status.textContent = text;
 }
@@ -97,17 +127,18 @@ function activeTab(): TabDoc | undefined {
 }
 
 function tabDisplayName(t: TabDoc): string {
+  if (t.kind === "settings") return "Settings";
   return t.path?.split(/[\\/]/).pop() ?? t.untitledName;
 }
 
 function updateTitle() {
   const tab = activeTab();
-  if (tab) {
+  if (tab && tab.kind !== "settings") {
     tab.path = currentPath;
     tab.dirty = dirty;
   }
   const name = tab ? tabDisplayName(tab) : (currentPath?.split(/[\\/]/).pop() ?? "untitled.ppy");
-  document.title = `${dirty ? "● " : ""}${name} — PhysPy`;
+  document.title = `${tab?.dirty ? "● " : ""}${name} — PhysPy`;
   renderTabsBar();
   highlightActiveFileInTree();
 }
@@ -255,10 +286,29 @@ function openContextMenu(x: number, y: number, items: MenuAction[]) {
 
 function saveActiveTabSnapshot() {
   const cur = activeTab();
-  if (cur) {
+  if (cur && cur.kind !== "settings") {
     cur.content = serializeDocument();
     cur.path = currentPath;
     cur.dirty = dirty;
+  }
+  saveSessionState();
+}
+
+function saveSessionState() {
+  try {
+    const fileTabs = tabs
+      .filter((t) => t.kind !== "settings" && t.path)
+      .map((t) => t.path!);
+    const activeTabObj = activeTab();
+    const activePath = activeTabObj && activeTabObj.kind !== "settings" ? activeTabObj.path : null;
+    const session = {
+      rootDir,
+      fileTabs,
+      activePath,
+    };
+    localStorage.setItem("physpy_session", JSON.stringify(session));
+  } catch {
+    // Ignore localStorage errors
   }
 }
 
@@ -270,12 +320,12 @@ function renderTabsBar() {
     item.className = "tab-item" + (isSelected ? " active" : "");
     item.setAttribute("role", "tab");
     item.setAttribute("aria-selected", String(isSelected));
-    item.title = tab.path ?? tab.untitledName;
+    item.title = tab.kind === "settings" ? "PhysPy Configuration (Global & Local)" : (tab.path ?? tab.untitledName);
 
     const icon = document.createElement("span");
     icon.className = "tab-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = fileIcon(tabDisplayName(tab));
+    icon.textContent = tab.kind === "settings" ? "⚙" : fileIcon(tabDisplayName(tab));
 
     const label = document.createElement("span");
     label.className = "tab-label";
@@ -350,6 +400,7 @@ function createNewTab(opts?: { path?: string | null; content?: string; dirty?: b
   saveActiveTabSnapshot();
   const tab: TabDoc = {
     id: nextTabId++,
+    kind: "notebook",
     path: opts?.path ?? null,
     untitledName: `untitled-${untitledCounter++}.ppy`,
     content: opts?.content ?? "# %% Cell 1\n",
@@ -360,6 +411,30 @@ function createNewTab(opts?: { path?: string | null; content?: string; dirty?: b
   return tab;
 }
 
+function openSettingsTab(initialScope?: "global" | "workspace"): boolean {
+  if (initialScope) {
+    activeSettingsScope = initialScope;
+  }
+  const existing = tabs.find((t) => t.kind === "settings");
+  if (existing) {
+    switchToTab(existing.id);
+    void loadSettingsScope(activeSettingsScope);
+    return true;
+  }
+  saveActiveTabSnapshot();
+  const tab: TabDoc = {
+    id: nextTabId++,
+    kind: "settings",
+    path: null,
+    untitledName: "Settings",
+    content: "",
+    dirty: false,
+  };
+  tabs.push(tab);
+  switchToTab(tab.id);
+  return true;
+}
+
 function switchToTab(tabId: number) {
   const target = tabs.find((t) => t.id === tabId);
   if (!target) return;
@@ -367,12 +442,22 @@ function switchToTab(tabId: number) {
     saveActiveTabSnapshot();
   }
   activeTabId = target.id;
+  if (target.kind === "settings") {
+    notebookEl.hidden = true;
+    settingsViewEl.hidden = false;
+    updateTitle();
+    void loadSettingsScope(activeSettingsScope);
+    return;
+  }
+  settingsViewEl.hidden = true;
+  notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
   loadDocumentIntoCells(target.content);
   updateTitle();
   void refreshPython();
   cells[0]?.view.focus();
+  saveSessionState();
 }
 
 function closeTab(tabId: number) {
@@ -380,12 +465,14 @@ function closeTab(tabId: number) {
   if (idx < 0) return;
   if (tabs.length === 1) {
     // Keep one clean untitled tab open
+    tabs[0].kind = "notebook";
     tabs[0].path = null;
     tabs[0].untitledName = `untitled-${untitledCounter++}.ppy`;
     tabs[0].content = "# %% Cell 1\n";
     tabs[0].dirty = false;
     activeTabId = 0;
     switchToTab(tabs[0].id);
+    saveSessionState();
     return;
   }
   const wasActive = tabId === activeTabId;
@@ -397,6 +484,7 @@ function closeTab(tabId: number) {
   } else {
     renderTabsBar();
   }
+  saveSessionState();
 }
 
 function closeTabsWhere(predicate: (t: TabDoc, idx: number) => boolean) {
@@ -438,14 +526,260 @@ function attachDialogLightDismiss(dialog: HTMLDialogElement) {
 attachDialogLightDismiss(pythonDialog);
 attachDialogLightDismiss(ipynbDialog);
 
+async function applyHierarchicalConfig(
+  workspaceDir: string | null,
+  isInitialBoot = false,
+): Promise<backend.AppConfig | null> {
+  if (!backend.inTauri) return null;
+  try {
+    const cfg = await backend.loadConfig(workspaceDir);
+    if (cfg.font_family) {
+      document.documentElement.style.setProperty("--editor-font-family", cfg.font_family);
+    }
+    if (cfg.font_size && cfg.font_size >= 8 && cfg.font_size <= 48) {
+      document.documentElement.style.setProperty("--editor-font-size", `${cfg.font_size}px`);
+    }
+    notebookEl.classList.toggle("hide-line-numbers", !cfg.line_numbers);
+
+    if (isInitialBoot && !rootDir && cfg.resolved_startup_dir) {
+      rootDir = cfg.resolved_startup_dir;
+    }
+    await refreshInterpreterBadge();
+    return cfg;
+  } catch {
+    return null;
+  }
+}
+
+// --- Settings Tab (Global ~/.physpy/config.yaml & Local .physpy-config.yaml) ---
+
+function markSettingsTabDirty(isDirty: boolean) {
+  const sTab = tabs.find((t) => t.kind === "settings");
+  if (sTab) {
+    sTab.dirty = isDirty;
+    updateTitle();
+  }
+}
+
+function updateStartupFileRowVisibility() {
+  if (cfgStartupFileRow) {
+    cfgStartupFileRow.style.display =
+      cfgStartupModeSelect.value === "file" ? "flex" : "none";
+  }
+}
+
+function buildYamlFromSettingsForm(): string {
+  const scopeTitle =
+    activeSettingsScope === "workspace"
+      ? "PhysPy Workspace Configuration (.physpy-config.yaml)"
+      : "PhysPy Global Configuration (~/.physpy/config.yaml)";
+  const fontFam = cfgFontFamilyInput.value.trim().replace(/'/g, "''");
+  const fontSize = Number(cfgFontSizeInput.value) || 14.5;
+  const lineNums = cfgLineNumbersInput.checked;
+  const pyPath = cfgPythonPathInput.value.trim().replace(/"/g, '\\"');
+  const startDir = (cfgStartupDirInput.value.trim() || "~").replace(/"/g, '\\"');
+  const startMode = cfgStartupModeSelect.value || "restore";
+  const startFile = cfgStartupFileInput.value.trim().replace(/"/g, '\\"');
+
+  return [
+    `# ${scopeTitle}`,
+    "",
+    "# 1. Editor font family and size (px)",
+    `font_family: '${fontFam}'`,
+    `font_size: ${fontSize}`,
+    "",
+    "# 2. Show line numbers in notebook cells (true / false)",
+    `line_numbers: ${lineNums}`,
+    "",
+    "# 3. Default Python interpreter path (leave empty for automatic detection)",
+    `python_path: "${pyPath}"`,
+    "",
+    "# 4. Default directory where PhysPy opens on startup (~ expands to $HOME)",
+    `startup_dir: "${startDir}"`,
+    "",
+    "# 5. What to open on startup: restore (previous session) | empty (nothing) | demo (demo.ppy) | file (startup_file)",
+    `startup_mode: ${startMode}`,
+    `startup_file: "${startFile}"`,
+    "",
+  ].join("\n");
+}
+
+function syncSettingsFormFromYamlText(yamlText: string) {
+  for (const rawLine of yamlText.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const colonIdx = line.indexOf(":");
+    if (colonIdx < 0) continue;
+    const key = line.slice(0, colonIdx).trim();
+    let val = line.slice(colonIdx + 1).trim();
+    // Strip inline comment outside quotes
+    if (!val.startsWith('"') && !val.startsWith("'")) {
+      val = val.replace(/\s+#.*$/, "").trim();
+    }
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1).replace(/\\"/g, '"').replace(/''/g, "'");
+    }
+    if (key === "font_family" || key === "fontFamily") {
+      cfgFontFamilyInput.value = val;
+    } else if (key === "font_size" || key === "fontSize") {
+      const n = parseFloat(val);
+      if (!Number.isNaN(n)) cfgFontSizeInput.value = String(n);
+    } else if (key === "line_numbers" || key === "lineNumbers") {
+      cfgLineNumbersInput.checked = /^(true|yes|on|1)$/i.test(val);
+    } else if (key === "python_path" || key === "pythonPath") {
+      cfgPythonPathInput.value = val;
+    } else if (key === "startup_dir" || key === "startupDir" || key === "default_dir") {
+      cfgStartupDirInput.value = val;
+    } else if (key === "startup_mode" || key === "startupMode") {
+      const m = val.toLowerCase();
+      if (["restore", "empty", "demo", "file"].includes(m)) {
+        cfgStartupModeSelect.value = m;
+      }
+    } else if (key === "startup_file" || key === "startupFile") {
+      cfgStartupFileInput.value = val;
+    }
+  }
+  updateStartupFileRowVisibility();
+}
+
+async function loadSettingsScope(scope: "global" | "workspace") {
+  activeSettingsScope = scope;
+  btnCfgScopeGlobal.classList.toggle("active", scope === "global");
+  btnCfgScopeWorkspace.classList.toggle("active", scope === "workspace");
+
+  if (!backend.inTauri) {
+    cfgFilePathEl.textContent =
+      scope === "global" ? "~/.physpy/config.yaml" : ".physpy-config.yaml";
+    cfgFileBadgeEl.textContent = "Browser mode";
+    return;
+  }
+
+  try {
+    const data = await backend.readConfigScope(scope, rootDir);
+    cfgFilePathEl.textContent = data.file_path;
+    if (data.exists) {
+      cfgFileBadgeEl.className = "settings-badge";
+      cfgFileBadgeEl.textContent = "Active file on disk";
+    } else {
+      cfgFileBadgeEl.className = "settings-badge missing";
+      cfgFileBadgeEl.textContent = "Will be created on Save";
+    }
+
+    cfgFontFamilyInput.value = data.parsed.font_family;
+    cfgFontSizeInput.value = String(data.parsed.font_size);
+    cfgLineNumbersInput.checked = data.parsed.line_numbers;
+    cfgPythonPathInput.value = data.parsed.python_path;
+    cfgStartupDirInput.value = data.parsed.startup_dir;
+    cfgStartupModeSelect.value = data.parsed.startup_mode || "restore";
+    cfgStartupFileInput.value = data.parsed.startup_file || "";
+    cfgRawYamlInput.value = data.raw_yaml;
+    syncSettingsFormFromYamlText(data.raw_yaml);
+    updateStartupFileRowVisibility();
+    markSettingsTabDirty(false);
+  } catch (e) {
+    setStatus(`Failed to read config: ${String(e)}`);
+  }
+}
+
+async function saveSettingsScope() {
+  if (!requireTauri()) return;
+  try {
+    const prevStartup = rootDir;
+    const saved = await backend.saveConfigScope(
+      activeSettingsScope,
+      rootDir,
+      cfgRawYamlInput.value,
+    );
+    cfgFilePathEl.textContent = saved.file_path;
+    cfgFileBadgeEl.className = "settings-badge";
+    cfgFileBadgeEl.textContent = "Saved";
+    markSettingsTabDirty(false);
+
+    const eff = await applyHierarchicalConfig(rootDir);
+    if (eff && eff.resolved_startup_dir && eff.resolved_startup_dir !== prevStartup && activeSettingsScope === "global") {
+      rootDir = eff.resolved_startup_dir;
+    }
+    await refreshFileTree();
+    setStatus(`Saved & applied ${saved.file_path}`);
+  } catch (e) {
+    setStatus(`Failed to save config: ${String(e)}`);
+  }
+}
+
+for (const inputEl of [
+  cfgFontFamilyInput,
+  cfgFontSizeInput,
+  cfgLineNumbersInput,
+  cfgPythonPathInput,
+  cfgStartupDirInput,
+  cfgStartupFileInput,
+]) {
+  inputEl.addEventListener("input", () => {
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+  });
+  inputEl.addEventListener("change", () => {
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+  });
+}
+
+cfgStartupModeSelect.addEventListener("change", () => {
+  updateStartupFileRowVisibility();
+  cfgRawYamlInput.value = buildYamlFromSettingsForm();
+  markSettingsTabDirty(true);
+});
+
+cfgRawYamlInput.addEventListener("input", () => {
+  syncSettingsFormFromYamlText(cfgRawYamlInput.value);
+  markSettingsTabDirty(true);
+});
+
+btnCfgScopeGlobal.addEventListener("click", () => void loadSettingsScope("global"));
+btnCfgScopeWorkspace.addEventListener("click", () => void loadSettingsScope("workspace"));
+$("btn-cfg-reload").addEventListener("click", () => void loadSettingsScope(activeSettingsScope));
+$("btn-cfg-save").addEventListener("click", () => void saveSettingsScope());
+
+$("btn-cfg-browse-python").addEventListener("click", async () => {
+  if (!requireTauri()) return;
+  const picked = await backend.pickPythonBinary(rootDir);
+  if (picked) {
+    cfgPythonPathInput.value = picked;
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+  }
+});
+
+$("btn-cfg-browse-dir").addEventListener("click", async () => {
+  if (!requireTauri()) return;
+  const picked = await backend.pickFolder(rootDir);
+  if (picked) {
+    cfgStartupDirInput.value = picked;
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+  }
+});
+
+$("btn-cfg-browse-startup-file")?.addEventListener("click", async () => {
+  if (!requireTauri()) return;
+  const picked = await backend.pickPythonBinary(rootDir);
+  if (picked) {
+    cfgStartupFileInput.value = picked;
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+  }
+});
+
 async function refreshInterpreterBadge() {
   if (!backend.inTauri) return;
   try {
     const res = await backend.listPythonInterpreters(rootDir);
     const active = res.interpreters.find((i) => i.path === res.current) ?? res.interpreters[0];
     if (active) {
-      interpreterLabelEl.textContent = active.label;
-      $("btn-interpreter").title = `Active Python: ${active.path}`;
+      updateActiveInterpreterUI(active);
     }
   } catch {
     // ignore at startup
@@ -459,8 +793,7 @@ async function autoSelectWorkspacePython(folderPath: string) {
     const wsVenv = res.interpreters.find((i) => i.label.includes("(workspace "));
     if (wsVenv && wsVenv.path !== res.current) {
       const info = await backend.setPythonInterpreter(wsVenv.path);
-      interpreterLabelEl.textContent = info.label;
-      $("btn-interpreter").title = `Active Python: ${info.path}`;
+      updateActiveInterpreterUI(info);
       await resetSession(true);
       setStatus(`Opened folder ${folderPath} · Switched Python to ${info.label}`);
     } else {
@@ -512,7 +845,7 @@ async function applyPythonSelection() {
   if (!chosen) return;
   try {
     const info = await backend.setPythonInterpreter(chosen);
-    interpreterLabelEl.textContent = info.label;
+    updateActiveInterpreterUI(info);
     $("btn-interpreter").title = `Active Python: ${info.path}`;
     await resetSession(true);
     setStatus(`Switched Python interpreter to ${info.label} (${info.path})`);
@@ -536,7 +869,7 @@ $<HTMLFormElement>("python-dialog-form").addEventListener("submit", (e) => {
 });
 
 $("btn-browse-python").addEventListener("click", async () => {
-  const picked = await backend.pickPythonBinary();
+  const picked = await backend.pickPythonBinary(rootDir);
   if (picked) {
     pythonCustomInput.value = picked;
   }
@@ -926,13 +1259,24 @@ async function changeRootFolder(): Promise<boolean> {
     sidebarEl.hidden = false;
     await refreshFileTree();
     setStatus(`Opened folder ${picked}`);
-    await autoSelectWorkspacePython(picked);
+    const cfg = await applyHierarchicalConfig(picked);
+    if (!cfg?.python_path) {
+      await autoSelectWorkspacePython(picked);
+    }
   }
   return true;
 }
 
 async function openFileByPath(path: string) {
   if (!requireTauri()) return;
+  if (/\.physpy-config\.ya?ml$/i.test(path)) {
+    openSettingsTab("workspace");
+    return;
+  }
+  if (/\.physpy[\\/]config\.ya?ml$/i.test(path)) {
+    openSettingsTab("global");
+    return;
+  }
   const existing = tabs.find((t) => t.path === path);
   if (existing) {
     switchToTab(existing.id);
@@ -968,6 +1312,7 @@ interface ParsedCell {
   kind: CellKind;
   title: string;
   source: string;
+  venv?: string;
 }
 
 const CELL_HEADER_RE = /^# %%[^\S\n]*(.*)$/gm;
@@ -1000,6 +1345,8 @@ function parseCellHeaderTag(rawTitle: string): { kind: CellKind; title: string }
   if (mdMatch) return { kind: "markdown", title: mdMatch[1].trim() };
   const mediaMatch = rawTitle.match(/^\[(?:media|pdf|image)\]\s*(.*)$/i);
   if (mediaMatch) return { kind: "media", title: mediaMatch[1].trim() };
+  const depsMatch = rawTitle.match(/^\[(?:deps|dependencies|packages|requirements)\]\s*(.*)$/i);
+  if (depsMatch) return { kind: "deps", title: depsMatch[1].trim() };
   return { kind: "code", title: rawTitle.trim() };
 }
 
@@ -1026,12 +1373,24 @@ function parseDocument(src: string): ParsedCell[] {
       kind = "markdown";
     }
     let source = rawBody;
+    let venv = "";
     if (kind === "markdown") {
       source = uncommentMarkdownBlock(rawBody);
     } else if (kind === "media") {
       source = extractMediaPathFromBlock(rawBody);
+    } else if (kind === "deps") {
+      const remaining: string[] = [];
+      for (const line of rawBody.split("\n")) {
+        const vMatch = line.match(/^\s*#\s*@venv:\s*(.+)$/);
+        if (vMatch) {
+          venv = vMatch[1].trim();
+        } else {
+          remaining.push(line.replace(/^\s*#\s?/, ""));
+        }
+      }
+      source = remaining.join("\n").trim();
     }
-    out.push({ kind, title, source });
+    out.push({ kind, title, source, venv });
   }
   return out.length ? out : [{ kind: "code", title: "", source: "" }];
 }
@@ -1057,6 +1416,18 @@ function serializeDocument(): string {
           const p = c.mediaPath.trim();
           return `${header}\n# @media: ${p}\n`;
         }
+        if (c.kind === "deps") {
+          const header = t ? `# %% [deps] ${t}` : "# %% [deps]";
+          const venvLine = c.venvPath ? `# @venv: ${c.venvPath}\n` : "";
+          const rawDeps = c.view.state.doc.toString().replace(/\n+$/, "");
+          const commented = rawDeps
+            ? rawDeps
+                .split("\n")
+                .map((line) => (line.length > 0 ? `# ${line}` : "#"))
+                .join("\n")
+            : "";
+          return `${header}\n${venvLine}${commented}\n`;
+        }
         const header = t ? `# %% ${t}` : "# %%";
         const body = c.view.state.doc.toString().replace(/\n+$/, "");
         return `${header}\n${body}\n`;
@@ -1072,12 +1443,6 @@ interface ScannedExport {
   name: string;
   isConst: boolean;
   occurrences: { cellIndex: number; line: number }[];
-}
-
-function replaceSymbolsInIdent(raw: string): string {
-  return raw.replace(SYMBOL_RE, (full, name: string, tail: string) =>
-    name in SYMBOLS ? SYMBOLS[name].normalize("NFKC") + tail : full,
-  );
 }
 
 function parseImportTargets(clause: string): string[] {
@@ -1390,7 +1755,7 @@ function updateMarkdownPreview(cell: CellState) {
 }
 
 function applyCellKindUI(cell: CellState) {
-  cell.el.classList.remove("kind-code", "kind-markdown", "kind-media");
+  cell.el.classList.remove("kind-code", "kind-markdown", "kind-media", "kind-deps");
   cell.el.classList.add(`kind-${cell.kind}`);
   cell.kindSelect.value = cell.kind;
 
@@ -1398,9 +1763,11 @@ function applyCellKindUI(cell: CellState) {
     cell.editorHost.hidden = false;
     cell.mdPreviewEl.hidden = true;
     cell.mediaWrap.hidden = true;
+    cell.depsWrap.hidden = true;
     cell.btnRun.innerHTML = "▶ Run <kbd>⌘↵</kbd>";
     cell.btnRun.title = "Run this code cell (Cmd+Enter or Shift+Enter)";
   } else if (cell.kind === "markdown") {
+    cell.depsWrap.hidden = true;
     cell.mediaWrap.hidden = true;
     cell.outputWrap.hidden = true;
     updateMarkdownPreview(cell);
@@ -1413,7 +1780,18 @@ function applyCellKindUI(cell: CellState) {
       cell.btnRun.innerHTML = "✎ Edit";
       cell.btnRun.title = "Edit Markdown + LaTeX source (or double-click preview)";
     }
+  } else if (cell.kind === "deps") {
+    cell.editorHost.hidden = false;
+    cell.mdPreviewEl.hidden = true;
+    cell.mediaWrap.hidden = true;
+    cell.outputWrap.hidden = true;
+    cell.depsWrap.hidden = false;
+    cell.depsVenvBadge.textContent = cell.venvPath || ".venv";
+    cell.btnRun.innerHTML = "⚡ Install <kbd>⌘↵</kbd>";
+    cell.btnRun.title = "Install packages into virtual environment (Cmd+Enter)";
+    cell.badgeEl.textContent = "Pkg";
   } else {
+    cell.depsWrap.hidden = true;
     cell.editorHost.hidden = true;
     cell.mdPreviewEl.hidden = true;
     cell.outputWrap.hidden = true;
@@ -1439,11 +1817,12 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
 
   const kindSelect = document.createElement("select");
   kindSelect.className = "cell-kind-select";
-  kindSelect.title = "Cell type (Code, Markdown + LaTeX, or PDF / Image)";
+  kindSelect.title = "Cell type (Code, Markdown + LaTeX, PDF / Image, or Packages)";
   kindSelect.innerHTML = `
     <option value="code">⚛ Code</option>
     <option value="markdown">M↓ Markdown + LaTeX</option>
     <option value="media">📄 PDF / Image</option>
+    <option value="deps">📦 Packages</option>
   `;
   kindSelect.value = initial.kind;
 
@@ -1492,6 +1871,56 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
 
   actions.append(btnRun, btnAdd, btnUp, btnDown, btnDel);
   header.append(badgeEl, kindSelect, titleInput, actions);
+
+  // Packages / Dependencies toolbar & view
+  const depsWrap = document.createElement("div");
+  depsWrap.className = "cell-deps-wrap";
+  depsWrap.hidden = true;
+
+  const depsBar = document.createElement("div");
+  depsBar.className = "cell-deps-bar";
+
+  const venvLabel = document.createElement("span");
+  venvLabel.className = "cell-deps-venv-label";
+  venvLabel.innerHTML = "🐍 Venv:";
+
+  const depsVenvBadge = document.createElement("span");
+  depsVenvBadge.className = "cell-deps-venv-badge";
+  depsVenvBadge.textContent = initial.venv || ".venv";
+
+  const depsActions = document.createElement("div");
+  depsActions.className = "cell-deps-actions";
+
+  const btnSelectVenv = document.createElement("button");
+  btnSelectVenv.type = "button";
+  btnSelectVenv.className = "cell-btn";
+  btnSelectVenv.textContent = "📂 Choose Venv…";
+  btnSelectVenv.title = "Select an existing virtual environment or Python executable";
+
+  const btnCreateVenv = document.createElement("button");
+  btnCreateVenv.type = "button";
+  btnCreateVenv.className = "cell-btn";
+  btnCreateVenv.textContent = "+ Create .venv";
+  btnCreateVenv.title = "Create a fresh .venv in this document folder (via uv / venv)";
+
+  const btnSyncDeps = document.createElement("button");
+  btnSyncDeps.type = "button";
+  btnSyncDeps.className = "cell-btn run";
+  btnSyncDeps.textContent = "⚡ Install / Sync";
+  btnSyncDeps.title = "Install requirements to venv and sync requirements.txt";
+
+  depsActions.append(btnSelectVenv, btnCreateVenv, btnSyncDeps);
+  depsBar.append(venvLabel, depsVenvBadge, depsActions);
+
+  const depsHint = document.createElement("div");
+  depsHint.className = "cell-deps-hint";
+  depsHint.innerHTML = "List dependencies line by line (e.g. <code>numpy</code>, <code>scipy&gt;=1.10</code>). Auto-syncs to <code>requirements.txt</code>.";
+
+  const depsLogPre = document.createElement("pre");
+  depsLogPre.className = "cell-deps-log";
+  depsLogPre.hidden = true;
+
+  depsWrap.append(depsBar, depsHint, depsLogPre);
 
   const editorHost = document.createElement("div");
   editorHost.className = "cell-editor";
@@ -1547,7 +1976,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   plotsWrap.hidden = true;
 
   outputWrap.append(exportedBar, outputPre, plotsWrap);
-  card.append(header, editorHost, mdPreviewEl, mediaWrap, outputWrap);
+  card.append(header, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
     parent: editorHost,
@@ -1586,6 +2015,11 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     mediaPath: initial.kind === "media" ? initial.source.trim() : "",
     mediaBlobUrl: null,
     pdfTall: false,
+    depsWrap,
+    depsVenvBadge,
+    depsLogPre,
+    venvPath: initial.venv || "",
+    depsInstalling: false,
     btnRun,
     outputWrap,
     outputPre,
@@ -1593,6 +2027,59 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     exportedBar,
     runCount: null,
   };
+
+  btnSelectVenv.addEventListener("click", async () => {
+    if (!requireTauri()) return;
+    const baseDir = currentPath
+      ? currentPath.replace(/[\\/][^\\/]+$/, "")
+      : (rootDir ?? "");
+    const picked = await backend.pickFolder(baseDir);
+    if (picked) {
+      const rel = await backend.computeRelativePath(baseDir, picked);
+      state.venvPath = rel;
+      depsVenvBadge.textContent = rel;
+      const info = await backend.resolveVenv(baseDir, rel);
+      if (info) {
+        await backend.setPythonInterpreter(info.path);
+        updateActiveInterpreterUI(info);
+        depsLogPre.textContent = `✓ Active Python switched to: ${info.label}\n(${info.path})`;
+        depsLogPre.className = "cell-deps-log success";
+        depsLogPre.hidden = false;
+      } else {
+        depsLogPre.textContent = `Selected folder: ${rel}\n(Note: No Python executable detected inside yet)`;
+        depsLogPre.className = "cell-deps-log";
+        depsLogPre.hidden = false;
+      }
+      markDirty();
+    }
+  });
+
+  btnCreateVenv.addEventListener("click", async () => {
+    if (!requireTauri()) return;
+    const baseDir = currentPath
+      ? currentPath.replace(/[\\/][^\\/]+$/, "")
+      : (rootDir ?? "");
+    setStatus("Creating virtualenv .venv…");
+    depsLogPre.textContent = "Creating virtual environment .venv…";
+    depsLogPre.className = "cell-deps-log";
+    depsLogPre.hidden = false;
+    try {
+      const info = await backend.createVenv(baseDir, ".venv");
+      state.venvPath = ".venv";
+      depsVenvBadge.textContent = ".venv";
+      updateActiveInterpreterUI(info);
+      depsLogPre.textContent = `✓ Created virtual environment .venv successfully!\nActive Python: ${info.label}`;
+      depsLogPre.className = "cell-deps-log success";
+      setStatus("✓ Created .venv");
+      markDirty();
+    } catch (err) {
+      depsLogPre.textContent = `✕ Failed to create venv: ${String(err)}`;
+      depsLogPre.className = "cell-deps-log error";
+      setStatus("✕ Failed to create venv");
+    }
+  });
+
+  btnSyncDeps.addEventListener("click", () => void runDepsCell(state));
 
   kindSelect.addEventListener("change", () => {
     const newKind = kindSelect.value as CellKind;
@@ -1698,7 +2185,9 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
               : "✎ Edit Markdown"
             : state.kind === "media"
               ? "📂 Choose PDF / Image…"
-              : "▶ Run Cell",
+              : state.kind === "deps"
+                ? "⚡ Install Packages"
+                : "▶ Run Cell",
         shortcut: state.kind === "media" ? undefined : "⌘↵",
         run: () => void runSingleCell(state, false),
       },
@@ -1708,6 +2197,17 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
         label: "Insert Code Cell Below",
         run: () => {
           const created = createCellCard({ kind: "code", title: "", source: "" }, idx + 1);
+          markDirty();
+          created.view.focus();
+        },
+      },
+      {
+        label: "Insert Packages Cell Below",
+        run: () => {
+          const created = createCellCard(
+            { kind: "deps", title: "Dependencies", source: "numpy\nscipy\nmatplotlib" },
+            idx + 1,
+          );
           markDirty();
           created.view.focus();
         },
@@ -1852,16 +2352,89 @@ function loadDocumentIntoCells(src: string) {
     c.el.remove();
   }
   cells.length = 0;
-  for (const parsed of parseDocument(src)) {
+  const parsedCells = parseDocument(src);
+  for (const parsed of parsedCells) {
     createCellCard(parsed);
   }
   renderSessionExports();
+
+  // If document defines dependencies with a venv, auto-resolve & activate that venv
+  const deps = parsedCells.find((c) => c.kind === "deps");
+  if (deps && deps.venv && backend.inTauri) {
+    const baseDir = currentPath
+      ? currentPath.replace(/[\\/][^\\/]+$/, "")
+      : (rootDir ?? "");
+    void backend.resolveVenv(baseDir, deps.venv).then((info) => {
+      if (info && info.path !== activeInterpreterPath) {
+        void backend.setPythonInterpreter(info.path).then(() => {
+          updateActiveInterpreterUI(info);
+        });
+      }
+    });
+  }
 }
 
 // --- Execution -------------------------------------------------------------
 
+async function runDepsCell(cell: CellState): Promise<boolean> {
+  if (!requireTauri()) return true;
+  const reqs = cell.view.state.doc.toString().trim();
+  if (!reqs) {
+    setStatus("No packages specified in dependencies cell");
+    return true;
+  }
+  const baseDir = currentPath
+    ? currentPath.replace(/[\\/][^\\/]+$/, "")
+    : (rootDir ?? "");
+  cell.depsLogPre.hidden = false;
+  cell.depsLogPre.className = "cell-deps-log";
+  cell.depsLogPre.textContent = "Installing dependencies…";
+  setStatus("Installing dependencies into virtual environment…");
+
+  try {
+    if (!cell.venvPath) {
+      cell.venvPath = ".venv";
+      cell.depsVenvBadge.textContent = ".venv";
+    }
+    let info = await backend.resolveVenv(baseDir, cell.venvPath);
+    if (!info) {
+      cell.depsLogPre.textContent = `Virtual environment '${cell.venvPath}' not found. Creating it now…\n`;
+      info = await backend.createVenv(baseDir, cell.venvPath);
+      updateActiveInterpreterUI(info);
+    } else if (info.path !== activeInterpreterPath) {
+      await backend.setPythonInterpreter(info.path);
+      updateActiveInterpreterUI(info);
+    }
+
+    const res = await backend.installRequirements(info.path, reqs, baseDir, true);
+    cell.depsLogPre.textContent = res.log;
+    if (res.success) {
+      cell.depsLogPre.className = "cell-deps-log success";
+      setStatus("✓ Packages installed and synced to requirements.txt");
+      return true;
+    } else {
+      cell.depsLogPre.className = "cell-deps-log error";
+      setStatus("✕ Package installation failed (see log in cell)");
+      return false;
+    }
+  } catch (err) {
+    cell.depsLogPre.textContent = `✕ Error: ${String(err)}`;
+    cell.depsLogPre.className = "cell-deps-log error";
+    setStatus("✕ Error installing dependencies");
+    return false;
+  }
+}
+
 async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<boolean> {
   const idx = cells.indexOf(cell);
+
+  if (cell.kind === "deps") {
+    const ok = await runDepsCell(cell);
+    if (advanceFocus && idx + 1 < cells.length) {
+      cells[idx + 1].view.focus();
+    }
+    return ok;
+  }
 
   if (cell.kind === "markdown") {
     const curDoc = cell.view.state.doc.toString();
@@ -2019,6 +2592,11 @@ async function runAllCells(): Promise<boolean> {
   if (!requireTauri()) return true;
   await resetSession(true);
   for (const c of cells) {
+    if (c.kind === "deps") {
+      const ok = await runDepsCell(c);
+      if (!ok) break;
+      continue;
+    }
     if (c.kind === "markdown") {
       c.mdEditing = false;
       applyCellKindUI(c);
@@ -2068,6 +2646,10 @@ async function openFile(): Promise<boolean> {
 
 async function saveFile(): Promise<boolean> {
   if (!requireTauri()) return true;
+  if (activeTab()?.kind === "settings") {
+    await saveSettingsScope();
+    return true;
+  }
   const serialized = serializeDocument();
   const path = await backend.saveFile(serialized, currentPath);
   if (path) {
@@ -2095,54 +2677,108 @@ $("btn-collapse-sidebar").addEventListener("click", wrap(toggleSidebar));
 $("btn-change-folder").addEventListener("click", () => void changeRootFolder());
 $("btn-refresh-tree").addEventListener("click", () => void refreshFileTree());
 $("btn-new-tab").addEventListener("click", () => createNewTab());
-$("btn-open").addEventListener("click", wrap(openFile));
-$("btn-open-folder").addEventListener("click", wrap(changeRootFolder));
-$("btn-save").addEventListener("click", wrap(saveFile));
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
-$("btn-add-cell").addEventListener("click", () => {
-  const c = createCellCard({ kind: "code", title: "", source: "" });
-  markDirty();
-  c.view.focus();
-});
-$("btn-add-md-cell").addEventListener("click", () => {
-  const c = createCellCard({
-    kind: "markdown",
-    title: "Notes",
-    source: "## Theoretical Background\n\nEnter Markdown and LaTeX formulas, e.g. $\\eta = \\frac{\\pi R^4 \\Delta p}{8 L Q}$ or:\n\n$$E = m c^2$$",
-  });
-  c.mdEditing = true;
-  applyCellKindUI(c);
-  markDirty();
-  c.view.focus();
-});
-$("btn-add-media-cell").addEventListener("click", async () => {
-  let pickedPath = "";
-  let title = "Attachment";
-  if (backend.inTauri) {
-    const picked = await backend.pickMediaFile();
-    if (picked) {
-      pickedPath = toWorkspaceRelativeIfPossible(picked);
-      title = picked.split(/[\\/]/).pop() ?? "Attachment";
-    }
-  }
-  const c = createCellCard({
-    kind: "media",
-    title,
-    source: pickedPath,
-  });
-  markDirty();
-  c.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-});
 $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-close-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-interpreter").addEventListener("click", wrap(openPythonDialog));
 $("btn-python").addEventListener("click", wrap(togglePython));
 
-createNewTab({ path: null, content: demo, dirty: false });
-tabs[0].untitledName = "demo.ppy";
-updateTitle();
-void refreshFileTree();
-void refreshInterpreterBadge();
-setStatus(backend.inTauri ? "Ready — Shift+Enter or Cmd+Enter runs a cell" : "Browser mode: editing only");
-cells[0]?.view.focus();
+backend.onMenuOpenSettings(() => {
+  openSettingsTab();
+});
+
+backend.onMenuAction((actionId) => {
+  if (actionId === "menu_new_tab") {
+    createNewTab();
+  } else if (actionId === "menu_open_file") {
+    void openFile();
+  } else if (actionId === "menu_open_folder") {
+    void changeRootFolder();
+  } else if (actionId === "menu_save") {
+    void saveFile();
+  } else if (actionId === "menu_close_tab") {
+    closeTab(activeTabId);
+  }
+});
+
+window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+    e.preventDefault();
+    openSettingsTab();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "settings") {
+    e.preventDefault();
+    void saveSettingsScope();
+  }
+});
+
+async function initializeAppStartup() {
+  const cfg = await applyHierarchicalConfig(null, true);
+  const startupMode = cfg?.startup_mode || "restore";
+
+  let restoredAny = false;
+
+  if (startupMode === "restore") {
+    try {
+      const raw = localStorage.getItem("physpy_session");
+      if (raw) {
+        const session = JSON.parse(raw);
+        if (session.rootDir && typeof session.rootDir === "string") {
+          rootDir = session.rootDir;
+        }
+        if (Array.isArray(session.fileTabs) && session.fileTabs.length > 0) {
+          for (const filePath of session.fileTabs) {
+            try {
+              const contents = await backend.readFileByPath(filePath);
+              createNewTab({ path: filePath, content: contents, dirty: false });
+              restoredAny = true;
+            } catch {
+              // File might have been moved or deleted
+            }
+          }
+          if (session.activePath && typeof session.activePath === "string") {
+            const found = tabs.find((t) => t.path === session.activePath);
+            if (found) {
+              switchToTab(found.id);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore session restore error
+    }
+  } else if (startupMode === "file" && cfg?.startup_file) {
+    try {
+      const contents = await backend.readFileByPath(cfg.startup_file);
+      createNewTab({ path: cfg.startup_file, content: contents, dirty: false });
+      restoredAny = true;
+    } catch (e) {
+      setStatus(`Could not open startup file ${cfg.startup_file}: ${String(e)}`);
+    }
+  } else if (startupMode === "demo") {
+    createNewTab({ path: null, content: demo, dirty: false });
+    tabs[0].untitledName = "demo.ppy";
+    restoredAny = true;
+  }
+
+  // Fallback: if empty mode, or nothing was restored/found
+  if (!restoredAny) {
+    if (startupMode === "empty") {
+      createNewTab({ path: null, content: "# %% Cell 1\n", dirty: false });
+    } else {
+      createNewTab({ path: null, content: demo, dirty: false });
+      tabs[0].untitledName = "demo.ppy";
+    }
+  }
+
+  updateTitle();
+  await refreshFileTree();
+  setStatus(backend.inTauri ? "Ready — Shift+Enter or Cmd+Enter runs a cell" : "Browser mode: editing only");
+  cells[0]?.view.focus();
+}
+
+void initializeAppStartup();
+
+window.addEventListener("focus", () => {
+  void applyHierarchicalConfig(rootDir);
+});
