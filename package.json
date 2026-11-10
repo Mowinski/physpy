@@ -1,12 +1,14 @@
 {
   "name": "physpy-editor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PhysPy: Python editor with physics notation (Tauri + CodeMirror)",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri-runner.cjs",
+    "build:app": "npm run tauri build",
+    "install:mac": "node scripts/install-mac.cjs",
     "test:py": "cd transpiler && uv run pytest"
   },
   "dependencies": {

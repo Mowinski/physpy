@@ -63,6 +63,9 @@ pub struct AppConfig {
     /// `restore` | `empty` | `demo` | `file`
     pub startup_mode: String,
     pub startup_file: String,
+    /// `off` | `afterDelay` | `onFocusChange` | `onWindowChange`
+    pub auto_save: String,
+    pub auto_save_delay: u64,
     pub resolved_startup_dir: String,
     pub global_config_path: String,
     pub workspace_config_path: Option<String>,
@@ -441,6 +444,10 @@ startup_dir: \"~\"
 # 5. What to open on startup: restore (restore open tabs/folders) | empty (clean untitled notebook) | demo (demo.ppy) | file (specific file path)
 startup_mode: restore
 startup_file: \"\"
+
+# 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange
+auto_save: off
+auto_save_delay: 1000
 ";
 
 fn home_dir_path() -> Option<PathBuf> {
@@ -603,6 +610,22 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
             "startup_file" | "startupFile" | "startup.file" => {
                 cfg.startup_file = expand_config_path(&scalar, base_dir);
             }
+            "auto_save" | "autoSave" | "autosave" | "files.autoSave" => {
+                let m = scalar.trim().to_ascii_lowercase();
+                let normalized = match m.as_str() {
+                    "off" | "never" | "false" => "off",
+                    "afterdelay" | "after_delay" | "delay" => "afterDelay",
+                    "onfocuschange" | "on_focus_change" | "focus" => "onFocusChange",
+                    "onwindowchange" | "on_window_change" | "window" => "onWindowChange",
+                    _ => "off",
+                };
+                cfg.auto_save = normalized.to_string();
+            }
+            "auto_save_delay" | "autoSaveDelay" | "autosave_delay" | "files.autoSaveDelay" => {
+                if let Ok(ms) = scalar.trim().parse::<u64>() {
+                    cfg.auto_save_delay = ms.max(100);
+                }
+            }
             _ => {}
         }
     }
@@ -636,6 +659,8 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         startup_dir: "~".to_string(),
         startup_mode: "restore".to_string(),
         startup_file: String::new(),
+        auto_save: "off".to_string(),
+        auto_save_delay: 1000,
         resolved_startup_dir: default_startup,
         global_config_path: global_config_file.to_string_lossy().into_owned(),
         workspace_config_path: None,
@@ -708,8 +733,11 @@ python_path: \"{escaped_py}\"\n\n\
 startup_dir: \"{escaped_dir}\"\n\n\
 # 5. What to open on startup: restore (previous session) | empty (nothing) | demo (demo.ppy) | file (startup_file)\n\
 startup_mode: {}\n\
-startup_file: \"{escaped_file}\"\n",
-        cfg.font_size, cfg.line_numbers, cfg.startup_mode
+startup_file: \"{escaped_file}\"\n\n\
+# 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange\n\
+auto_save: {}\n\
+auto_save_delay: {}\n",
+        cfg.font_size, cfg.line_numbers, cfg.startup_mode, cfg.auto_save, cfg.auto_save_delay
     )
 }
 
@@ -769,6 +797,8 @@ fn read_config_scope(
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),
             startup_file: String::new(),
+            auto_save: "off".to_string(),
+            auto_save_delay: 1000,
             resolved_startup_dir: effective.resolved_startup_dir.clone(),
             global_config_path: effective.global_config_path.clone(),
             workspace_config_path: effective.workspace_config_path.clone(),
@@ -1430,6 +1460,8 @@ mod tests {
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),
             startup_file: String::new(),
+            auto_save: "off".to_string(),
+            auto_save_delay: 1000,
             resolved_startup_dir: "/tmp".to_string(),
             global_config_path: "/tmp/config.yaml".to_string(),
             workspace_config_path: None,

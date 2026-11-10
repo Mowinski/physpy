@@ -14,6 +14,9 @@
         <button id="btn-variables" type="button" title="Toggle exported variables panel (Cmd+J)" aria-expanded="false">
           𝑥 Variables<span id="variables-count" class="var-count-badge" hidden>0</span><kbd>⌘J</kbd>
         </button>
+        <button id="btn-warnings" type="button" title="Toggle warnings panel (Shift+Cmd+J)" aria-expanded="false">
+          ⚠ Warnings<span id="warnings-count" class="var-count-badge var-count-warning" hidden>0</span><kbd>⇧⌘J</kbd>
+        </button>
         <button id="btn-interpreter" type="button" title="Select Python interpreter for executing cells">
           🐍 <span id="interpreter-label">Python</span>
         </button>
@@ -140,6 +143,23 @@
                     </div>
                   </div>
                 </div>
+
+                <div class="settings-card">
+                  <h3>6. Auto Save</h3>
+                  <div class="settings-field">
+                    <label for="cfg-auto-save">Auto Save (<code>auto_save</code>)</label>
+                    <select id="cfg-auto-save" class="settings-select">
+                      <option value="off">off (Never auto-save)</option>
+                      <option value="afterDelay">afterDelay (Save automatically after delay)</option>
+                      <option value="onFocusChange">onFocusChange (Save when editor loses focus)</option>
+                      <option value="onWindowChange">onWindowChange (Save when window loses focus)</option>
+                    </select>
+                  </div>
+                  <div class="settings-field" id="cfg-auto-save-delay-row">
+                    <label for="cfg-auto-save-delay">Auto Save Delay in ms (<code>auto_save_delay</code>)</label>
+                    <input id="cfg-auto-save-delay" type="number" min="100" max="60000" step="100" value="1000" />
+                  </div>
+                </div>
               </div>
 
               <div class="settings-yaml-section">
@@ -150,28 +170,56 @@
               </div>
             </div>
           </div>
-          <section id="variables-drawer" hidden aria-labelledby="variables-drawer-title">
+          <section id="variables-drawer" hidden aria-label="Bottom panel">
             <div class="drawer-header">
-              <span id="variables-drawer-title" class="drawer-title">Exported Variables</span>
+              <div class="drawer-tabs" role="tablist">
+                <button id="tab-drawer-variables" type="button" class="drawer-tab active" aria-selected="true" role="tab">
+                  𝑥 Variables <span id="drawer-vars-count" class="drawer-tab-badge">0</span>
+                </button>
+                <button id="tab-drawer-warnings" type="button" class="drawer-tab" aria-selected="false" role="tab">
+                  ⚠ Warnings <span id="drawer-warn-count" class="drawer-tab-badge var-count-warning" hidden>0</span>
+                </button>
+              </div>
               <div class="drawer-actions">
-                <button id="btn-close-variables" type="button" class="sidebar-icon-btn" aria-label="Close variables panel" title="Close panel (Cmd+J)">✕</button>
+                <button id="btn-close-variables" type="button" class="sidebar-icon-btn" aria-label="Close panel" title="Close panel (Cmd+J)">✕</button>
               </div>
             </div>
-            <div tabindex="0" role="region" aria-labelledby="variables-drawer-title" class="table-wrapper">
-              <table id="variables-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Variable</th>
-                    <th scope="col">Defined in</th>
-                    <th scope="col">Value</th>
-                  </tr>
-                </thead>
-                <tbody id="variables-tbody">
-                  <tr>
-                    <td colspan="3" class="exports-empty">No exported variables in this file (use <code>export x = …</code> in a cell)</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div id="drawer-pane-variables" class="drawer-pane active" tabindex="0" role="tabpanel">
+              <div class="table-wrapper">
+                <table id="variables-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Variable</th>
+                      <th scope="col">Defined in</th>
+                      <th scope="col">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="variables-tbody">
+                    <tr>
+                      <td colspan="3" class="exports-empty">No exported variables in this file (use <code>export x = …</code> in a cell)</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div id="drawer-pane-warnings" class="drawer-pane" hidden tabindex="0" role="tabpanel">
+              <div class="table-wrapper">
+                <table id="warnings-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" style="width: 150px;">Type</th>
+                      <th scope="col" style="width: 180px;">Symbol</th>
+                      <th scope="col">Message</th>
+                      <th scope="col" style="width: 220px;">Locations</th>
+                    </tr>
+                  </thead>
+                  <tbody id="warnings-tbody">
+                    <tr>
+                      <td colspan="4" class="warnings-empty">✓ No warnings detected in this notebook</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </section>
         </div>

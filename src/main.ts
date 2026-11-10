@@ -81,6 +81,9 @@ const cfgStartupDirInput = $<HTMLInputElement>("cfg-startup-dir");
 const cfgStartupModeSelect = $<HTMLSelectElement>("cfg-startup-mode");
 const cfgStartupFileInput = $<HTMLInputElement>("cfg-startup-file");
 const cfgStartupFileRow = $<HTMLDivElement>("cfg-startup-file-row");
+const cfgAutoSaveSelect = $<HTMLSelectElement>("cfg-auto-save");
+const cfgAutoSaveDelayInput = $<HTMLInputElement>("cfg-auto-save-delay");
+const cfgAutoSaveDelayRow = $<HTMLDivElement>("cfg-auto-save-delay-row");
 const cfgRawYamlInput = $<HTMLTextAreaElement>("cfg-raw-yaml");
 const tabsListEl = $<HTMLDivElement>("tabs-list");
 const sidebarEl = $<HTMLElement>("sidebar");
@@ -92,6 +95,15 @@ const variablesDrawerEl = $<HTMLElement>("variables-drawer");
 const variablesTbodyEl = $<HTMLTableSectionElement>("variables-tbody");
 const variablesCountEl = $<HTMLSpanElement>("variables-count");
 const btnVariablesEl = $<HTMLButtonElement>("btn-variables");
+const btnWarningsEl = $<HTMLButtonElement>("btn-warnings");
+const warningsCountEl = $<HTMLSpanElement>("warnings-count");
+const tabDrawerVariablesEl = $<HTMLButtonElement>("tab-drawer-variables");
+const tabDrawerWarningsEl = $<HTMLButtonElement>("tab-drawer-warnings");
+const drawerVarsCountEl = $<HTMLSpanElement>("drawer-vars-count");
+const drawerWarnCountEl = $<HTMLSpanElement>("drawer-warn-count");
+const drawerPaneVariablesEl = $<HTMLDivElement>("drawer-pane-variables");
+const drawerPaneWarningsEl = $<HTMLDivElement>("drawer-pane-warnings");
+const warningsTbodyEl = $<HTMLTableSectionElement>("warnings-tbody");
 const interpreterLabelEl = $<HTMLSpanElement>("interpreter-label");
 const pythonDialog = $<HTMLDialogElement>("python-dialog");
 const pythonListEl = $<HTMLDivElement>("python-list");
@@ -290,6 +302,9 @@ function saveActiveTabSnapshot() {
     cur.content = serializeDocument();
     cur.path = currentPath;
     cur.dirty = dirty;
+    if (currentConfig?.auto_save === "onFocusChange" || currentConfig?.auto_save === "onWindowChange") {
+      void triggerAutoSave("onFocusChange");
+    }
   }
   saveSessionState();
 }
@@ -526,6 +541,46 @@ function attachDialogLightDismiss(dialog: HTMLDialogElement) {
 attachDialogLightDismiss(pythonDialog);
 attachDialogLightDismiss(ipynbDialog);
 
+let currentConfig: backend.AppConfig | null = null;
+let autoSaveTimer: number | undefined;
+
+async function triggerAutoSave(reason: string) {
+  if (!dirty || !currentPath || !backend.inTauri) return;
+  const cur = activeTab();
+  if (!cur || cur.kind === "settings") return;
+
+  const serialized = serializeDocument();
+  try {
+    await backend.writeFileByPath(currentPath, serialized);
+    dirty = false;
+    cur.content = serialized;
+    cur.dirty = false;
+    updateTitle();
+    setStatus(`Auto-saved (${reason}) ${currentPath.split(/[\\/]/).pop()}`);
+    void refreshFileTree();
+  } catch (err) {
+    console.error(`Auto-save failed (${reason}):`, err);
+  }
+}
+
+function handleEditorBlur() {
+  if (currentConfig?.auto_save === "onFocusChange" || currentConfig?.auto_save === "onWindowChange") {
+    setTimeout(() => {
+      const active = document.activeElement;
+      const insideEditor = active && (active.closest(".cm-editor") || active.closest(".cell-card"));
+      if (!insideEditor) {
+        void triggerAutoSave("onFocusChange");
+      }
+    }, 60);
+  }
+}
+
+window.addEventListener("blur", () => {
+  if (currentConfig?.auto_save === "onWindowChange") {
+    void triggerAutoSave("onWindowChange");
+  }
+});
+
 async function applyHierarchicalConfig(
   workspaceDir: string | null,
   isInitialBoot = false,
@@ -533,6 +588,7 @@ async function applyHierarchicalConfig(
   if (!backend.inTauri) return null;
   try {
     const cfg = await backend.loadConfig(workspaceDir);
+    currentConfig = cfg;
     if (cfg.font_family) {
       document.documentElement.style.setProperty("--editor-font-family", cfg.font_family);
     }
@@ -568,6 +624,13 @@ function updateStartupFileRowVisibility() {
   }
 }
 
+function updateAutoSaveDelayRowVisibility() {
+  if (cfgAutoSaveDelayRow) {
+    cfgAutoSaveDelayRow.style.display =
+      cfgAutoSaveSelect.value === "afterDelay" ? "flex" : "none";
+  }
+}
+
 function buildYamlFromSettingsForm(): string {
   const scopeTitle =
     activeSettingsScope === "workspace"
@@ -580,6 +643,8 @@ function buildYamlFromSettingsForm(): string {
   const startDir = (cfgStartupDirInput.value.trim() || "~").replace(/"/g, '\\"');
   const startMode = cfgStartupModeSelect.value || "restore";
   const startFile = cfgStartupFileInput.value.trim().replace(/"/g, '\\"');
+  const autoSave = cfgAutoSaveSelect.value || "off";
+  const autoSaveDelay = Number(cfgAutoSaveDelayInput.value) || 1000;
 
   return [
     `# ${scopeTitle}`,
@@ -600,6 +665,10 @@ function buildYamlFromSettingsForm(): string {
     "# 5. What to open on startup: restore (previous session) | empty (nothing) | demo (demo.ppy) | file (startup_file)",
     `startup_mode: ${startMode}`,
     `startup_file: "${startFile}"`,
+    "",
+    "# 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange",
+    `auto_save: ${autoSave}`,
+    `auto_save_delay: ${autoSaveDelay}`,
     "",
   ].join("\n");
 }
@@ -640,9 +709,34 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       }
     } else if (key === "startup_file" || key === "startupFile") {
       cfgStartupFileInput.value = val;
+    } else if (
+      key === "auto_save" ||
+      key === "autoSave" ||
+      key === "files.autoSave" ||
+      key === "autosave"
+    ) {
+      const m = val.toLowerCase();
+      if (["off", "afterdelay", "onfocuschange", "onwindowchange"].includes(m)) {
+        cfgAutoSaveSelect.value =
+          m === "afterdelay"
+            ? "afterDelay"
+            : m === "onfocuschange"
+              ? "onFocusChange"
+              : m === "onwindowchange"
+                ? "onWindowChange"
+                : "off";
+      }
+    } else if (
+      key === "auto_save_delay" ||
+      key === "autoSaveDelay" ||
+      key === "autosave_delay"
+    ) {
+      const n = parseInt(val, 10);
+      if (!Number.isNaN(n)) cfgAutoSaveDelayInput.value = String(n);
     }
   }
   updateStartupFileRowVisibility();
+  updateAutoSaveDelayRowVisibility();
 }
 
 async function loadSettingsScope(scope: "global" | "workspace") {
@@ -675,9 +769,12 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgStartupDirInput.value = data.parsed.startup_dir;
     cfgStartupModeSelect.value = data.parsed.startup_mode || "restore";
     cfgStartupFileInput.value = data.parsed.startup_file || "";
+    cfgAutoSaveSelect.value = (data.parsed.auto_save as any) || "off";
+    cfgAutoSaveDelayInput.value = String(data.parsed.auto_save_delay || 1000);
     cfgRawYamlInput.value = data.raw_yaml;
     syncSettingsFormFromYamlText(data.raw_yaml);
     updateStartupFileRowVisibility();
+    updateAutoSaveDelayRowVisibility();
     markSettingsTabDirty(false);
   } catch (e) {
     setStatus(`Failed to read config: ${String(e)}`);
@@ -716,6 +813,7 @@ for (const inputEl of [
   cfgPythonPathInput,
   cfgStartupDirInput,
   cfgStartupFileInput,
+  cfgAutoSaveDelayInput,
 ]) {
   inputEl.addEventListener("input", () => {
     cfgRawYamlInput.value = buildYamlFromSettingsForm();
@@ -729,6 +827,12 @@ for (const inputEl of [
 
 cfgStartupModeSelect.addEventListener("change", () => {
   updateStartupFileRowVisibility();
+  cfgRawYamlInput.value = buildYamlFromSettingsForm();
+  markSettingsTabDirty(true);
+});
+
+cfgAutoSaveSelect.addEventListener("change", () => {
+  updateAutoSaveDelayRowVisibility();
   cfgRawYamlInput.value = buildYamlFromSettingsForm();
   markSettingsTabDirty(true);
 });
@@ -1001,7 +1105,7 @@ function isMediaFilename(name: string): boolean {
 
 function fileIcon(name: string): string {
   const lower = name.toLowerCase();
-  if (lower.endsWith(".ppy")) return "⚛";
+  if (lower.endsWith(".ppy")) return "📘";
   if (lower.endsWith(".ipynb")) return "📓";
   if (lower.endsWith(".py")) return "🐍";
   if (lower.endsWith(".pdf")) return "📕";
@@ -1538,11 +1642,139 @@ function scanExportsInCells(): Map<string, ScannedExport> {
   return map;
 }
 
-function toggleVariablesDrawer(): boolean {
-  variablesDrawerEl.hidden = !variablesDrawerEl.hidden;
-  btnVariablesEl.setAttribute("aria-expanded", String(!variablesDrawerEl.hidden));
-  btnVariablesEl.classList.toggle("active-toggle", !variablesDrawerEl.hidden);
+type DrawerTab = "variables" | "warnings";
+let activeDrawerTab: DrawerTab = "variables";
+
+interface NotebookWarning {
+  id: string;
+  type: string;
+  symbol: string;
+  message: string;
+  locations: Array<{ cellIndex: number; line: number }>;
+}
+
+function setDrawerTab(tab: DrawerTab) {
+  activeDrawerTab = tab;
+  const isVars = tab === "variables";
+
+  tabDrawerVariablesEl.classList.toggle("active", isVars);
+  tabDrawerVariablesEl.setAttribute("aria-selected", String(isVars));
+  drawerPaneVariablesEl.hidden = !isVars;
+
+  tabDrawerWarningsEl.classList.toggle("active", !isVars);
+  tabDrawerWarningsEl.setAttribute("aria-selected", String(!isVars));
+  drawerPaneWarningsEl.hidden = isVars;
+
+  if (!variablesDrawerEl.hidden) {
+    btnVariablesEl.classList.toggle("active-toggle", isVars);
+    btnWarningsEl.classList.toggle("active-toggle", !isVars);
+    btnVariablesEl.setAttribute("aria-expanded", String(isVars));
+    btnWarningsEl.setAttribute("aria-expanded", String(!isVars));
+  }
+}
+
+function openDrawerTab(tab: DrawerTab) {
+  if (variablesDrawerEl.hidden) {
+    variablesDrawerEl.hidden = false;
+    setDrawerTab(tab);
+  } else if (activeDrawerTab === tab) {
+    closeDrawer();
+  } else {
+    setDrawerTab(tab);
+  }
+}
+
+function closeDrawer(): boolean {
+  variablesDrawerEl.hidden = true;
+  btnVariablesEl.classList.remove("active-toggle");
+  btnWarningsEl.classList.remove("active-toggle");
+  btnVariablesEl.setAttribute("aria-expanded", "false");
+  btnWarningsEl.setAttribute("aria-expanded", "false");
   return true;
+}
+
+function toggleVariablesDrawer(): boolean {
+  openDrawerTab("variables");
+  return true;
+}
+
+function toggleWarningsDrawer(): boolean {
+  openDrawerTab("warnings");
+  return true;
+}
+
+function jumpToCellLine(cellIndex: number, line: number) {
+  const cell = cells[cellIndex - 1];
+  if (!cell) return;
+  cell.el.scrollIntoView({ behavior: "smooth", block: "center" });
+  cell.view.focus();
+  if (line > 0 && line <= cell.view.state.doc.lines) {
+    const lineObj = cell.view.state.doc.line(line);
+    cell.view.dispatch({
+      selection: { anchor: lineObj.from },
+      scrollIntoView: true,
+    });
+  }
+}
+
+function renderNotebookWarnings(warnings: NotebookWarning[]) {
+  warningsTbodyEl.innerHTML = "";
+  const count = warnings.length;
+
+  warningsCountEl.textContent = String(count);
+  warningsCountEl.hidden = count === 0;
+
+  drawerWarnCountEl.textContent = String(count);
+  drawerWarnCountEl.hidden = count === 0;
+
+  if (count === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.className = "warnings-empty";
+    td.innerHTML = "✓ No warnings detected in this notebook";
+    tr.append(td);
+    warningsTbodyEl.append(tr);
+    return;
+  }
+
+  for (const warn of warnings) {
+    const tr = document.createElement("tr");
+
+    const tdType = document.createElement("td");
+    const typeBadge = document.createElement("span");
+    typeBadge.className = "warn-badge-tag";
+    typeBadge.textContent = warn.type;
+    tdType.append(typeBadge);
+
+    const tdSymbol = document.createElement("td");
+    tdSymbol.className = "warn-symbol-cell";
+    const code = document.createElement("code");
+    code.textContent = warn.symbol;
+    tdSymbol.append(code);
+
+    const tdMsg = document.createElement("td");
+    tdMsg.className = "warn-msg-cell";
+    tdMsg.textContent = warn.message;
+
+    const tdLoc = document.createElement("td");
+    tdLoc.className = "warn-loc-cell";
+    for (const loc of warn.locations) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "warn-loc-link";
+      btn.textContent = `Cell ${loc.cellIndex}:${loc.line}`;
+      btn.title = `Jump to Cell ${loc.cellIndex}, line ${loc.line}`;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        jumpToCellLine(loc.cellIndex, loc.line);
+      });
+      tdLoc.append(btn);
+    }
+
+    tr.append(tdType, tdSymbol, tdMsg, tdLoc);
+    warningsTbodyEl.append(tr);
+  }
 }
 
 function renderSessionExports(allExports?: Record<string, string>) {
@@ -1559,12 +1791,10 @@ function renderSessionExports(allExports?: Record<string, string>) {
 
   variablesTbodyEl.innerHTML = "";
   const items = [...scanned.values()];
-  const duplicateCount = items.filter((it) => it.occurrences.length > 1).length;
 
-  variablesCountEl.textContent =
-    duplicateCount > 0 ? `${items.length} ⚠` : String(items.length);
-  variablesCountEl.classList.toggle("has-warning", duplicateCount > 0);
+  variablesCountEl.textContent = String(items.length);
   variablesCountEl.hidden = items.length === 0;
+  drawerVarsCountEl.textContent = String(items.length);
 
   if (items.length === 0) {
     const tr = document.createElement("tr");
@@ -1574,60 +1804,66 @@ function renderSessionExports(allExports?: Record<string, string>) {
     td.innerHTML = "No exported variables in this file (use <code>export x = …</code> in a cell)";
     tr.append(td);
     variablesTbodyEl.append(tr);
-    return;
+  } else {
+    for (const item of items) {
+      const hasValue = Object.prototype.hasOwnProperty.call(sessionRuntimeExports, item.name);
+      const val = sessionRuntimeExports[item.name];
+
+      const tr = document.createElement("tr");
+
+      const th = document.createElement("th");
+      th.scope = "row";
+      th.className = "var-name";
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = item.name;
+      th.append(nameSpan);
+      if (item.isConst) {
+        const cBadge = document.createElement("span");
+        cBadge.className = "const-badge";
+        cBadge.textContent = "const";
+        th.append(cBadge);
+      }
+
+      const tdCells = document.createElement("td");
+      tdCells.className = "var-cells";
+      tdCells.textContent =
+        item.occurrences.length > 0
+          ? item.occurrences.map((o) => `Cell ${o.cellIndex}:${o.line}`).join(", ")
+          : "session";
+
+      const tdVal = document.createElement("td");
+      tdVal.className = "var-value";
+      if (hasValue) {
+        tdVal.textContent = val;
+      } else {
+        const pending = document.createElement("span");
+        pending.className = "var-pending";
+        pending.textContent = "no value yet (cell not run)";
+        tdVal.append(pending);
+      }
+
+      tr.append(th, tdCells, tdVal);
+      variablesTbodyEl.append(tr);
+    }
   }
 
+  // Collect warnings for Warnings tab
+  const notebookWarnings: NotebookWarning[] = [];
   for (const item of items) {
-    const isDup = item.occurrences.length > 1;
-    const hasValue = Object.prototype.hasOwnProperty.call(sessionRuntimeExports, item.name);
-    const val = sessionRuntimeExports[item.name];
-
-    const tr = document.createElement("tr");
-    if (isDup) tr.className = "row-duplicate";
-
-    const th = document.createElement("th");
-    th.scope = "row";
-    th.className = "var-name";
-    const nameSpan = document.createElement("span");
-    nameSpan.textContent = item.name;
-    th.append(nameSpan);
-    if (item.isConst) {
-      const cBadge = document.createElement("span");
-      cBadge.className = "const-badge";
-      cBadge.textContent = "const";
-      th.append(cBadge);
+    if (item.occurrences.length > 1) {
+      notebookWarnings.push({
+        id: `dup-${item.name}`,
+        type: item.isConst ? "Const Reassigned" : "Duplicate Export",
+        symbol: item.name,
+        message: item.isConst
+          ? `Constant '${item.name}' is exported ${item.occurrences.length} times across cells. Constants should only be defined once.`
+          : `Variable '${item.name}' is exported ${item.occurrences.length} times. The later export will overwrite earlier values.`,
+        locations: item.occurrences,
+      });
     }
-    if (isDup) {
-      const warn = document.createElement("span");
-      warn.className = "dup-badge";
-      warn.textContent = `⚠ exported ${item.occurrences.length}×`;
-      warn.title =
-        "Exported multiple times: " +
-        item.occurrences.map((o) => `Cell ${o.cellIndex} (line ${o.line})`).join(", ");
-      th.append(warn);
-    }
-
-    const tdCells = document.createElement("td");
-    tdCells.className = "var-cells";
-    tdCells.textContent =
-      item.occurrences.length > 0
-        ? item.occurrences.map((o) => `Cell ${o.cellIndex}:${o.line}`).join(", ")
-        : "session";
-
-    const tdVal = document.createElement("td");
-    tdVal.className = "var-value";
-    if (hasValue) {
-      tdVal.textContent = val;
-    } else {
-      const pending = document.createElement("span");
-      pending.className = "var-pending";
-      pending.textContent = "no value yet (cell not run)";
-      tdVal.append(pending);
-    }
-
-    tr.append(th, tdCells, tdVal);
-    variablesTbodyEl.append(tr);
   }
+
+  renderNotebookWarnings(notebookWarnings);
 }
 
 // --- Cell lifecycle --------------------------------------------------------
@@ -1652,6 +1888,14 @@ function markDirty() {
   renderSessionExports();
   clearTimeout(transpileTimer);
   transpileTimer = window.setTimeout(refreshPython, 400);
+
+  if (currentConfig?.auto_save === "afterDelay") {
+    clearTimeout(autoSaveTimer);
+    const delay = Math.max(100, currentConfig.auto_save_delay || 1000);
+    autoSaveTimer = window.setTimeout(() => {
+      void triggerAutoSave("afterDelay");
+    }, delay);
+  }
 }
 
 function mimeForPath(filePath: string): string {
@@ -1992,9 +2236,11 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
       { key: "Mod-w", run: () => (closeTab(activeTabId), true) },
       { key: "Mod-b", run: () => toggleSidebar() },
       { key: "Mod-j", run: () => toggleVariablesDrawer() },
+      { key: "Mod-Shift-j", run: () => toggleWarningsDrawer() },
       { key: "Mod-p", run: () => togglePython() },
     ],
     onChange: markDirty,
+    onBlur: () => handleEditorBlur(),
   });
 
   const state: CellState = {
@@ -2680,7 +2926,10 @@ $("btn-new-tab").addEventListener("click", () => createNewTab());
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
 $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
-$("btn-close-variables").addEventListener("click", wrap(toggleVariablesDrawer));
+$("btn-warnings").addEventListener("click", wrap(toggleWarningsDrawer));
+$("tab-drawer-variables").addEventListener("click", () => setDrawerTab("variables"));
+$("tab-drawer-warnings").addEventListener("click", () => setDrawerTab("warnings"));
+$("btn-close-variables").addEventListener("click", wrap(closeDrawer));
 $("btn-interpreter").addEventListener("click", wrap(openPythonDialog));
 $("btn-python").addEventListener("click", wrap(togglePython));
 
@@ -2709,6 +2958,16 @@ window.addEventListener("keydown", (e) => {
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "settings") {
     e.preventDefault();
     void saveSettingsScope();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j" && e.shiftKey) {
+    if (!document.activeElement?.closest(".cm-editor")) {
+      e.preventDefault();
+      toggleWarningsDrawer();
+    }
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j" && !e.shiftKey) {
+    if (!document.activeElement?.closest(".cm-editor")) {
+      e.preventDefault();
+      toggleVariablesDrawer();
+    }
   }
 });
 

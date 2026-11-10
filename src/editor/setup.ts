@@ -11,10 +11,11 @@ export interface EditorOptions {
   parent: HTMLElement;
   doc: string;
   onChange?: (doc: string) => void;
+  onBlur?: () => void;
   keys?: { key: string; run: () => boolean }[];
 }
 
-export function createEditor({ parent, doc, onChange, keys = [] }: EditorOptions): EditorView {
+export function createEditor({ parent, doc, onChange, onBlur, keys = [] }: EditorOptions): EditorView {
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
@@ -23,6 +24,12 @@ export function createEditor({ parent, doc, onChange, keys = [] }: EditorOptions
     mathSymbols,
     constLinter,
     oneDark,
+    EditorView.domEventHandlers({
+      blur: () => {
+        onBlur?.();
+        return false;
+      },
+    }),
     EditorView.updateListener.of((u) => {
       if (u.docChanged) onChange?.(u.state.doc.toString());
     }),

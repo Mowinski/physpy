@@ -56,7 +56,7 @@ export function resolveSymbolIdent(name: string, tail: string): string | null {
 }
 
 export function replaceSymbolsInIdent(raw: string): string {
-  return raw.replace(SYMBOL_RE, (full, name: string, tail: string) => {
+  return raw.replace(new RegExp(SYMBOL_RE.source, "g"), (full, name: string, tail: string) => {
     const resolved = resolveSymbolIdent(name, tail);
     return resolved !== null ? resolved : full;
   });

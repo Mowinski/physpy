@@ -49,6 +49,8 @@ export interface AppConfig {
   startup_dir: string;
   startup_mode: "restore" | "empty" | "demo" | "file";
   startup_file: string;
+  auto_save: "off" | "afterDelay" | "onFocusChange" | "onWindowChange" | string;
+  auto_save_delay: number;
   resolved_startup_dir: string;
   global_config_path: string;
   workspace_config_path: string | null;
