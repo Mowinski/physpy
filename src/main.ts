@@ -14,13 +14,17 @@ import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvE
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 type CellKind = "code" | "markdown" | "media" | "deps";
+type CellCollapseMode = "expanded" | "output-only" | "collapsed";
 
 interface CellState {
   id: number;
   kind: CellKind;
   title: string;
+  collapseMode: CellCollapseMode;
   view: EditorView;
   el: HTMLElement;
+  btnCollapse: HTMLButtonElement;
+  collapseSummaryEl: HTMLSpanElement;
   badgeEl: HTMLSpanElement;
   kindSelect: HTMLSelectElement;
   titleInput: HTMLInputElement;
@@ -71,6 +75,7 @@ interface TabDoc {
   content: string;
   dirty: boolean;
   interpreterInfo?: backend.PythonInterpreterInfo | null;
+  collapsedCells?: CellCollapseMode[];
   csvMode?: CsvViewMode;
   csvDelimiter?: CsvDelimiter;
   csvHasHeader?: boolean;
@@ -388,6 +393,9 @@ function saveActiveTabSnapshot() {
   const cur = activeTab();
   if (cur && cur.kind !== "settings") {
     cur.content = getActiveTabSerializedContent();
+    if (cur.kind !== "csv") {
+      cur.collapsedCells = cells.map((c) => c.collapseMode);
+    }
     if (cur.kind === "csv" && csvEditor) {
       const s = csvEditor.getState();
       cur.csvMode = s.mode;
@@ -584,7 +592,7 @@ function switchToTab(tabId: number) {
   notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
-  loadDocumentIntoCells(target.content);
+  loadDocumentIntoCells(target.content, target.collapsedCells);
   updateTitle();
 
   if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
@@ -597,7 +605,9 @@ function switchToTab(tabId: number) {
   }
 
   void refreshPython();
-  cells[0]?.view.focus();
+  if (cells[0] && cells[0].collapseMode === "expanded") {
+    cells[0].view.focus();
+  }
   saveSessionState();
 }
 
@@ -2179,6 +2189,9 @@ function toggleWarningsDrawer(): boolean {
 function jumpToCellLine(cellIndex: number, line: number) {
   const cell = cells[cellIndex - 1];
   if (!cell) return;
+  if (cell.collapseMode !== "expanded") {
+    setCellCollapseMode(cell, "expanded");
+  }
   cell.el.scrollIntoView({ behavior: "smooth", block: "center" });
   cell.view.focus();
   if (line > 0 && line <= cell.view.state.doc.lines) {
@@ -2469,6 +2482,256 @@ async function renderMediaCellViewer(cell: CellState) {
   }
 }
 
+const COLLAPSED_STORAGE_KEY = "physpy_collapsed_cells";
+
+function loadCollapsedModesForPath(filePath: string | null): Map<number, CellCollapseMode> | null {
+  if (!filePath) return null;
+  try {
+    const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, unknown>;
+    const entry = map[filePath];
+    const out = new Map<number, CellCollapseMode>();
+    if (Array.isArray(entry)) {
+      for (const n of entry) {
+        if (typeof n === "number" && Number.isInteger(n) && n >= 0) {
+          out.set(n, "collapsed");
+        }
+      }
+      return out.size > 0 ? out : null;
+    }
+    if (entry && typeof entry === "object") {
+      for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
+        const idx = Number(k);
+        if (
+          Number.isInteger(idx) &&
+          idx >= 0 &&
+          (v === "output-only" || v === "collapsed")
+        ) {
+          out.set(idx, v);
+        }
+      }
+      return out.size > 0 ? out : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCollapsedStateForActiveTab() {
+  const cur = activeTab();
+  if (cur && cur.kind !== "settings" && cur.kind !== "csv") {
+    cur.collapsedCells = cells.map((c) => c.collapseMode);
+  }
+  if (!currentPath) return;
+  try {
+    const raw = localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    const map: Record<string, unknown> = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    const nonExpanded: Record<number, "output-only" | "collapsed"> = {};
+    let hasAny = false;
+    cells.forEach((c, idx) => {
+      if (c.collapseMode === "output-only" || c.collapseMode === "collapsed") {
+        nonExpanded[idx] = c.collapseMode;
+        hasAny = true;
+      }
+    });
+    if (hasAny) {
+      map[currentPath] = nonExpanded;
+    } else {
+      delete map[currentPath];
+    }
+    const keys = Object.keys(map);
+    if (keys.length > 50) {
+      for (const oldKey of keys.slice(0, keys.length - 50)) {
+        delete map[oldKey];
+      }
+    }
+    localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore localStorage quota/parse errors
+  }
+}
+
+function canShowOutputOnly(cell: CellState): boolean {
+  return cell.kind === "code" && !cell.outputWrap.hidden;
+}
+
+function nextCellCollapseMode(cell: CellState, forceHeaderOnly = false): CellCollapseMode {
+  if (forceHeaderOnly) {
+    return cell.collapseMode === "collapsed" ? "expanded" : "collapsed";
+  }
+  if (cell.collapseMode === "expanded") {
+    return canShowOutputOnly(cell) ? "output-only" : "collapsed";
+  }
+  if (cell.collapseMode === "output-only") {
+    return "collapsed";
+  }
+  return "expanded";
+}
+
+function buildCellCollapseSummary(cell: CellState): { text: string; hasError: boolean } {
+  const src = cell.view.state.doc.toString();
+  const lines = src.split("\n");
+  if (cell.collapseMode === "output-only") {
+    const lineLabel = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+    return { text: `⟨⟩ ${lineLabel} hidden`, hasError: false };
+  }
+  if (cell.kind === "media") {
+    const name = cell.mediaPath.split(/[\\/]/).filter(Boolean).pop() || "No file selected";
+    return { text: name, hasError: false };
+  }
+  const firstLine = lines.find((l) => l.trim().length > 0)?.trim() ?? "";
+  const clipped = firstLine.length > 44 ? firstLine.slice(0, 41) + "…" : firstLine;
+
+  if (cell.kind === "deps") {
+    const pkgCount = lines.filter((l) => l.trim() && !l.trim().startsWith("#")).length;
+    const venvTag = cell.venvPath || ".venv";
+    return { text: `${pkgCount} pkg${pkgCount === 1 ? "" : "s"} · ${venvTag}`, hasError: false };
+  }
+
+  const lineLabel = `${lines.length} line${lines.length === 1 ? "" : "s"}`;
+  if (cell.kind === "markdown") {
+    const text = !cell.title.trim() && clipped ? `${clipped} · ${lineLabel}` : lineLabel;
+    return { text, hasError: false };
+  }
+
+  const hasError = Boolean(cell.lastStderr.trim());
+  const hasOut = !cell.outputWrap.hidden;
+  const outTag = hasError ? " · err" : hasOut ? " · out" : "";
+  const base = !cell.title.trim() && clipped ? `${clipped} · ${lineLabel}` : lineLabel;
+  return { text: `${base}${outTag}`, hasError };
+}
+
+function updateCellCollapseUI(cell: CellState) {
+  const mode = cell.collapseMode;
+  cell.el.classList.toggle("collapsed", mode === "collapsed");
+  cell.el.classList.toggle("output-only", mode === "output-only");
+
+  if (mode === "expanded") {
+    cell.btnCollapse.textContent = "▾";
+    cell.btnCollapse.setAttribute("aria-expanded", "true");
+    cell.btnCollapse.title = canShowOutputOnly(cell)
+      ? "Hide code (output only), or Alt+Click to collapse whole cell"
+      : "Collapse cell (Cmd+Opt+[ or double-click header)";
+    cell.collapseSummaryEl.hidden = true;
+    cell.collapseSummaryEl.classList.remove("has-error", "is-output-only");
+    return;
+  }
+
+  if (mode === "output-only") {
+    cell.btnCollapse.textContent = "◫";
+    cell.btnCollapse.setAttribute("aria-expanded", "false");
+    cell.btnCollapse.title = "Output only — click to collapse whole cell (or click chip to show code)";
+    const summary = buildCellCollapseSummary(cell);
+    cell.collapseSummaryEl.textContent = summary.text;
+    cell.collapseSummaryEl.classList.remove("has-error");
+    cell.collapseSummaryEl.classList.add("is-output-only");
+    cell.collapseSummaryEl.title = "Click to show code";
+    cell.collapseSummaryEl.hidden = false;
+    return;
+  }
+
+  cell.btnCollapse.textContent = "▸";
+  cell.btnCollapse.setAttribute("aria-expanded", "false");
+  cell.btnCollapse.title = "Expand cell (Cmd+Opt+] or double-click header)";
+  const summary = buildCellCollapseSummary(cell);
+  cell.collapseSummaryEl.textContent = summary.text;
+  cell.collapseSummaryEl.classList.remove("is-output-only");
+  cell.collapseSummaryEl.classList.toggle("has-error", summary.hasError);
+  cell.collapseSummaryEl.title = "Click to expand cell";
+  cell.collapseSummaryEl.hidden = false;
+}
+
+function isReportViewActive(): boolean {
+  if (cells.length === 0) return false;
+  let hasHideableCode = false;
+  for (const c of cells) {
+    if (c.kind === "code" || c.kind === "deps") {
+      hasHideableCode = true;
+      const expected: CellCollapseMode = canShowOutputOnly(c) ? "output-only" : "collapsed";
+      if (c.collapseMode !== expected) return false;
+    } else if (c.kind === "markdown" && c.mdEditing) {
+      return false;
+    }
+  }
+  return hasHideableCode;
+}
+
+function updateCollapseToolbarButtons() {
+  const btn = document.getElementById("btn-toggle-collapse-all") as HTMLButtonElement | null;
+  if (btn) {
+    const allCollapsed = cells.length > 0 && cells.every((c) => c.collapseMode === "collapsed");
+    btn.textContent = allCollapsed ? "⊞ Expand All" : "⊟ Collapse All";
+    btn.title = allCollapsed ? "Expand all cells" : "Collapse all cells";
+  }
+  const btnReport = document.getElementById("btn-report-view") as HTMLButtonElement | null;
+  if (btnReport) {
+    const active = isReportViewActive();
+    btnReport.classList.toggle("active-toggle", active);
+    btnReport.title = active
+      ? "Exit Report View (expand all cells)"
+      : "Report View: hide code, keep outputs & rendered Markdown";
+  }
+}
+
+function setCellCollapseMode(cell: CellState, mode: CellCollapseMode, persist = true) {
+  const normalized: CellCollapseMode =
+    mode === "output-only" && cell.kind !== "code" ? "collapsed" : mode;
+  if (cell.collapseMode === normalized) {
+    if (normalized !== "expanded") updateCellCollapseUI(cell);
+    return;
+  }
+  cell.collapseMode = normalized;
+  updateCellCollapseUI(cell);
+  updateCollapseToolbarButtons();
+  if (persist) {
+    persistCollapsedStateForActiveTab();
+  }
+}
+
+function setAllCellsCollapseMode(mode: "expanded" | "collapsed") {
+  for (const cell of cells) {
+    cell.collapseMode = mode;
+    updateCellCollapseUI(cell);
+  }
+  updateCollapseToolbarButtons();
+  persistCollapsedStateForActiveTab();
+}
+
+function applyReportView() {
+  for (const cell of cells) {
+    if (cell.kind === "code") {
+      cell.collapseMode = canShowOutputOnly(cell) ? "output-only" : "collapsed";
+    } else if (cell.kind === "deps") {
+      cell.collapseMode = "collapsed";
+    } else if (cell.kind === "markdown") {
+      if (cell.mdEditing) {
+        const curDoc = cell.view.state.doc.toString();
+        if (looksLikeCommentedMarkdownCell(curDoc)) {
+          setDoc(cell.view, uncommentMarkdownBlock(curDoc));
+        }
+        cell.mdEditing = false;
+        applyCellKindUI(cell);
+      }
+      cell.collapseMode = "expanded";
+    } else {
+      cell.collapseMode = "expanded";
+    }
+    updateCellCollapseUI(cell);
+  }
+  updateCollapseToolbarButtons();
+  persistCollapsedStateForActiveTab();
+}
+
+function toggleReportView() {
+  if (isReportViewActive()) {
+    setAllCellsCollapseMode("expanded");
+  } else {
+    applyReportView();
+  }
+}
+
 function updateMarkdownPreview(cell: CellState) {
   cell.mdPreviewEl.innerHTML = renderMarkdownWithLatex(cell.view.state.doc.toString());
 }
@@ -2528,6 +2791,10 @@ function applyCellKindUI(cell: CellState) {
     void renderMediaCellViewer(cell);
   }
   renumberCells();
+  if (cell.kind !== "code" && cell.collapseMode === "output-only") {
+    cell.collapseMode = "expanded";
+  }
+  updateCellCollapseUI(cell);
 }
 
 function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
@@ -2537,6 +2804,13 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
 
   const header = document.createElement("div");
   header.className = "cell-header";
+
+  const btnCollapse = document.createElement("button");
+  btnCollapse.type = "button";
+  btnCollapse.className = "cell-collapse-btn";
+  btnCollapse.textContent = "▾";
+  btnCollapse.setAttribute("aria-expanded", "true");
+  btnCollapse.title = "Collapse cell (Cmd+Opt+[ or double-click header)";
 
   const badgeEl = document.createElement("span");
   badgeEl.className = "cell-badge";
@@ -2560,8 +2834,14 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   titleInput.value = initial.title;
   titleInput.addEventListener("input", () => {
     state.title = titleInput.value;
+    if (state.collapseMode !== "expanded") updateCellCollapseUI(state);
     markDirty();
   });
+
+  const collapseSummaryEl = document.createElement("span");
+  collapseSummaryEl.className = "cell-collapse-summary";
+  collapseSummaryEl.hidden = true;
+  collapseSummaryEl.title = "Click to expand cell";
 
   const actions = document.createElement("div");
   actions.className = "cell-actions";
@@ -2603,7 +2883,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnDel.title = "Delete cell";
 
   actions.append(btnAi, btnRun, btnAdd, btnUp, btnDown, btnDel);
-  header.append(badgeEl, kindSelect, titleInput, actions);
+  header.append(btnCollapse, badgeEl, kindSelect, titleInput, collapseSummaryEl, actions);
 
   // AI Cell Assistant prompt & proposal drawer
   const aiWrap = document.createElement("div");
@@ -2867,17 +3147,34 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       { key: "Mod-Shift-j", run: () => toggleWarningsDrawer() },
       { key: "Mod-Shift-m", run: () => (openMatrixDialog(), true) },
       { key: "Mod-p", run: () => togglePython() },
+      { key: "Mod-Alt-[", run: () => (setCellCollapseMode(state, nextCellCollapseMode(state)), true) },
+      { key: "Mod-Alt-]", run: () => (setCellCollapseMode(state, "expanded"), true) },
     ],
     onChange: markDirty,
     onBlur: () => handleEditorBlur(),
+    pythonAssist: {
+      isEnabled: () => state.kind === "code",
+      getDocSource: () =>
+        cells
+          .filter((c) => c !== state && c.kind === "code")
+          .map((c) => c.view.state.doc.toString())
+          .join("\n\n"),
+      complete: (req) =>
+        backend.inTauri ? backend.completePython(req) : Promise.resolve([]),
+      signature: (req) =>
+        backend.inTauri ? backend.signaturePython(req) : Promise.resolve(null),
+    },
   });
 
   const state: CellState = {
     id,
     kind: initial.kind,
     title: initial.title,
+    collapseMode: "expanded",
     view,
     el: card,
+    btnCollapse,
+    collapseSummaryEl,
     badgeEl,
     kindSelect,
     titleInput,
@@ -2964,6 +3261,9 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   const openAiPanel = (open?: boolean) => {
     if (state.kind !== "code") return;
     state.aiOpen = open !== undefined ? open : !state.aiOpen;
+    if (state.aiOpen && state.collapseMode !== "expanded") {
+      setCellCollapseMode(state, "expanded");
+    }
     state.aiWrap.hidden = !state.aiOpen;
     if (state.aiOpen) {
       state.aiPromptInput.focus();
@@ -3205,6 +3505,9 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
         }
       }
       state.mdEditing = !state.mdEditing;
+      if (state.mdEditing && state.collapseMode !== "expanded") {
+        setCellCollapseMode(state, "expanded");
+      }
       applyCellKindUI(state);
       if (state.mdEditing) state.view.focus();
       return;
@@ -3214,6 +3517,21 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       return;
     }
     void runSingleCell(state, false);
+  });
+
+  btnCollapse.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setCellCollapseMode(state, nextCellCollapseMode(state, e.altKey));
+  });
+  collapseSummaryEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setCellCollapseMode(state, "expanded");
+  });
+  header.addEventListener("dblclick", (e) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest("input, select, button, .cell-actions")) return;
+    setCellCollapseMode(state, nextCellCollapseMode(state, e.altKey));
   });
 
   btnAdd.addEventListener("click", () => {
@@ -3320,10 +3638,47 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       },
       { separator: true },
       {
+        label: "Expand Cell",
+        disabled: state.collapseMode === "expanded",
+        run: () => setCellCollapseMode(state, "expanded"),
+      },
+      {
+        label: "Hide Code (Output Only)",
+        disabled: !canShowOutputOnly(state) || state.collapseMode === "output-only",
+        run: () => setCellCollapseMode(state, "output-only"),
+      },
+      {
+        label: "Collapse Cell",
+        disabled: state.collapseMode === "collapsed",
+        run: () => setCellCollapseMode(state, "collapsed"),
+      },
+      { separator: true },
+      {
+        label: "Report View (Hide Code, Keep Outputs)",
+        run: () => applyReportView(),
+      },
+      {
+        label: "Collapse All Cells",
+        disabled: cells.every((c) => c.collapseMode === "collapsed"),
+        run: () => setAllCellsCollapseMode("collapsed"),
+      },
+      {
+        label: "Expand All Cells",
+        disabled: cells.every((c) => c.collapseMode === "expanded"),
+        run: () => setAllCellsCollapseMode("expanded"),
+      },
+      { separator: true },
+      {
         label: "Clear Output",
         disabled: Boolean(state.outputWrap.hidden),
         run: () => {
           state.outputWrap.hidden = true;
+          state.lastStderr = "";
+          if (state.collapseMode === "output-only") {
+            setCellCollapseMode(state, "collapsed");
+          } else if (state.collapseMode !== "expanded") {
+            updateCellCollapseUI(state);
+          }
         },
       },
       {
@@ -3342,6 +3697,8 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     cells.push(state);
   }
   applyCellKindUI(state);
+  updateCellCollapseUI(state);
+  updateCollapseToolbarButtons();
   return state;
 }
 
@@ -3370,6 +3727,7 @@ function moveCell(cell: CellState, delta: -1 | 1) {
     notebookEl.insertBefore(cell.el, cells[target - 1].el.nextSibling);
   }
   renumberCells();
+  persistCollapsedStateForActiveTab();
   markDirty();
 }
 
@@ -3386,6 +3744,7 @@ function deleteCell(cell: CellState) {
     cell.mediaPath = "";
     cell.mediaInput.value = "";
     cell.outputWrap.hidden = true;
+    setCellCollapseMode(cell, "expanded");
     applyCellKindUI(cell);
     markDirty();
     return;
@@ -3396,10 +3755,12 @@ function deleteCell(cell: CellState) {
   cell.el.remove();
   cells.splice(idx, 1);
   renumberCells();
+  persistCollapsedStateForActiveTab();
+  updateCollapseToolbarButtons();
   markDirty();
 }
 
-function loadDocumentIntoCells(src: string) {
+function loadDocumentIntoCells(src: string, collapsedModes?: CellCollapseMode[]) {
   for (const c of cells) {
     if (c.mediaBlobUrl) URL.revokeObjectURL(c.mediaBlobUrl);
     c.view.destroy();
@@ -3407,13 +3768,19 @@ function loadDocumentIntoCells(src: string) {
   }
   cells.length = 0;
   const parsedCells = parseDocument(src);
-  for (const parsed of parsedCells) {
+  const savedModes = collapsedModes ? null : loadCollapsedModesForPath(currentPath);
+  parsedCells.forEach((parsed, idx) => {
     try {
-      createCellCard(parsed);
+      const card = createCellCard(parsed);
+      const targetMode = collapsedModes ? collapsedModes[idx] : savedModes?.get(idx);
+      if (targetMode && targetMode !== "expanded") {
+        setCellCollapseMode(card, targetMode, false);
+      }
     } catch (err) {
       console.error("Failed to render cell:", parsed.title, err);
     }
-  }
+  });
+  updateCollapseToolbarButtons();
   renderSessionExports();
 
   // If document defines dependencies with a venv, auto-resolve & activate that venv
@@ -3666,6 +4033,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
   if (cell.kind === "deps") {
     const ok = await runDepsCell(cell);
     if (advanceFocus && idx + 1 < cells.length) {
+      if (cells[idx + 1].collapseMode !== "expanded") setCellCollapseMode(cells[idx + 1], "expanded");
       cells[idx + 1].view.focus();
     }
     return ok;
@@ -3680,6 +4048,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     applyCellKindUI(cell);
     setStatus(`Rendered Markdown cell ${idx + 1}`);
     if (advanceFocus && idx + 1 < cells.length) {
+      if (cells[idx + 1].collapseMode !== "expanded") setCellCollapseMode(cells[idx + 1], "expanded");
       cells[idx + 1].view.focus();
     }
     return true;
@@ -3818,9 +4187,17 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
 
     renderSessionExports(res.all_exports);
     setStatus(`Cell ${idx + 1} finished (exit code ${res.code})`);
+    if (res.code !== 0 && cell.collapseMode !== "expanded") {
+      setCellCollapseMode(cell, "expanded");
+    } else if (cell.collapseMode === "output-only" && !hasOut) {
+      setCellCollapseMode(cell, "collapsed");
+    } else {
+      updateCellCollapseUI(cell);
+    }
 
     if (advanceFocus) {
       if (idx + 1 < cells.length) {
+        if (cells[idx + 1].collapseMode !== "expanded") setCellCollapseMode(cells[idx + 1], "expanded");
         cells[idx + 1].view.focus();
       } else {
         const next = createCellCard({ kind: "code", title: "", source: "" });
@@ -3830,6 +4207,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     }
     return res.code === 0;
   } catch (e) {
+    if (cell.collapseMode !== "expanded") setCellCollapseMode(cell, "expanded");
     cell.outputWrap.hidden = false;
     cell.outputPre.hidden = false;
     cell.outputPre.textContent = String(e);
@@ -3860,8 +4238,14 @@ async function resetSession(quiet = false): Promise<boolean> {
     c.latexWrap.hidden = true;
     delete c.latexWrap.dataset.latex;
     c.latexWrap.innerHTML = "";
+    if (!quiet && c.collapseMode === "output-only") {
+      c.collapseMode = "collapsed";
+    }
+    updateCellCollapseUI(c);
   }
   renumberCells();
+  updateCollapseToolbarButtons();
+  if (!quiet) persistCollapsedStateForActiveTab();
   renderSessionExports({});
   if (!quiet) setStatus("Session reset (all exported variables cleared)");
   return true;
@@ -3960,6 +4344,17 @@ $("btn-refresh-tree").addEventListener("click", () => void refreshFileTree());
 $("btn-new-tab").addEventListener("click", () => createNewTab());
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
+$("btn-toggle-collapse-all").addEventListener("click", () => {
+  const cur = activeTab();
+  if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
+  const allCollapsed = cells.length > 0 && cells.every((c) => c.collapseMode === "collapsed");
+  setAllCellsCollapseMode(allCollapsed ? "expanded" : "collapsed");
+});
+$("btn-report-view").addEventListener("click", () => {
+  const cur = activeTab();
+  if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
+  toggleReportView();
+});
 $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-warnings").addEventListener("click", wrap(toggleWarningsDrawer));
 $("tab-drawer-variables").addEventListener("click", () => setDrawerTab("variables"));
@@ -4076,7 +4471,9 @@ async function initializeAppStartup() {
   updateTitle();
   await refreshFileTree();
   setStatus(backend.inTauri ? "Ready — Shift+Enter or Cmd+Enter runs a cell" : "Browser mode: editing only");
-  cells[0]?.view.focus();
+  if (cells[0] && cells[0].collapseMode === "expanded") {
+    cells[0].view.focus();
+  }
 }
 
 void initializeAppStartup();

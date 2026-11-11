@@ -7,6 +7,7 @@ import { mathSymbols } from "./mathSymbols";
 import { matrixConcealField } from "./matrixConceal";
 import { symbolCompletions } from "./completion";
 import { constLinter } from "./constLint";
+import { createPythonAssistExtension, type PythonAssistProvider } from "./pythonAssist";
 
 export interface EditorOptions {
   parent: HTMLElement;
@@ -14,14 +15,23 @@ export interface EditorOptions {
   onChange?: (doc: string) => void;
   onBlur?: () => void;
   keys?: { key: string; run: () => boolean }[];
+  pythonAssist?: PythonAssistProvider;
 }
 
-export function createEditor({ parent, doc, onChange, onBlur, keys = [] }: EditorOptions): EditorView {
+export function createEditor({
+  parent,
+  doc,
+  onChange,
+  onBlur,
+  keys = [],
+  pythonAssist,
+}: EditorOptions): EditorView {
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
     python(),
     symbolCompletions,
+    ...(pythonAssist ? createPythonAssistExtension(pythonAssist) : []),
     mathSymbols,
     matrixConcealField,
     constLinter,

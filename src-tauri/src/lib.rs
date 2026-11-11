@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, TryLockError};
 
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -43,6 +43,32 @@ pub struct TableOutput {
     total_rows: usize,
     truncated: bool,
     raw_text: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CompletionItemDto {
+    label: String,
+    kind: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    doc: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SignatureParamDto {
+    name: String,
+    label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SignatureHelpDto {
+    name: String,
+    signature: String,
+    #[serde(default)]
+    params: Vec<SignatureParamDto>,
+    #[serde(default)]
+    doc: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -242,6 +268,24 @@ fn with_worker<T>(f: impl FnOnce(&mut WorkerProcess) -> Result<T, String>) -> Re
     res
 }
 
+fn try_with_worker<T>(
+    f: impl FnOnce(&mut WorkerProcess) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    let mut guard = match worker_mutex().try_lock() {
+        Ok(g) => g,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    if guard.is_none() {
+        *guard = Some(WorkerProcess::spawn()?);
+    }
+    let res = f(guard.as_mut().unwrap());
+    if res.is_err() {
+        *guard = None;
+    }
+    res.map(Some)
+}
+
 fn python_exe() -> String {
     if let Ok(guard) = selected_python_mutex().lock() {
         if let Some(chosen) = guard.as_ref() {
@@ -403,6 +447,61 @@ async fn reset_session() -> Result<(), String> {
             w.send(&serde_json::json!({ "cmd": "reset" }))?;
             Ok(())
         })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn complete_python(
+    prefix: String,
+    attr_target: Option<String>,
+    cell_source: String,
+    doc_source: String,
+) -> Result<Vec<CompletionItemDto>, String> {
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "complete",
+                "prefix": prefix,
+                "attr_target": attr_target,
+                "cell_source": cell_source,
+                "doc_source": doc_source,
+            }))?;
+            if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Ok(Vec::new());
+            }
+            let items = resp.get("items").cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+            Ok(serde_json::from_value(items).unwrap_or_default())
+        })?;
+        Ok(maybe.unwrap_or_default())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn signature_python(
+    expr: String,
+    cell_source: String,
+    doc_source: String,
+) -> Result<Option<SignatureHelpDto>, String> {
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "signature",
+                "expr": expr,
+                "cell_source": cell_source,
+                "doc_source": doc_source,
+            }))?;
+            if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Ok(None);
+            }
+            let sig = resp.get("signature").cloned().unwrap_or(serde_json::Value::Null);
+            if sig.is_null() {
+                return Ok(None);
+            }
+            Ok(serde_json::from_value(sig).ok())
+        })?;
+        Ok(maybe.flatten())
     })
     .await
 }
@@ -1594,6 +1693,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             run_cell,
             reset_session,
+            complete_python,
+            signature_python,
             run_code,
             transpile,
             ai_assist,

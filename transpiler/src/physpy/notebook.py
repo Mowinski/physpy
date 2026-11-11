@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import importer
+from .complete import get_completions, get_signature
 from .errors import TranspileError
 from .matrix import MATRIX_FN, make_matrix, to_matrix_latex
 from .pipeline import compile_source, to_ast
@@ -400,6 +401,23 @@ def run_worker() -> int:
                     os.chdir(orig_dir)
                 except OSError:
                     pass
+        elif cmd == "complete":
+            items = get_completions(
+                prefix=str(req.get("prefix", "")),
+                attr_target=req.get("attr_target"),
+                cell_source=str(req.get("cell_source", "")),
+                doc_source=str(req.get("doc_source", "")),
+                exports=session.exports,
+            )
+            resp = {"ok": True, "items": items}
+        elif cmd == "signature":
+            sig = get_signature(
+                expr=str(req.get("expr", "")),
+                cell_source=str(req.get("cell_source", "")),
+                doc_source=str(req.get("doc_source", "")),
+                exports=session.exports,
+            )
+            resp = {"ok": True, "signature": sig}
         else:
             resp = {"ok": False, "error": f"unknown command: {cmd}"}
 

@@ -75,6 +75,25 @@ export interface GeminiModelInfo {
   display_name: string;
 }
 
+export interface PythonCompletionItem {
+  label: string;
+  kind: string;
+  detail?: string;
+  doc?: string;
+}
+
+export interface SignatureParamInfo {
+  name: string;
+  label: string;
+}
+
+export interface SignatureHelpInfo {
+  name: string;
+  signature: string;
+  params: SignatureParamInfo[];
+  doc?: string;
+}
+
 export interface AppConfig {
   font_family: string;
   font_size: number;
@@ -148,6 +167,30 @@ export const runCell = (
 ) => invoke<CellOutput>("run_cell", { source, path, cwd, cellIndex, docSource });
 
 export const resetSession = () => invoke<void>("reset_session");
+
+export const completePython = (params: {
+  prefix: string;
+  attrTarget: string | null;
+  cellSource: string;
+  docSource: string;
+}) =>
+  invoke<PythonCompletionItem[]>("complete_python", {
+    prefix: params.prefix,
+    attrTarget: params.attrTarget,
+    cellSource: params.cellSource,
+    docSource: params.docSource,
+  });
+
+export const signaturePython = (params: {
+  expr: string;
+  cellSource: string;
+  docSource: string;
+}) =>
+  invoke<SignatureHelpInfo | null>("signature_python", {
+    expr: params.expr,
+    cellSource: params.cellSource,
+    docSource: params.docSource,
+  });
 
 export const runCode = (source: string, path: string | null) =>
   invoke<RunOutput>("run_code", { source, path });

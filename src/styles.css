@@ -768,6 +768,91 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.cell-card.collapsed .cell-header {
+  border-bottom-color: transparent;
+}
+
+.cell-card.collapsed > :not(.cell-header) {
+  display: none !important;
+}
+
+.cell-card.output-only > :not(.cell-header):not(.cell-output-wrap) {
+  display: none !important;
+}
+
+.cell-card.output-only .cell-output-wrap {
+  border-top: none;
+}
+
+.cell-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.cell-collapse-btn:hover {
+  color: #e6edf3;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
+}
+
+.cell-card.collapsed .cell-collapse-btn {
+  color: var(--accent);
+}
+
+.cell-card.output-only .cell-collapse-btn {
+  color: #e5c07b;
+}
+
+.cell-collapse-summary {
+  font-family: var(--editor-font-family);
+  font-size: 11.5px;
+  color: #7f8794;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 340px;
+  cursor: pointer;
+  flex-shrink: 1;
+}
+
+.cell-collapse-summary.is-output-only {
+  color: #9dc7ec;
+  border-color: rgba(97, 175, 239, 0.35);
+  background: rgba(97, 175, 239, 0.08);
+}
+
+.cell-collapse-summary:hover {
+  color: #dcdfe4;
+  border-color: var(--accent);
+}
+
+.cell-collapse-summary.has-error {
+  color: #e06c75;
+  border-color: rgba(224, 108, 117, 0.45);
+  background: rgba(224, 108, 117, 0.1);
+}
+
+.cell-collapse-summary[hidden] {
+  display: none;
+}
+
 .cell-badge {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
@@ -818,6 +903,7 @@ body {
 
 .cell-title {
   flex: 1;
+  min-width: 90px;
   background: transparent;
   border: 1px solid transparent;
   color: #d7dae0;
@@ -886,6 +972,84 @@ body {
 
 .cell-editor .cm-scroller {
   overflow-y: hidden;
+}
+
+/* Python Signature Help Tooltip & Autocomplete Details */
+.cm-signature-tooltip {
+  max-width: 540px;
+  background: #1e2228;
+  border: 1px solid #414858;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #cdd3de;
+  z-index: 30;
+}
+
+.cm-sig-header {
+  font-family: var(--editor-font-family);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #abb2bf;
+}
+
+.cm-sig-name {
+  color: #61afef;
+  font-weight: 600;
+}
+
+.cm-sig-param {
+  color: #abb2bf;
+}
+
+.cm-sig-param-active {
+  color: #ffd166;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: rgba(229, 192, 123, 0.14);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.cm-sig-doc {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 11.5px;
+  color: #9ba3b0;
+  line-height: 1.4;
+}
+
+.cm-tooltip-autocomplete ul li {
+  padding: 3px 8px !important;
+}
+
+.cm-completionDetail {
+  color: #7f8794 !important;
+  font-family: var(--editor-font-family);
+  font-size: 11.5px;
+  margin-left: 10px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+.cm-completionInfo {
+  max-width: 360px !important;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 10px !important;
+  background: #1e2228 !important;
+  border-color: #414858 !important;
+  color: #cdd3de !important;
 }
 
 /* Rendered Markdown + LaTeX cell preview */
