@@ -1,3 +1,4 @@
+import katex from "katex";
 import "katex/dist/katex.min.css";
 import "./styles.css";
 import type { EditorView } from "@codemirror/view";
@@ -41,6 +42,7 @@ interface CellState {
   outputPre: HTMLPreElement;
   plotsWrap: HTMLDivElement;
   exportedBar: HTMLDivElement;
+  latexWrap: HTMLDivElement;
   runCount: number | null;
 }
 
@@ -51,6 +53,7 @@ interface TabDoc {
   untitledName: string;
   content: string;
   dirty: boolean;
+  interpreterInfo?: backend.PythonInterpreterInfo | null;
 }
 
 let nextCellId = 1;
@@ -75,6 +78,7 @@ const cfgFilePathEl = $<HTMLElement>("cfg-file-path");
 const cfgFileBadgeEl = $<HTMLSpanElement>("cfg-file-badge");
 const cfgFontFamilyInput = $<HTMLInputElement>("cfg-font-family");
 const cfgFontSizeInput = $<HTMLInputElement>("cfg-font-size");
+const cfgMatrixFontSizeInput = $<HTMLInputElement>("cfg-matrix-font-size");
 const cfgLineNumbersInput = $<HTMLInputElement>("cfg-line-numbers");
 const cfgPythonPathInput = $<HTMLInputElement>("cfg-python-path");
 const cfgStartupDirInput = $<HTMLInputElement>("cfg-startup-dir");
@@ -117,14 +121,30 @@ const ipynbTargetInput = $<HTMLInputElement>("ipynb-target-input");
 const ipynbPreviewEl = $<HTMLPreElement>("ipynb-preview");
 const ipynbDialogError = $<HTMLParagraphElement>("ipynb-dialog-error");
 const btnSaveIpynb = $<HTMLButtonElement>("btn-save-ipynb");
+const matrixDialog = $<HTMLDialogElement>("matrix-dialog");
+const matrixDialogForm = $<HTMLFormElement>("matrix-dialog-form");
+const btnInsertMatrix = $<HTMLButtonElement>("btn-insert-matrix");
+const btnCloseMatrixDialog = $<HTMLButtonElement>("btn-close-matrix-dialog");
+const btnCancelMatrix = $<HTMLButtonElement>("btn-cancel-matrix");
+const matrixRowsInput = $<HTMLInputElement>("matrix-rows-input");
+const matrixColsInput = $<HTMLInputElement>("matrix-cols-input");
+const matrixVarName = $<HTMLInputElement>("matrix-var-name");
+const matrixInputsGrid = $<HTMLDivElement>("matrix-inputs-grid");
+const matrixPreviewRender = $<HTMLDivElement>("matrix-preview-render");
 const contextMenuEl = $<HTMLDivElement>("context-menu");
 const contextMenuGroupEl = $<HTMLDivElement>("context-menu-group");
 const viewer = createViewer($("python"));
 
 let activeInterpreterPath: string | null = null;
+let activeInterpreterInfo: backend.PythonInterpreterInfo | null = null;
 
 function updateActiveInterpreterUI(info: backend.PythonInterpreterInfo) {
   activeInterpreterPath = info.path;
+  activeInterpreterInfo = info;
+  const cur = activeTab();
+  if (cur && cur.kind !== "settings") {
+    cur.interpreterInfo = info;
+  }
   interpreterLabelEl.textContent = info.label;
   const btn = $("btn-interpreter");
   if (btn) btn.title = `Active Python: ${info.path}`;
@@ -470,6 +490,16 @@ function switchToTab(tabId: number) {
   dirty = target.dirty;
   loadDocumentIntoCells(target.content);
   updateTitle();
+
+  if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
+    const info = target.interpreterInfo;
+    void backend.setPythonInterpreter(info.path).then(() => {
+      updateActiveInterpreterUI(info);
+    });
+  } else if (!target.interpreterInfo && activeInterpreterInfo) {
+    target.interpreterInfo = activeInterpreterInfo;
+  }
+
   void refreshPython();
   cells[0]?.view.focus();
   saveSessionState();
@@ -540,6 +570,7 @@ function attachDialogLightDismiss(dialog: HTMLDialogElement) {
 
 attachDialogLightDismiss(pythonDialog);
 attachDialogLightDismiss(ipynbDialog);
+attachDialogLightDismiss(matrixDialog);
 
 let currentConfig: backend.AppConfig | null = null;
 let autoSaveTimer: number | undefined;
@@ -595,10 +626,23 @@ async function applyHierarchicalConfig(
     if (cfg.font_size && cfg.font_size >= 8 && cfg.font_size <= 48) {
       document.documentElement.style.setProperty("--editor-font-size", `${cfg.font_size}px`);
     }
+    const matrixScale =
+      cfg.matrix_font_size && cfg.matrix_font_size >= 50 && cfg.matrix_font_size <= 300
+        ? cfg.matrix_font_size
+        : 135;
+    document.documentElement.style.setProperty("--editor-matrix-font-size", `${matrixScale}%`);
     notebookEl.classList.toggle("hide-line-numbers", !cfg.line_numbers);
 
     if (isInitialBoot && !rootDir && cfg.resolved_startup_dir) {
       rootDir = cfg.resolved_startup_dir;
+    }
+    if (isInitialBoot && cfg.python_path && !activeInterpreterPath) {
+      try {
+        const info = await backend.setPythonInterpreter(cfg.python_path);
+        updateActiveInterpreterUI(info);
+      } catch {
+        // ignore invalid python_path
+      }
     }
     await refreshInterpreterBadge();
     return cfg;
@@ -638,6 +682,7 @@ function buildYamlFromSettingsForm(): string {
       : "PhysPy Global Configuration (~/.physpy/config.yaml)";
   const fontFam = cfgFontFamilyInput.value.trim().replace(/'/g, "''");
   const fontSize = Number(cfgFontSizeInput.value) || 14.5;
+  const matrixSize = Number(cfgMatrixFontSizeInput.value) || 135;
   const lineNums = cfgLineNumbersInput.checked;
   const pyPath = cfgPythonPathInput.value.trim().replace(/"/g, '\\"');
   const startDir = (cfgStartupDirInput.value.trim() || "~").replace(/"/g, '\\"');
@@ -649,9 +694,10 @@ function buildYamlFromSettingsForm(): string {
   return [
     `# ${scopeTitle}`,
     "",
-    "# 1. Editor font family and size (px)",
+    "# 1. Editor font family, size (px), and matrix KaTeX font size (%)",
     `font_family: '${fontFam}'`,
     `font_size: ${fontSize}`,
+    `matrix_font_size: ${matrixSize}`,
     "",
     "# 2. Show line numbers in notebook cells (true / false)",
     `line_numbers: ${lineNums}`,
@@ -696,6 +742,9 @@ function syncSettingsFormFromYamlText(yamlText: string) {
     } else if (key === "font_size" || key === "fontSize") {
       const n = parseFloat(val);
       if (!Number.isNaN(n)) cfgFontSizeInput.value = String(n);
+    } else if (key === "matrix_font_size" || key === "matrixFontSize") {
+      const n = parseFloat(val.replace("%", ""));
+      if (!Number.isNaN(n)) cfgMatrixFontSizeInput.value = String(n);
     } else if (key === "line_numbers" || key === "lineNumbers") {
       cfgLineNumbersInput.checked = /^(true|yes|on|1)$/i.test(val);
     } else if (key === "python_path" || key === "pythonPath") {
@@ -764,6 +813,7 @@ async function loadSettingsScope(scope: "global" | "workspace") {
 
     cfgFontFamilyInput.value = data.parsed.font_family;
     cfgFontSizeInput.value = String(data.parsed.font_size);
+    cfgMatrixFontSizeInput.value = String(data.parsed.matrix_font_size || 135);
     cfgLineNumbersInput.checked = data.parsed.line_numbers;
     cfgPythonPathInput.value = data.parsed.python_path;
     cfgStartupDirInput.value = data.parsed.startup_dir;
@@ -809,6 +859,7 @@ async function saveSettingsScope() {
 for (const inputEl of [
   cfgFontFamilyInput,
   cfgFontSizeInput,
+  cfgMatrixFontSizeInput,
   cfgLineNumbersInput,
   cfgPythonPathInput,
   cfgStartupDirInput,
@@ -824,6 +875,13 @@ for (const inputEl of [
     markSettingsTabDirty(true);
   });
 }
+
+cfgMatrixFontSizeInput.addEventListener("input", () => {
+  const val = Number(cfgMatrixFontSizeInput.value);
+  if (val >= 50 && val <= 300) {
+    document.documentElement.style.setProperty("--editor-matrix-font-size", `${val}%`);
+  }
+});
 
 cfgStartupModeSelect.addEventListener("change", () => {
   updateStartupFileRowVisibility();
@@ -881,7 +939,9 @@ async function refreshInterpreterBadge() {
   if (!backend.inTauri) return;
   try {
     const res = await backend.listPythonInterpreters(rootDir);
-    const active = res.interpreters.find((i) => i.path === res.current) ?? res.interpreters[0];
+    const active =
+      (activeInterpreterPath ? res.interpreters.find((i) => i.path === activeInterpreterPath) : null) ??
+      res.interpreters.find((i) => i.path === res.current);
     if (active) {
       updateActiveInterpreterUI(active);
     }
@@ -1083,6 +1143,193 @@ $<HTMLFormElement>("ipynb-dialog-form").addEventListener("submit", (e) => {
   if (submitter?.value === "save") {
     e.preventDefault();
     void saveImportedIpynb();
+  }
+});
+
+// --- Matrix Dialog (Visual Grid Editor) -----------------------------------
+
+let matrixCurrentTargetView: EditorView | null = null;
+
+function getMatrixDimensions(): { rows: number; cols: number } {
+  const r = Math.max(1, Math.min(8, parseInt(matrixRowsInput.value, 10) || 2));
+  const c = Math.max(1, Math.min(8, parseInt(matrixColsInput.value, 10) || 2));
+  return { rows: r, cols: c };
+}
+
+function updateMatrixPreview() {
+  const { rows, cols } = getMatrixDimensions();
+  const latexRows: string[] = [];
+
+  for (let r = 0; r < rows; r++) {
+    const rowVals: string[] = [];
+    for (let c = 0; c < cols; c++) {
+      const inp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r}"][data-c="${c}"]`);
+      const val = inp?.value.trim() || "0";
+      rowVals.push(val.replace(/j\b/g, "i").replace(/\\([a-zA-Z]+)/g, "$1"));
+    }
+    latexRows.push(rowVals.join(" & "));
+  }
+
+  const varName = matrixVarName.value.trim();
+  const prefix = varName ? `${varName} = ` : "";
+  const latex = `${prefix}\\begin{pmatrix}\n${latexRows.join(" \\\\[0.5em]\n")}\n\\end{pmatrix}`;
+
+  try {
+    katex.render(latex, matrixPreviewRender, { displayMode: true, throwOnError: false });
+  } catch (err) {
+    matrixPreviewRender.textContent = latex;
+  }
+}
+
+function buildMatrixInputsGrid(preserveExisting = true) {
+  const { rows, cols } = getMatrixDimensions();
+  const existingValues: Map<string, string> = new Map();
+
+  if (preserveExisting) {
+    const currentInputs = matrixInputsGrid.querySelectorAll<HTMLInputElement>("input");
+    currentInputs.forEach((inp) => {
+      const r = inp.getAttribute("data-r");
+      const c = inp.getAttribute("data-c");
+      if (r !== null && c !== null) {
+        existingValues.set(`${r},${c}`, inp.value);
+      }
+    });
+  }
+
+  matrixInputsGrid.innerHTML = "";
+  matrixInputsGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(60px, 1fr))`;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "matrix-cell-inp";
+      inp.setAttribute("data-r", String(r));
+      inp.setAttribute("data-c", String(c));
+      inp.placeholder = "0";
+      inp.spellcheck = false;
+
+      const prevVal = existingValues.get(`${r},${c}`);
+      inp.value = prevVal !== undefined ? prevVal : (r === c ? "1" : "0");
+
+      inp.addEventListener("input", () => updateMatrixPreview());
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (r === rows - 1 && c === cols - 1) {
+            submitMatrixDialog();
+          } else {
+            const nextC = (c + 1) % cols;
+            const nextR = nextC === 0 ? r + 1 : r;
+            const nextInp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${nextR}"][data-c="${nextC}"]`);
+            nextInp?.focus();
+            nextInp?.select();
+          }
+        } else if (e.key === "ArrowRight" && inp.selectionStart === inp.value.length) {
+          const nextInp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r}"][data-c="${c + 1}"]`);
+          if (nextInp) { nextInp.focus(); nextInp.select(); }
+        } else if (e.key === "ArrowLeft" && inp.selectionStart === 0) {
+          const prevInp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r}"][data-c="${c - 1}"]`);
+          if (prevInp) { prevInp.focus(); prevInp.select(); }
+        } else if (e.key === "ArrowDown") {
+          const downInp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r + 1}"][data-c="${c}"]`);
+          if (downInp) { downInp.focus(); downInp.select(); }
+        } else if (e.key === "ArrowUp") {
+          const upInp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r - 1}"][data-c="${c}"]`);
+          if (upInp) { upInp.focus(); upInp.select(); }
+        }
+      });
+
+      matrixInputsGrid.append(inp);
+    }
+  }
+
+  updateMatrixPreview();
+}
+
+function openMatrixDialog(targetView?: EditorView) {
+  if (targetView) {
+    matrixCurrentTargetView = targetView;
+  } else {
+    const focused = cells.find((c) => c.view.hasFocus);
+    matrixCurrentTargetView = focused ? focused.view : (cells[0]?.view ?? null);
+  }
+
+  buildMatrixInputsGrid(false);
+  matrixDialog.showModal();
+  setTimeout(() => {
+    const first = matrixInputsGrid.querySelector<HTMLInputElement>("input");
+    first?.focus();
+    first?.select();
+  }, 50);
+}
+
+function submitMatrixDialog() {
+  const { rows, cols } = getMatrixDimensions();
+  const rowLines: string[] = [];
+
+  for (let r = 0; r < rows; r++) {
+    const rowVals: string[] = [];
+    for (let c = 0; c < cols; c++) {
+      const inp = matrixInputsGrid.querySelector<HTMLInputElement>(`input[data-r="${r}"][data-c="${c}"]`);
+      const val = inp?.value.trim() || "0";
+      rowVals.push(val);
+    }
+    rowLines.push(rowVals.join(", "));
+  }
+
+  let code = "";
+  const varName = matrixVarName.value.trim();
+  const assign = varName ? `${varName} = ` : "";
+
+  if (rows === 1) {
+    code = `${assign}[${rowLines[0]}]`;
+  } else {
+    const formatted = rowLines.map((line, idx) => {
+      const isLast = idx === rows - 1;
+      return `    ${line}${isLast ? "" : " ;"}`;
+    }).join("\n");
+    code = `${assign}[\n${formatted}\n]`;
+  }
+
+  if (matrixCurrentTargetView) {
+    const state = matrixCurrentTargetView.state;
+    const sel = state.selection.main;
+    matrixCurrentTargetView.dispatch({
+      changes: { from: sel.from, to: sel.to, insert: code },
+      selection: { anchor: sel.from + code.length },
+    });
+    matrixCurrentTargetView.focus();
+  }
+
+  matrixDialog.close();
+  markDirty();
+}
+
+btnInsertMatrix.addEventListener("click", () => openMatrixDialog());
+btnCloseMatrixDialog.addEventListener("click", () => matrixDialog.close());
+btnCancelMatrix.addEventListener("click", () => matrixDialog.close());
+matrixRowsInput.addEventListener("change", () => buildMatrixInputsGrid(true));
+matrixColsInput.addEventListener("change", () => buildMatrixInputsGrid(true));
+matrixVarName.addEventListener("input", () => updateMatrixPreview());
+
+document.querySelectorAll<HTMLButtonElement>(".matrix-preset-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const r = btn.getAttribute("data-r");
+    const c = btn.getAttribute("data-c");
+    if (r && c) {
+      matrixRowsInput.value = r;
+      matrixColsInput.value = c;
+      buildMatrixInputsGrid(false);
+    }
+  });
+});
+
+matrixDialogForm.addEventListener("submit", (e) => {
+  const submitter = e.submitter as HTMLButtonElement | null;
+  if (submitter?.value === "insert") {
+    e.preventDefault();
+    submitMatrixDialog();
   }
 });
 
@@ -1389,10 +1636,10 @@ async function openFileByPath(path: string) {
   }
   try {
     const contents = await backend.readFileByPath(path);
-    await resetSession(true);
     // Replace current tab if it is an untouched untitled tab
     const cur = activeTab();
     if (cur && !cur.path && !cur.dirty && tabs.length === 1) {
+      await resetSession(true);
       cur.path = path;
       cur.content = contents;
       cur.dirty = false;
@@ -2219,7 +2466,11 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   plotsWrap.className = "cell-plots";
   plotsWrap.hidden = true;
 
-  outputWrap.append(exportedBar, outputPre, plotsWrap);
+  const latexWrap = document.createElement("div");
+  latexWrap.className = "cell-latex-output";
+  latexWrap.hidden = true;
+
+  outputWrap.append(exportedBar, latexWrap, outputPre, plotsWrap);
   card.append(header, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
@@ -2237,6 +2488,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
       { key: "Mod-b", run: () => toggleSidebar() },
       { key: "Mod-j", run: () => toggleVariablesDrawer() },
       { key: "Mod-Shift-j", run: () => toggleWarningsDrawer() },
+      { key: "Mod-Shift-m", run: () => (openMatrixDialog(), true) },
       { key: "Mod-p", run: () => togglePython() },
     ],
     onChange: markDirty,
@@ -2271,6 +2523,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     outputPre,
     plotsWrap,
     exportedBar,
+    latexWrap,
     runCount: null,
   };
 
@@ -2600,21 +2853,29 @@ function loadDocumentIntoCells(src: string) {
   cells.length = 0;
   const parsedCells = parseDocument(src);
   for (const parsed of parsedCells) {
-    createCellCard(parsed);
+    try {
+      createCellCard(parsed);
+    } catch (err) {
+      console.error("Failed to render cell:", parsed.title, err);
+    }
   }
   renderSessionExports();
 
   // If document defines dependencies with a venv, auto-resolve & activate that venv
   const deps = parsedCells.find((c) => c.kind === "deps");
+  const cur = activeTab();
   if (deps && deps.venv && backend.inTauri) {
     const baseDir = currentPath
       ? currentPath.replace(/[\\/][^\\/]+$/, "")
       : (rootDir ?? "");
     void backend.resolveVenv(baseDir, deps.venv).then((info) => {
-      if (info && info.path !== activeInterpreterPath) {
-        void backend.setPythonInterpreter(info.path).then(() => {
-          updateActiveInterpreterUI(info);
-        });
+      if (info) {
+        if (cur) cur.interpreterInfo = info;
+        if (info.path !== activeInterpreterPath) {
+          void backend.setPythonInterpreter(info.path).then(() => {
+            updateActiveInterpreterUI(info);
+          });
+        }
       }
     });
   }
@@ -2790,8 +3051,21 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     });
     cell.plotsWrap.hidden = plots.length === 0;
 
+    if (res.latex) {
+      cell.latexWrap.hidden = false;
+      cell.latexWrap.innerHTML = "";
+      try {
+        katex.render(res.latex, cell.latexWrap, { displayMode: true, throwOnError: false });
+      } catch (err) {
+        cell.latexWrap.textContent = res.latex;
+      }
+    } else {
+      cell.latexWrap.hidden = true;
+      cell.latexWrap.innerHTML = "";
+    }
+
     const hasOut = Boolean(
-      res.stdout || res.stderr || exportedEntries.length > 0 || plots.length > 0,
+      res.stdout || res.stderr || exportedEntries.length > 0 || plots.length > 0 || res.latex,
     );
     cell.outputWrap.hidden = !hasOut;
     cell.outputPre.hidden = !(res.stdout || res.stderr);
@@ -2827,6 +3101,8 @@ async function resetSession(quiet = false): Promise<boolean> {
   for (const c of cells) {
     c.runCount = null;
     c.outputWrap.hidden = true;
+    c.latexWrap.hidden = true;
+    c.latexWrap.innerHTML = "";
   }
   renumberCells();
   renderSessionExports({});
@@ -2968,6 +3244,11 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       toggleVariablesDrawer();
     }
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "m" && e.shiftKey) {
+    if (!document.activeElement?.closest(".cm-editor")) {
+      e.preventDefault();
+      openMatrixDialog();
+    }
   }
 });
 
@@ -3037,7 +3318,3 @@ async function initializeAppStartup() {
 }
 
 void initializeAppStartup();
-
-window.addEventListener("focus", () => {
-  void applyHierarchicalConfig(rootDir);
-});

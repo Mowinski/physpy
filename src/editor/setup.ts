@@ -4,6 +4,7 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { mathSymbols } from "./mathSymbols";
+import { matrixConcealField } from "./matrixConceal";
 import { symbolCompletions } from "./completion";
 import { constLinter } from "./constLint";
 
@@ -22,6 +23,7 @@ export function createEditor({ parent, doc, onChange, onBlur, keys = [] }: Edito
     python(),
     symbolCompletions,
     mathSymbols,
+    matrixConcealField,
     constLinter,
     oneDark,
     EditorView.domEventHandlers({

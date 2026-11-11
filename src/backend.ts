@@ -16,6 +16,7 @@ export interface CellOutput {
   exported: Record<string, string>;
   all_exports: Record<string, string>;
   plots: string[];
+  latex?: string | null;
 }
 
 export interface DirEntryItem {
@@ -44,6 +45,7 @@ export interface InstallResult {
 export interface AppConfig {
   font_family: string;
   font_size: number;
+  matrix_font_size?: number;
   line_numbers: boolean;
   python_path: string;
   startup_dir: string;

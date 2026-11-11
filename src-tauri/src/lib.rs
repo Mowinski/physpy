@@ -31,6 +31,8 @@ pub struct CellOutput {
     all_exports: HashMap<String, String>,
     #[serde(default)]
     plots: Vec<String>,
+    #[serde(default)]
+    latex: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -57,6 +59,7 @@ pub struct PythonListResponse {
 pub struct AppConfig {
     pub font_family: String,
     pub font_size: f64,
+    pub matrix_font_size: f64,
     pub line_numbers: bool,
     pub python_path: String,
     pub startup_dir: String,
@@ -220,6 +223,15 @@ fn python_exe() -> String {
     "python3".to_string()
 }
 
+fn normalize_interpreter_path(path: &Path) -> PathBuf {
+    if let Ok(canon_parent) = std::fs::canonicalize(path.parent().unwrap_or(Path::new("."))) {
+        if let Some(file_name) = path.file_name() {
+            return canon_parent.join(file_name);
+        }
+    }
+    path.to_path_buf()
+}
+
 fn probe_python(path: &str) -> Result<PythonInterpreterInfo, String> {
     let out = Command::new(path)
         .arg("-c")
@@ -230,6 +242,7 @@ fn probe_python(path: &str) -> Result<PythonInterpreterInfo, String> {
         return Err(format!("'{path}' exited with status {}", out.status));
     }
     let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let norm_path = normalize_interpreter_path(Path::new(path)).to_string_lossy().into_owned();
     let label = if path.contains(".venv") || path.contains("/venv/") {
         format!("Python {version} (venv)")
     } else if path.contains("homebrew") {
@@ -240,7 +253,7 @@ fn probe_python(path: &str) -> Result<PythonInterpreterInfo, String> {
         format!("Python {version}")
     };
     Ok(PythonInterpreterInfo {
-        path: path.to_string(),
+        path: norm_path,
         version,
         label,
     })
@@ -428,9 +441,10 @@ const DEFAULT_GLOBAL_CONFIG_YAML: &str = "\
 # PhysPy Global Configuration (~/.physpy/config.yaml)
 # Settings here can be overridden per workspace by creating `.physpy-config.yaml` in a folder.
 
-# 1. Editor font family and size (px)
+# 1. Editor font family, size (px), and matrix KaTeX font size (%)
 font_family: 'ui-monospace, \"SF Mono\", Menlo, Consolas, monospace'
 font_size: 14.5
+matrix_font_size: 135
 
 # 2. Show line numbers in notebook cells (true / false)
 line_numbers: true
@@ -568,6 +582,14 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     }
                 }
             }
+            "matrix_font_size" | "matrixFontSize" | "editor.matrix_font_size" | "editor.matrixFontSize" => {
+                let num_str = scalar.trim_end_matches('%').trim();
+                if let Ok(sz) = num_str.parse::<f64>() {
+                    if (50.0..=300.0).contains(&sz) {
+                        cfg.matrix_font_size = sz;
+                    }
+                }
+            }
             "line_numbers"
             | "lineNumbers"
             | "show_line_numbers"
@@ -654,6 +676,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
     let mut cfg = AppConfig {
         font_family: "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace".to_string(),
         font_size: 14.5,
+        matrix_font_size: 135.0,
         line_numbers: true,
         python_path: String::new(),
         startup_dir: "~".to_string(),
@@ -689,24 +712,6 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         }
     }
 
-    // 3. Apply configured default Python interpreter if valid
-    if !cfg.python_path.trim().is_empty() {
-        if let Ok(info) = probe_python(&cfg.python_path) {
-            let mut changed = false;
-            if let Ok(mut sel) = selected_python_mutex().lock() {
-                if sel.as_deref() != Some(info.path.as_str()) {
-                    *sel = Some(info.path);
-                    changed = true;
-                }
-            }
-            if changed {
-                if let Ok(mut guard) = worker_mutex().lock() {
-                    *guard = None;
-                }
-            }
-        }
-    }
-
     cfg
 }
 
@@ -722,9 +727,10 @@ fn format_config_yaml_template(scope_title: &str, cfg: &AppConfig) -> String {
     let escaped_file = cfg.startup_file.replace('"', "\\\"");
     format!(
         "# {scope_title}\n\n\
-# 1. Editor font family and size (px)\n\
+# 1. Editor font family, size (px), and matrix KaTeX font size (%)\n\
 font_family: '{escaped_font}'\n\
-font_size: {}\n\n\
+font_size: {}\n\
+matrix_font_size: {}\n\n\
 # 2. Show line numbers in notebook cells (true / false)\n\
 line_numbers: {}\n\n\
 # 3. Default Python interpreter path (leave empty for automatic detection)\n\
@@ -737,7 +743,7 @@ startup_file: \"{escaped_file}\"\n\n\
 # 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange\n\
 auto_save: {}\n\
 auto_save_delay: {}\n",
-        cfg.font_size, cfg.line_numbers, cfg.startup_mode, cfg.auto_save, cfg.auto_save_delay
+        cfg.font_size, cfg.matrix_font_size, cfg.line_numbers, cfg.startup_mode, cfg.auto_save, cfg.auto_save_delay
     )
 }
 
@@ -792,6 +798,7 @@ fn read_config_scope(
         let mut parsed = AppConfig {
             font_family: "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace".to_string(),
             font_size: 14.5,
+            matrix_font_size: 135.0,
             line_numbers: true,
             python_path: String::new(),
             startup_dir: "~".to_string(),
@@ -1029,11 +1036,7 @@ async fn list_python_interpreters(
             }
             // Deduplicate by exact path string so venv symlinks remain distinct from system python
             let norm = if cand.exists() {
-                std::fs::canonicalize(cand.parent().unwrap_or(Path::new(".")))
-                    .map(|p| p.join(cand.file_name().unwrap_or_default()))
-                    .unwrap_or(cand)
-                    .to_string_lossy()
-                    .into_owned()
+                normalize_interpreter_path(&cand).to_string_lossy().into_owned()
             } else {
                 s.clone()
             };
@@ -1045,12 +1048,15 @@ async fn list_python_interpreters(
             }
         }
 
-        let active_norm = Path::new(&current)
-            .parent()
-            .and_then(|p| std::fs::canonicalize(p).ok())
-            .and_then(|p| Path::new(&current).file_name().map(|f| p.join(f)))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or(current);
+        let active_norm = normalize_interpreter_path(Path::new(&current))
+            .to_string_lossy()
+            .into_owned();
+
+        if !interpreters.iter().any(|i| i.path == active_norm) {
+            if let Ok(info) = probe_python(&active_norm) {
+                interpreters.insert(0, info);
+            }
+        }
 
         Ok(PythonListResponse {
             current: active_norm,
@@ -1068,12 +1074,16 @@ async fn set_python_interpreter(path: String) -> Result<PythonInterpreterInfo, S
             return Err("Python path cannot be empty".into());
         }
         let info = probe_python(&trimmed)?;
+        let mut changed = false;
         {
             let mut sel = selected_python_mutex().lock().map_err(|e| e.to_string())?;
-            *sel = Some(info.path.clone());
+            if sel.as_deref() != Some(info.path.as_str()) {
+                *sel = Some(info.path.clone());
+                changed = true;
+            }
         }
-        // Restart the persistent worker so it runs on the newly chosen interpreter
-        {
+        if changed {
+            // Restart the persistent worker so it runs on the newly chosen interpreter
             let mut guard = worker_mutex().lock().map_err(|e| e.to_string())?;
             *guard = None;
         }
@@ -1455,6 +1465,7 @@ mod tests {
         AppConfig {
             font_family: "monospace".to_string(),
             font_size: 14.5,
+            matrix_font_size: 135.0,
             line_numbers: true,
             python_path: String::new(),
             startup_dir: "~".to_string(),

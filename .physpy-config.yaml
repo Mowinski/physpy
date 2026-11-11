@@ -4,6 +4,7 @@
 # 1. Editor font family and size (px)
 font_family: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
 font_size: 14.5
+matrix_font_size: 135
 
 # 2. Show line numbers in notebook cells (true / false)
 line_numbers: true

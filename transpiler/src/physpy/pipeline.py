@@ -9,6 +9,8 @@ from types import CodeType
 from .consts import ConstTransformer, rewrite_consts
 from .exports import ExportTransformer, rewrite_exports
 from .implicit_mul import rewrite_implicit_mul
+from .matrix import rewrite_matrix_literals
+from .percentages import rewrite_percentages
 from .pipe import PipeTransformer, rewrite_pipe_tokens
 from .plotting import rewrite_plots
 from .power import rewrite_powers
@@ -23,6 +25,8 @@ SOURCE_PASSES: list[Callable[[str], str]] = [
     rewrite_exports,
     rewrite_plots,
     rewrite_units,
+    rewrite_matrix_literals,
+    rewrite_percentages,
     rewrite_implicit_mul,
     rewrite_powers,
     rewrite_pipe_tokens,

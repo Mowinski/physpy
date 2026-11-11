@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
@@ -16,7 +17,8 @@ from typing import Any
 
 from . import importer
 from .errors import TranspileError
-from .pipeline import compile_source
+from .matrix import MATRIX_FN, make_matrix, to_matrix_latex
+from .pipeline import compile_source, to_ast
 from .plotting import PLOT_FN, render_plot_png_base64
 from .symbols import IDENTIFIERS
 from .units import UNIT_FN, make_quantity
@@ -43,6 +45,7 @@ class CellResult:
     exported: dict[str, str]  # newly exported in this cell: name -> short repr
     all_exports: dict[str, str]  # all active exports in session: name -> short repr
     plots: list[str]  # base64-encoded PNG images produced by `plot ...`
+    latex: str | None = None  # KaTeX/LaTeX string for matrix/expression display
 
 
 def split_cells(src: str) -> list[Cell]:
@@ -118,7 +121,20 @@ class NotebookSession:
         err_buf = io.StringIO()
 
         try:
-            code = compile_source(source, filename, predeclared_consts=self.consts)
+            tree = to_ast(source, filename, predeclared_consts=self.consts)
+            has_last_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
+            if has_last_expr:
+                main_body = tree.body[:-1]
+                last_expr = tree.body[-1].value
+                mod_main = ast.Module(body=main_body, type_ignores=[])
+                mod_last = ast.Expression(body=last_expr)
+                ast.fix_missing_locations(mod_main)
+                ast.fix_missing_locations(mod_last)
+                code_main = compile(mod_main, filename, "exec")
+                code_last = compile(mod_last, filename, "eval")
+            else:
+                code_main = compile(tree, filename, "exec")
+                code_last = None
         except TranspileError as exc:
             return CellResult(
                 stdout="",
@@ -127,6 +143,7 @@ class NotebookSession:
                 exported={},
                 all_exports=self.summary(),
                 plots=[],
+                latex=None,
             )
         except SyntaxError as exc:
             return CellResult(
@@ -136,6 +153,7 @@ class NotebookSession:
                 exported={},
                 all_exports=self.summary(),
                 plots=[],
+                latex=None,
             )
 
         linecache.cache[filename] = (
@@ -149,9 +167,22 @@ class NotebookSession:
         cell_exports: dict[str, Any] = {}
         cell_consts: set[str] = set()
         cell_plots: list[str] = []
+        cell_latex: str | None = None
 
         def _capture_plot(target: Any) -> None:
             cell_plots.append(render_plot_png_base64(target))
+
+        def _display_val(val: Any) -> None:
+            nonlocal cell_latex
+            mat_latex = to_matrix_latex(val)
+            if mat_latex:
+                cell_latex = mat_latex
+            elif hasattr(val, "_repr_latex_"):
+                raw = val._repr_latex_()
+                if raw:
+                    cell_latex = str(raw).strip("$")
+            else:
+                out_buf.write(f"{val}\n")
 
         # Cell starts ONLY with builtins and previously exported variables!
         cell_ns: dict[str, Any] = {
@@ -163,6 +194,9 @@ class NotebookSession:
             "__consts__": cell_consts,
             PLOT_FN: _capture_plot,
             UNIT_FN: make_quantity,
+            MATRIX_FN: make_matrix,
+            "display": _display_val,
+            "disp": _display_val,
         }
 
         # Intercept warnings so they land cleanly in cell's stderr instead of polluting stdout
@@ -177,7 +211,19 @@ class NotebookSession:
         try:
             with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
                 try:
-                    exec(code, cell_ns)
+                    exec(code_main, cell_ns)
+                    if code_last is not None:
+                        last_val = eval(code_last, cell_ns)
+                        if last_val is not None:
+                            mat_latex = to_matrix_latex(last_val)
+                            if mat_latex:
+                                cell_latex = mat_latex
+                            elif hasattr(last_val, "_repr_latex_"):
+                                raw = last_val._repr_latex_()
+                                if raw:
+                                    cell_latex = str(raw).strip("$")
+                            elif not out_buf.getvalue().strip():
+                                out_buf.write(f"{last_val}\n")
                 except SystemExit as exc:
                     exit_code = exc.code if isinstance(exc.code, int) else 0
                 except BaseException:
@@ -209,6 +255,7 @@ class NotebookSession:
             exported={k: _short_repr(v) for k, v in cell_exports.items()},
             all_exports=self.summary(),
             plots=cell_plots,
+            latex=cell_latex,
         )
 
     def ensure_global_imports(self, full_document: str) -> None:
@@ -291,6 +338,7 @@ def run_worker() -> int:
                     "exported": res.exported,
                     "all_exports": res.all_exports,
                     "plots": res.plots,
+                    "latex": res.latex,
                 }
             except Exception as exc:
                 resp = {
