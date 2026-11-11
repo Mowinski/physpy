@@ -1870,6 +1870,7 @@ dialog::backdrop {
 }
 
 .settings-field input[type="text"],
+.settings-field input[type="password"],
 .settings-field input[type="number"],
 .settings-select {
   background: #1b1e23;
@@ -1879,6 +1880,15 @@ dialog::backdrop {
   padding: 6px 8px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px;
+}
+
+.dialog-input-group .settings-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-field input[hidden] {
+  display: none;
 }
 
 .settings-field input:focus,
@@ -2412,4 +2422,160 @@ dialog.matrix-modal::backdrop {
 
 .csv-text-container .cm-scroller {
   overflow: auto;
+}
+
+/* AI Cell Assistant */
+.settings-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #8b929e;
+  line-height: 1.4;
+}
+
+.cell-btn.ai {
+  background: #2b2740;
+  border-color: #6b5cb5;
+  color: #dcd6ff;
+}
+
+.cell-btn.ai:hover {
+  background: #373154;
+  border-color: #9b8cff;
+}
+
+.cell-ai-wrap[hidden],
+.cell-ai-status[hidden],
+.cell-ai-proposal[hidden] {
+  display: none;
+}
+
+.cell-ai-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #232230;
+  border-bottom: 1px solid #3c3858;
+}
+
+.cell-ai-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cell-ai-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #c6b8ff;
+  background: rgba(155, 140, 255, 0.14);
+  border: 1px solid rgba(155, 140, 255, 0.35);
+  border-radius: 5px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.cell-ai-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  max-height: 120px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid #454166;
+  background: #1b1c24;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+  resize: none;
+}
+
+.cell-ai-input:focus {
+  outline: none;
+  border-color: #9b8cff;
+}
+
+.cell-ai-context-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #b4b9c4;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.cell-ai-status {
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #1e2029;
+  color: #b8c0cc;
+}
+
+.cell-ai-status.loading {
+  color: #c6b8ff;
+}
+
+.cell-ai-status.error {
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.1);
+  border-left: 3px solid #e06c75;
+}
+
+.cell-ai-settings-link {
+  background: transparent;
+  border: none;
+  color: #61afef;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+  text-decoration: underline;
+}
+
+.cell-ai-proposal {
+  border: 1px solid #454166;
+  border-radius: 6px;
+  background: #1a1c23;
+  overflow: hidden;
+}
+
+.cell-ai-proposal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #252734;
+  border-bottom: 1px solid #35384a;
+  flex-wrap: wrap;
+}
+
+.cell-ai-explanation {
+  font-size: 12px;
+  color: #c6d0de;
+  flex: 1;
+  min-width: 180px;
+}
+
+.cell-ai-proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cell-ai-preview {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow: auto;
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size);
+  line-height: 1.45;
+  color: #d7dae0;
+  white-space: pre-wrap;
 }

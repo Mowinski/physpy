@@ -82,6 +82,21 @@ pub struct PythonListResponse {
     interpreters: Vec<PythonInterpreterInfo>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct AiAssistResult {
+    code: String,
+    #[serde(default)]
+    explanation: String,
+    #[serde(default)]
+    model: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GeminiModelInfo {
+    id: String,
+    display_name: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub font_family: String,
@@ -96,6 +111,10 @@ pub struct AppConfig {
     /// `off` | `afterDelay` | `onFocusChange` | `onWindowChange`
     pub auto_save: String,
     pub auto_save_delay: u64,
+    pub ai_provider: String,
+    pub ai_model: String,
+    pub ai_api_key: String,
+    pub ai_system_prompt: String,
     pub resolved_startup_dir: String,
     pub global_config_path: String,
     pub workspace_config_path: Option<String>,
@@ -417,6 +436,82 @@ async fn transpile(source: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn ai_assist(
+    prompt: String,
+    cell_source: String,
+    context_before: String,
+    exports: HashMap<String, String>,
+    workspace_dir: Option<String>,
+) -> Result<AiAssistResult, String> {
+    blocking(move || {
+        let cfg = resolve_hierarchical_config(workspace_dir);
+        let payload = serde_json::json!({
+            "provider": cfg.ai_provider,
+            "model": cfg.ai_model,
+            "api_key": cfg.ai_api_key,
+            "custom_system_prompt": cfg.ai_system_prompt,
+            "prompt": prompt,
+            "cell_source": cell_source,
+            "context_before": context_before,
+            "exports": exports,
+        });
+        let out = physpy(&["ai".into()], &payload.to_string(), None)?;
+        let raw = out.stdout.trim();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+            if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return serde_json::from_value(val).map_err(|e| e.to_string());
+            }
+            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+        if !out.stderr.trim().is_empty() {
+            return Err(out.stderr.trim().to_string());
+        }
+        Err("AI request failed".to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_ai_models(
+    api_key: Option<String>,
+    workspace_dir: Option<String>,
+) -> Result<Vec<GeminiModelInfo>, String> {
+    blocking(move || {
+        let cfg = resolve_hierarchical_config(workspace_dir);
+        let effective_key = api_key
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .unwrap_or(cfg.ai_api_key);
+        let payload = serde_json::json!({
+            "action": "list_models",
+            "provider": cfg.ai_provider,
+            "api_key": effective_key,
+        });
+        let out = physpy(&["ai".into()], &payload.to_string(), None)?;
+        let raw = out.stdout.trim();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+            if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                let models_val = val
+                    .get("models")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+                return serde_json::from_value(models_val).map_err(|e| e.to_string());
+            }
+            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+        if !out.stderr.trim().is_empty() {
+            return Err(out.stderr.trim().to_string());
+        }
+        Err("Failed to list Gemini models".to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
 }
@@ -489,6 +584,12 @@ startup_file: \"\"
 # 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange
 auto_save: off
 auto_save_delay: 1000
+
+# 7. AI Cell Assistant (currently Gemini; set GEMINI_API_KEY env var or paste key below)
+ai_provider: gemini
+ai_model: gemini-3.8-flash
+ai_api_key: \"\"
+ai_system_prompt: \"\"
 ";
 
 fn home_dir_path() -> Option<PathBuf> {
@@ -675,6 +776,22 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     cfg.auto_save_delay = ms.max(100);
                 }
             }
+            "ai_provider" | "aiProvider" | "ai.provider" => {
+                if !scalar.is_empty() {
+                    cfg.ai_provider = scalar.trim().to_ascii_lowercase();
+                }
+            }
+            "ai_model" | "aiModel" | "ai.model" | "gemini_model" => {
+                if !scalar.is_empty() {
+                    cfg.ai_model = scalar;
+                }
+            }
+            "ai_api_key" | "aiApiKey" | "ai.api_key" | "gemini_api_key" => {
+                cfg.ai_api_key = scalar;
+            }
+            "ai_system_prompt" | "aiSystemPrompt" | "ai.system_prompt" => {
+                cfg.ai_system_prompt = scalar;
+            }
             _ => {}
         }
     }
@@ -711,6 +828,10 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         startup_file: String::new(),
         auto_save: "off".to_string(),
         auto_save_delay: 1000,
+        ai_provider: "gemini".to_string(),
+        ai_model: "gemini-3.8-flash".to_string(),
+        ai_api_key: String::new(),
+        ai_system_prompt: String::new(),
         resolved_startup_dir: default_startup,
         global_config_path: global_config_file.to_string_lossy().into_owned(),
         workspace_config_path: None,
@@ -752,6 +873,8 @@ fn format_config_yaml_template(scope_title: &str, cfg: &AppConfig) -> String {
     let escaped_py = cfg.python_path.replace('"', "\\\"");
     let escaped_dir = cfg.startup_dir.replace('"', "\\\"");
     let escaped_file = cfg.startup_file.replace('"', "\\\"");
+    let escaped_model = cfg.ai_model.replace('"', "\\\"");
+    let escaped_sys = cfg.ai_system_prompt.replace('"', "\\\"");
     format!(
         "# {scope_title}\n\n\
 # 1. Editor font family, size (px), and matrix KaTeX font size (%)\n\
@@ -769,8 +892,18 @@ startup_mode: {}\n\
 startup_file: \"{escaped_file}\"\n\n\
 # 6. Auto Save: off (never) | afterDelay (every X ms) | onFocusChange | onWindowChange\n\
 auto_save: {}\n\
-auto_save_delay: {}\n",
-        cfg.font_size, cfg.matrix_font_size, cfg.line_numbers, cfg.startup_mode, cfg.auto_save, cfg.auto_save_delay
+auto_save_delay: {}\n\n\
+# 7. AI Cell Assistant (keep ai_api_key in global ~/.physpy/config.yaml)\n\
+ai_provider: {}\n\
+ai_model: \"{escaped_model}\"\n\
+ai_system_prompt: \"{escaped_sys}\"\n",
+        cfg.font_size,
+        cfg.matrix_font_size,
+        cfg.line_numbers,
+        cfg.startup_mode,
+        cfg.auto_save,
+        cfg.auto_save_delay,
+        cfg.ai_provider
     )
 }
 
@@ -833,6 +966,10 @@ fn read_config_scope(
             startup_file: String::new(),
             auto_save: "off".to_string(),
             auto_save_delay: 1000,
+            ai_provider: "gemini".to_string(),
+            ai_model: "gemini-3.8-flash".to_string(),
+            ai_api_key: String::new(),
+            ai_system_prompt: String::new(),
             resolved_startup_dir: effective.resolved_startup_dir.clone(),
             global_config_path: effective.global_config_path.clone(),
             workspace_config_path: effective.workspace_config_path.clone(),
@@ -1459,6 +1596,8 @@ pub fn run() {
             reset_session,
             run_code,
             transpile,
+            ai_assist,
+            list_ai_models,
             read_file,
             read_binary_file,
             write_file,
@@ -1500,6 +1639,10 @@ mod tests {
             startup_file: String::new(),
             auto_save: "off".to_string(),
             auto_save_delay: 1000,
+            ai_provider: "gemini".to_string(),
+            ai_model: "gemini-3.8-flash".to_string(),
+            ai_api_key: String::new(),
+            ai_system_prompt: String::new(),
             resolved_startup_dir: "/tmp".to_string(),
             global_config_path: "/tmp/config.yaml".to_string(),
             workspace_config_path: None,

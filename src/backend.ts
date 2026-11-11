@@ -64,6 +64,17 @@ export interface InstallResult {
   requirements_file_written: boolean;
 }
 
+export interface AiAssistResult {
+  code: string;
+  explanation?: string;
+  model?: string;
+}
+
+export interface GeminiModelInfo {
+  id: string;
+  display_name: string;
+}
+
 export interface AppConfig {
   font_family: string;
   font_size: number;
@@ -75,6 +86,10 @@ export interface AppConfig {
   startup_file: string;
   auto_save: "off" | "afterDelay" | "onFocusChange" | "onWindowChange" | string;
   auto_save_delay: number;
+  ai_provider?: string;
+  ai_model?: string;
+  ai_api_key?: string;
+  ai_system_prompt?: string;
   resolved_startup_dir: string;
   global_config_path: string;
   workspace_config_path: string | null;
@@ -138,6 +153,17 @@ export const runCode = (source: string, path: string | null) =>
   invoke<RunOutput>("run_code", { source, path });
 
 export const transpile = (source: string) => invoke<string>("transpile", { source });
+
+export const aiAssist = (params: {
+  prompt: string;
+  cellSource: string;
+  contextBefore: string;
+  exports: Record<string, string>;
+  workspaceDir: string | null;
+}) => invoke<AiAssistResult>("ai_assist", params);
+
+export const listAiModels = (apiKey: string | null, workspaceDir: string | null) =>
+  invoke<GeminiModelInfo[]>("list_ai_models", { apiKey, workspaceDir });
 
 export const initialRootDir = () => invoke<string>("initial_root_dir");
 

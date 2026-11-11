@@ -39,6 +39,10 @@ interface CellState {
   venvPath: string;
   depsInstalling: boolean;
   btnRun: HTMLButtonElement;
+  btnAi: HTMLButtonElement;
+  aiWrap: HTMLDivElement;
+  aiPromptInput: HTMLTextAreaElement;
+  aiOpen: boolean;
   outputWrap: HTMLDivElement;
   btnCopyOutput: HTMLButtonElement;
   tableModeGroup: HTMLDivElement;
@@ -141,7 +145,18 @@ const cfgStartupFileRow = $<HTMLDivElement>("cfg-startup-file-row");
 const cfgAutoSaveSelect = $<HTMLSelectElement>("cfg-auto-save");
 const cfgAutoSaveDelayInput = $<HTMLInputElement>("cfg-auto-save-delay");
 const cfgAutoSaveDelayRow = $<HTMLDivElement>("cfg-auto-save-delay-row");
+const cfgAiProviderSelect = $<HTMLSelectElement>("cfg-ai-provider");
+const cfgAiModelSelect = $<HTMLSelectElement>("cfg-ai-model-select");
+const cfgAiModelInput = $<HTMLInputElement>("cfg-ai-model");
+const btnCfgAiRefreshModels = $<HTMLButtonElement>("btn-cfg-ai-refresh-models");
+const cfgAiModelsStatus = $<HTMLSpanElement>("cfg-ai-models-status");
+const cfgAiApiKeyInput = $<HTMLInputElement>("cfg-ai-api-key");
+const btnCfgAiToggleKey = $<HTMLButtonElement>("btn-cfg-ai-toggle-key");
+const cfgAiSystemPromptInput = $<HTMLInputElement>("cfg-ai-system-prompt");
 const cfgRawYamlInput = $<HTMLTextAreaElement>("cfg-raw-yaml");
+
+const DEFAULT_AI_MODEL = "gemini-3.8-flash";
+let fetchedAiModels: backend.GeminiModelInfo[] = [];
 const tabsListEl = $<HTMLDivElement>("tabs-list");
 const sidebarEl = $<HTMLElement>("sidebar");
 const fileTreeEl = $<HTMLDivElement>("file-tree");
@@ -773,8 +788,12 @@ function buildYamlFromSettingsForm(): string {
   const startFile = cfgStartupFileInput.value.trim().replace(/"/g, '\\"');
   const autoSave = cfgAutoSaveSelect.value || "off";
   const autoSaveDelay = Number(cfgAutoSaveDelayInput.value) || 1000;
+  const aiProvider = (cfgAiProviderSelect.value || "gemini").trim();
+  const aiModel = (cfgAiModelInput.value.trim() || DEFAULT_AI_MODEL).replace(/"/g, '\\"');
+  const aiApiKey = cfgAiApiKeyInput.value.trim().replace(/"/g, '\\"');
+  const aiSystemPrompt = cfgAiSystemPromptInput.value.trim().replace(/"/g, '\\"');
 
-  return [
+  const lines = [
     `# ${scopeTitle}`,
     "",
     "# 1. Editor font family, size (px), and matrix KaTeX font size (%)",
@@ -799,7 +818,82 @@ function buildYamlFromSettingsForm(): string {
     `auto_save: ${autoSave}`,
     `auto_save_delay: ${autoSaveDelay}`,
     "",
-  ].join("\n");
+    "# 7. AI Cell Assistant (Gemini)",
+    `ai_provider: ${aiProvider}`,
+    `ai_model: "${aiModel}"`,
+  ];
+  if (activeSettingsScope === "global" || aiApiKey) {
+    lines.push(`ai_api_key: "${aiApiKey}"`);
+  }
+  lines.push(`ai_system_prompt: "${aiSystemPrompt}"`, "");
+  return lines.join("\n");
+}
+
+function renderAiModelSelectOptions(selectedModel: string) {
+  const target = selectedModel.trim() || DEFAULT_AI_MODEL;
+  cfgAiModelInput.value = target;
+  cfgAiModelSelect.innerHTML = "";
+
+  const candidates: { id: string; label: string }[] =
+    fetchedAiModels.length > 0
+      ? fetchedAiModels.map((m) => ({
+          id: m.id,
+          label: m.display_name && m.display_name !== m.id ? `${m.id} — ${m.display_name}` : m.id,
+        }))
+      : [{ id: DEFAULT_AI_MODEL, label: `${DEFAULT_AI_MODEL} (Default)` }];
+
+  const hasTarget = candidates.some((c) => c.id === target);
+  if (!hasTarget && fetchedAiModels.length === 0) {
+    candidates.unshift({ id: target, label: target });
+  }
+
+  for (const item of candidates) {
+    const opt = document.createElement("option");
+    opt.value = item.id;
+    opt.textContent = item.label;
+    cfgAiModelSelect.append(opt);
+  }
+
+  const customOpt = document.createElement("option");
+  customOpt.value = "__custom__";
+  customOpt.textContent = "Custom model ID…";
+  cfgAiModelSelect.append(customOpt);
+
+  if (candidates.some((c) => c.id === target)) {
+    cfgAiModelSelect.value = target;
+    cfgAiModelInput.hidden = true;
+  } else {
+    cfgAiModelSelect.value = "__custom__";
+    cfgAiModelInput.hidden = false;
+  }
+}
+
+async function refreshAiModelsList(silent = false) {
+  if (!backend.inTauri) return;
+  const currentModel = cfgAiModelInput.value.trim() || DEFAULT_AI_MODEL;
+  const typedKey = cfgAiApiKeyInput.value.trim() || null;
+
+  btnCfgAiRefreshModels.disabled = true;
+  btnCfgAiRefreshModels.textContent = "Loading…";
+  if (!silent) {
+    cfgAiModelsStatus.textContent = "Fetching available models from Gemini API…";
+    cfgAiModelsStatus.style.color = "";
+  }
+  try {
+    const models = await backend.listAiModels(typedKey, rootDir);
+    fetchedAiModels = models;
+    renderAiModelSelectOptions(currentModel);
+    cfgAiModelsStatus.textContent = `✓ Loaded ${models.length} models from Gemini API`;
+    cfgAiModelsStatus.style.color = "#98c379";
+  } catch (err) {
+    if (!silent) {
+      cfgAiModelsStatus.textContent = String(err);
+      cfgAiModelsStatus.style.color = "#e06c75";
+    }
+  } finally {
+    btnCfgAiRefreshModels.disabled = false;
+    btnCfgAiRefreshModels.textContent = "↻ Fetch Models";
+  }
 }
 
 function syncSettingsFormFromYamlText(yamlText: string) {
@@ -865,6 +959,14 @@ function syncSettingsFormFromYamlText(yamlText: string) {
     ) {
       const n = parseInt(val, 10);
       if (!Number.isNaN(n)) cfgAutoSaveDelayInput.value = String(n);
+    } else if (key === "ai_provider" || key === "aiProvider" || key === "ai.provider") {
+      if (val.toLowerCase() === "gemini") cfgAiProviderSelect.value = "gemini";
+    } else if (key === "ai_model" || key === "aiModel" || key === "ai.model" || key === "gemini_model") {
+      renderAiModelSelectOptions(val || DEFAULT_AI_MODEL);
+    } else if (key === "ai_api_key" || key === "aiApiKey" || key === "ai.api_key" || key === "gemini_api_key") {
+      cfgAiApiKeyInput.value = val;
+    } else if (key === "ai_system_prompt" || key === "aiSystemPrompt" || key === "ai.system_prompt") {
+      cfgAiSystemPromptInput.value = val;
     }
   }
   updateStartupFileRowVisibility();
@@ -904,11 +1006,18 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgStartupFileInput.value = data.parsed.startup_file || "";
     cfgAutoSaveSelect.value = (data.parsed.auto_save as any) || "off";
     cfgAutoSaveDelayInput.value = String(data.parsed.auto_save_delay || 1000);
+    cfgAiProviderSelect.value = data.parsed.ai_provider || "gemini";
+    renderAiModelSelectOptions(data.parsed.ai_model || DEFAULT_AI_MODEL);
+    cfgAiApiKeyInput.value = scope === "global" ? data.parsed.ai_api_key || "" : "";
+    cfgAiSystemPromptInput.value = data.parsed.ai_system_prompt || "";
     cfgRawYamlInput.value = data.raw_yaml;
     syncSettingsFormFromYamlText(data.raw_yaml);
     updateStartupFileRowVisibility();
     updateAutoSaveDelayRowVisibility();
     markSettingsTabDirty(false);
+    if (data.effective.ai_api_key || cfgAiApiKeyInput.value.trim()) {
+      void refreshAiModelsList(true);
+    }
   } catch (e) {
     setStatus(`Failed to read config: ${String(e)}`);
   }
@@ -948,6 +1057,10 @@ for (const inputEl of [
   cfgStartupDirInput,
   cfgStartupFileInput,
   cfgAutoSaveDelayInput,
+  cfgAiProviderSelect,
+  cfgAiModelInput,
+  cfgAiApiKeyInput,
+  cfgAiSystemPromptInput,
 ]) {
   inputEl.addEventListener("input", () => {
     cfgRawYamlInput.value = buildYamlFromSettingsForm();
@@ -964,6 +1077,32 @@ cfgMatrixFontSizeInput.addEventListener("input", () => {
   if (val >= 50 && val <= 300) {
     document.documentElement.style.setProperty("--editor-matrix-font-size", `${val}%`);
   }
+});
+
+cfgAiModelSelect.addEventListener("change", () => {
+  if (cfgAiModelSelect.value === "__custom__") {
+    cfgAiModelInput.hidden = false;
+    cfgAiModelInput.focus();
+  } else {
+    cfgAiModelInput.hidden = true;
+    cfgAiModelInput.value = cfgAiModelSelect.value || DEFAULT_AI_MODEL;
+  }
+  cfgRawYamlInput.value = buildYamlFromSettingsForm();
+  markSettingsTabDirty(true);
+});
+
+btnCfgAiRefreshModels.addEventListener("click", () => void refreshAiModelsList(false));
+
+cfgAiApiKeyInput.addEventListener("change", () => {
+  if (cfgAiApiKeyInput.value.trim()) {
+    void refreshAiModelsList(true);
+  }
+});
+
+btnCfgAiToggleKey.addEventListener("click", () => {
+  const isHidden = cfgAiApiKeyInput.type === "password";
+  cfgAiApiKeyInput.type = isHidden ? "text" : "password";
+  btnCfgAiToggleKey.textContent = isHidden ? "Hide" : "Show";
 });
 
 cfgStartupModeSelect.addEventListener("change", () => {
@@ -2344,12 +2483,16 @@ function applyCellKindUI(cell: CellState) {
     cell.mdPreviewEl.hidden = true;
     cell.mediaWrap.hidden = true;
     cell.depsWrap.hidden = true;
+    cell.btnAi.hidden = false;
+    cell.aiWrap.hidden = !cell.aiOpen;
     cell.btnRun.innerHTML = "▶ Run <kbd>⌘↵</kbd>";
     cell.btnRun.title = "Run this code cell (Cmd+Enter or Shift+Enter)";
   } else if (cell.kind === "markdown") {
     cell.depsWrap.hidden = true;
     cell.mediaWrap.hidden = true;
     cell.outputWrap.hidden = true;
+    cell.btnAi.hidden = true;
+    cell.aiWrap.hidden = true;
     updateMarkdownPreview(cell);
     cell.editorHost.hidden = !cell.mdEditing;
     cell.mdPreviewEl.hidden = cell.mdEditing;
@@ -2365,6 +2508,8 @@ function applyCellKindUI(cell: CellState) {
     cell.mdPreviewEl.hidden = true;
     cell.mediaWrap.hidden = true;
     cell.outputWrap.hidden = true;
+    cell.btnAi.hidden = true;
+    cell.aiWrap.hidden = true;
     cell.depsWrap.hidden = false;
     cell.depsVenvBadge.textContent = cell.venvPath || ".venv";
     cell.btnRun.innerHTML = "⚡ Install <kbd>⌘↵</kbd>";
@@ -2375,6 +2520,8 @@ function applyCellKindUI(cell: CellState) {
     cell.editorHost.hidden = true;
     cell.mdPreviewEl.hidden = true;
     cell.outputWrap.hidden = true;
+    cell.btnAi.hidden = true;
+    cell.aiWrap.hidden = true;
     cell.mediaWrap.hidden = false;
     cell.btnRun.innerHTML = "📂 Choose File…";
     cell.btnRun.title = "Choose a PDF or image file to embed in this cell";
@@ -2419,6 +2566,12 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   const actions = document.createElement("div");
   actions.className = "cell-actions";
 
+  const btnAi = document.createElement("button");
+  btnAi.type = "button";
+  btnAi.className = "cell-btn ai";
+  btnAi.innerHTML = "✨ AI <kbd>⌘K</kbd>";
+  btnAi.title = "Ask Gemini AI to edit or generate code for this cell (Cmd+K)";
+
   const btnRun = document.createElement("button");
   btnRun.type = "button";
   btnRun.className = "cell-btn run";
@@ -2449,8 +2602,97 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnDel.textContent = "✕";
   btnDel.title = "Delete cell";
 
-  actions.append(btnRun, btnAdd, btnUp, btnDown, btnDel);
+  actions.append(btnAi, btnRun, btnAdd, btnUp, btnDown, btnDel);
   header.append(badgeEl, kindSelect, titleInput, actions);
+
+  // AI Cell Assistant prompt & proposal drawer
+  const aiWrap = document.createElement("div");
+  aiWrap.className = "cell-ai-wrap";
+  aiWrap.hidden = true;
+
+  const aiPromptRow = document.createElement("div");
+  aiPromptRow.className = "cell-ai-prompt-row";
+
+  const aiBadge = document.createElement("span");
+  aiBadge.className = "cell-ai-badge";
+  aiBadge.textContent = "✨ Gemini";
+
+  const aiPromptInput = document.createElement("textarea");
+  aiPromptInput.className = "cell-ai-input";
+  aiPromptInput.rows = 1;
+  aiPromptInput.placeholder =
+    "Opisz co zmienić lub dopisać w tej komórce… (Enter = wyślij, Shift+Enter = nowa linia, Esc = zamknij)";
+
+  const aiContextLabel = document.createElement("label");
+  aiContextLabel.className = "cell-ai-context-toggle";
+  aiContextLabel.title = "Dołącz poprzednie komórki i aktywne zmienne export do kontekstu";
+  const aiContextCheck = document.createElement("input");
+  aiContextCheck.type = "checkbox";
+  aiContextCheck.checked = true;
+  const aiContextSpan = document.createElement("span");
+  aiContextSpan.textContent = "Context";
+  aiContextLabel.append(aiContextCheck, aiContextSpan);
+
+  const btnAiGenerate = document.createElement("button");
+  btnAiGenerate.type = "button";
+  btnAiGenerate.className = "cell-btn run cell-ai-generate";
+  btnAiGenerate.textContent = "Generate";
+
+  const btnAiClose = document.createElement("button");
+  btnAiClose.type = "button";
+  btnAiClose.className = "cell-btn";
+  btnAiClose.textContent = "✕";
+  btnAiClose.title = "Close AI prompt";
+
+  aiPromptRow.append(aiBadge, aiPromptInput, aiContextLabel, btnAiGenerate, btnAiClose);
+
+  const aiStatusBar = document.createElement("div");
+  aiStatusBar.className = "cell-ai-status";
+  aiStatusBar.hidden = true;
+
+  const aiProposal = document.createElement("div");
+  aiProposal.className = "cell-ai-proposal";
+  aiProposal.hidden = true;
+
+  const aiProposalHeader = document.createElement("div");
+  aiProposalHeader.className = "cell-ai-proposal-header";
+
+  const aiExplanation = document.createElement("span");
+  aiExplanation.className = "cell-ai-explanation";
+
+  const aiProposalActions = document.createElement("div");
+  aiProposalActions.className = "cell-ai-proposal-actions";
+
+  const btnAiAccept = document.createElement("button");
+  btnAiAccept.type = "button";
+  btnAiAccept.className = "cell-btn run";
+  btnAiAccept.textContent = "✓ Replace Cell";
+  btnAiAccept.title = "Replace current cell code with this suggestion";
+
+  const btnAiInsertBelow = document.createElement("button");
+  btnAiInsertBelow.type = "button";
+  btnAiInsertBelow.className = "cell-btn";
+  btnAiInsertBelow.textContent = "+ Insert Below";
+  btnAiInsertBelow.title = "Insert suggestion as a new cell below";
+
+  const btnAiCopy = document.createElement("button");
+  btnAiCopy.type = "button";
+  btnAiCopy.className = "cell-btn";
+  btnAiCopy.textContent = "Copy";
+
+  const btnAiDiscard = document.createElement("button");
+  btnAiDiscard.type = "button";
+  btnAiDiscard.className = "cell-btn";
+  btnAiDiscard.textContent = "Discard";
+
+  aiProposalActions.append(btnAiAccept, btnAiInsertBelow, btnAiCopy, btnAiDiscard);
+  aiProposalHeader.append(aiExplanation, aiProposalActions);
+
+  const aiPreviewPre = document.createElement("pre");
+  aiPreviewPre.className = "cell-ai-preview";
+
+  aiProposal.append(aiProposalHeader, aiPreviewPre);
+  aiWrap.append(aiPromptRow, aiStatusBar, aiProposal);
 
   // Packages / Dependencies toolbar & view
   const depsWrap = document.createElement("div");
@@ -2598,7 +2840,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   latexWrap.hidden = true;
 
   outputWrap.append(outputActions, exportedBar, latexWrap, outputPre, tablesWrap, plotsWrap);
-  card.append(header, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
+  card.append(header, aiWrap, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
     parent: editorHost,
@@ -2607,6 +2849,14 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       { key: "Mod-Enter", run: () => (void runSingleCell(state, false), true) },
       { key: "Shift-Enter", run: () => (void runSingleCell(state, true), true) },
       { key: "Mod-Shift-Enter", run: () => (void runAllCells(), true) },
+      {
+        key: "Mod-k",
+        run: () => {
+          if (state.kind !== "code") return false;
+          openAiPanel();
+          return true;
+        },
+      },
       { key: "Mod-s", run: () => (void saveFile(), true) },
       { key: "Mod-o", run: () => (void openFile(), true) },
       { key: "Mod-Shift-o", run: () => (void changeRootFolder(), true) },
@@ -2646,6 +2896,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     venvPath: initial.venv || "",
     depsInstalling: false,
     btnRun,
+    btnAi,
+    aiWrap,
+    aiPromptInput,
+    aiOpen: false,
     outputWrap,
     btnCopyOutput,
     tableModeGroup,
@@ -2703,6 +2957,129 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     } catch (err) {
       setStatus(`Failed to copy output: ${String(err)}`);
     }
+  });
+
+  let proposedAiCode = "";
+
+  const openAiPanel = (open?: boolean) => {
+    if (state.kind !== "code") return;
+    state.aiOpen = open !== undefined ? open : !state.aiOpen;
+    state.aiWrap.hidden = !state.aiOpen;
+    if (state.aiOpen) {
+      state.aiPromptInput.focus();
+    } else {
+      state.view.focus();
+    }
+  };
+
+  const runAiRequest = async () => {
+    if (!requireTauri()) return;
+    const promptText = aiPromptInput.value.trim();
+    if (!promptText) {
+      aiStatusBar.hidden = false;
+      aiStatusBar.className = "cell-ai-status error";
+      aiStatusBar.textContent = "Wpisz polecenie dla Gemini przed wysłaniem.";
+      aiPromptInput.focus();
+      return;
+    }
+
+    const idx = cells.indexOf(state);
+    const contextBefore = aiContextCheck.checked
+      ? cells
+          .slice(0, Math.max(0, idx))
+          .filter((c) => c.kind === "code" && c.view.state.doc.toString().trim().length > 0)
+          .map((c, i) => `# --- Cell ${i + 1}${c.title ? `: ${c.title}` : ""} ---\n${c.view.state.doc.toString()}`)
+          .join("\n\n")
+      : "";
+    const exportsCtx = aiContextCheck.checked ? { ...sessionRuntimeExports } : {};
+
+    btnAiGenerate.disabled = true;
+    btnAiGenerate.textContent = "Thinking…";
+    aiStatusBar.hidden = false;
+    aiStatusBar.className = "cell-ai-status loading";
+    aiStatusBar.textContent = "Asking Gemini…";
+    aiProposal.hidden = true;
+
+    try {
+      const res = await backend.aiAssist({
+        prompt: promptText,
+        cellSource: state.view.state.doc.toString(),
+        contextBefore,
+        exports: exportsCtx,
+        workspaceDir: rootDir,
+      });
+      proposedAiCode = res.code;
+      aiStatusBar.hidden = true;
+      aiExplanation.textContent =
+        res.explanation || `Suggested code${res.model ? ` (${res.model})` : ""}`;
+      aiPreviewPre.textContent = proposedAiCode;
+      aiProposal.hidden = false;
+    } catch (err) {
+      const msg = String(err);
+      aiStatusBar.hidden = false;
+      aiStatusBar.className = "cell-ai-status error";
+      aiStatusBar.textContent = msg;
+      if (/api key|GEMINI_API_KEY|ai_api_key/i.test(msg)) {
+        const btnCfg = document.createElement("button");
+        btnCfg.type = "button";
+        btnCfg.className = "cell-ai-settings-link";
+        btnCfg.textContent = "Open Settings →";
+        btnCfg.addEventListener("click", () => openSettingsTab("global"));
+        aiStatusBar.append(" ", btnCfg);
+      }
+    } finally {
+      btnAiGenerate.disabled = false;
+      btnAiGenerate.textContent = "Generate";
+    }
+  };
+
+  btnAi.addEventListener("click", () => openAiPanel());
+  btnAiClose.addEventListener("click", () => openAiPanel(false));
+  btnAiGenerate.addEventListener("click", () => void runAiRequest());
+  aiPromptInput.addEventListener("input", () => {
+    aiPromptInput.style.height = "auto";
+    aiPromptInput.style.height = `${Math.min(120, Math.max(30, aiPromptInput.scrollHeight))}px`;
+  });
+  aiPromptInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void runAiRequest();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      openAiPanel(false);
+    }
+  });
+  btnAiAccept.addEventListener("click", () => {
+    if (!proposedAiCode) return;
+    setDoc(state.view, proposedAiCode);
+    markDirty();
+    aiProposal.hidden = true;
+    openAiPanel(false);
+    setStatus("Applied AI code suggestion (Cmd+Z to undo)");
+  });
+  btnAiInsertBelow.addEventListener("click", () => {
+    if (!proposedAiCode) return;
+    const idx = cells.indexOf(state);
+    const created = createCellCard({ kind: "code", title: "", source: proposedAiCode }, idx + 1);
+    markDirty();
+    aiProposal.hidden = true;
+    openAiPanel(false);
+    created.view.focus();
+    setStatus("Inserted AI suggestion below");
+  });
+  btnAiCopy.addEventListener("click", async () => {
+    if (!proposedAiCode) return;
+    try {
+      await navigator.clipboard.writeText(proposedAiCode);
+      setStatus("Copied AI suggestion to clipboard");
+    } catch (err) {
+      setStatus(`Copy failed: ${String(err)}`);
+    }
+  });
+  btnAiDiscard.addEventListener("click", () => {
+    proposedAiCode = "";
+    aiProposal.hidden = true;
+    aiStatusBar.hidden = true;
   });
 
   btnSelectVenv.addEventListener("click", async () => {

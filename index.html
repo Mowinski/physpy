@@ -167,6 +167,55 @@
                     <input id="cfg-auto-save-delay" type="number" min="100" max="60000" step="100" value="1000" />
                   </div>
                 </div>
+
+                <div class="settings-card">
+                  <h3>7. AI Cell Assistant (Gemini)</h3>
+                  <div class="settings-field">
+                    <label for="cfg-ai-provider">Provider (<code>ai_provider</code>)</label>
+                    <select id="cfg-ai-provider" class="settings-select">
+                      <option value="gemini">Google Gemini</option>
+                    </select>
+                  </div>
+                  <div class="settings-field">
+                    <label for="cfg-ai-model-select">Model (<code>ai_model</code>)</label>
+                    <div class="dialog-input-group">
+                      <select id="cfg-ai-model-select" class="settings-select">
+                        <option value="gemini-3.8-flash">gemini-3.8-flash (Default)</option>
+                        <option value="__custom__">Custom model ID…</option>
+                      </select>
+                      <button id="btn-cfg-ai-refresh-models" type="button" title="Fetch available models from Gemini API">↻ Fetch Models</button>
+                    </div>
+                    <input
+                      id="cfg-ai-model"
+                      type="text"
+                      placeholder="gemini-3.8-flash"
+                      value="gemini-3.8-flash"
+                      hidden
+                    />
+                    <span id="cfg-ai-models-status" class="settings-hint">Click "Fetch Models" after entering an API key to load available models.</span>
+                  </div>
+                  <div class="settings-field">
+                    <label for="cfg-ai-api-key">Gemini API Key (<code>ai_api_key</code>)</label>
+                    <div class="dialog-input-group">
+                      <input
+                        id="cfg-ai-api-key"
+                        type="password"
+                        autocomplete="off"
+                        placeholder="AIza… (or set GEMINI_API_KEY env var)"
+                      />
+                      <button id="btn-cfg-ai-toggle-key" type="button" title="Show or hide API key">Show</button>
+                    </div>
+                    <span class="settings-hint">Stored only in Global Config (~/.physpy/config.yaml) so keys aren't written to workspace git repos.</span>
+                  </div>
+                  <div class="settings-field">
+                    <label for="cfg-ai-system-prompt">Extra Instructions (<code>ai_system_prompt</code>)</label>
+                    <input
+                      id="cfg-ai-system-prompt"
+                      type="text"
+                      placeholder="Optional, e.g. Answer in Polish and prefer SI units"
+                    />
+                  </div>
+                </div>
               </div>
 
               <div class="settings-yaml-section">

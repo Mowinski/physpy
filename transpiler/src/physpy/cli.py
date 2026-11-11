@@ -15,6 +15,7 @@ import sys
 import traceback
 
 from . import importer
+from .ai import run_ai_cli
 from .errors import TranspileError
 from .notebook import NotebookSession, run_worker, split_cells
 from .pipeline import compile_source, transpile
@@ -90,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         p.set_defaults(func=func)
     w = sub.add_parser("worker", help="run persistent JSON-RPC cell worker")
     w.set_defaults(func=lambda _args: run_worker())
+    a = sub.add_parser("ai", help="run Gemini AI code suggestion from JSON stdin")
+    a.set_defaults(func=lambda _args: run_ai_cli())
     args = parser.parse_args(argv)
     return args.func(args)
 
