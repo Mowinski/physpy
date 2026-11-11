@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import io
 import re
+import sys
 import tokenize
 from typing import Any
 
@@ -19,29 +20,80 @@ _UREG: Any = None
 _MICRO_SPACE_RE = re.compile(r"μ\s+([A-Za-zΩ]+)")
 
 
-def get_ureg() -> Any:
-    """Return the shared session-wide ``pint.UnitRegistry`` singleton."""
-    global _UREG
-    if _UREG is None:
-        import pint
+def _configure_ureg(ureg: Any) -> None:
+    """Apply PhysPy defaults to a ``pint.UnitRegistry`` without replacing it."""
+    ureg.autoconvert_offset_to_baseunit = True
+    ureg.formatter.default_format = "~P"
 
-        ureg = pint.UnitRegistry(autoconvert_offset_to_baseunit=True)
-        ureg.formatter.default_format = "~P"
-
-        orig_fmt = ureg.formatter.format_quantity
+    orig_fmt = ureg.formatter.format_quantity
+    if not getattr(orig_fmt, "_physpy_wrapped", False):
 
         def _fmt_quantity(q: Any, qspec: str = "", **kwargs: Any) -> str:
             if qspec and not any(c in qspec for c in "~PDCLHX"):
                 qspec = qspec + "~P"
             return orig_fmt(q, qspec, **kwargs)
 
+        _fmt_quantity._physpy_wrapped = True  # type: ignore[attr-defined]
         ureg.formatter.format_quantity = _fmt_quantity
-        try:
-            ureg.setup_matplotlib(True)
-        except Exception:
-            pass
+
+    try:
+        ureg.setup_matplotlib(True)
+    except Exception:
+        pass
+
+
+def _unwrap_ureg(reg: Any) -> Any:
+    return reg.get() if callable(getattr(reg, "get", None)) else reg
+
+
+def get_ureg() -> Any:
+    """Return the shared session-wide ``pint.UnitRegistry`` aligned with pint / pint-pandas."""
+    global _UREG
+    import pint
+
+    app_reg = pint.get_application_registry()
+    ureg = _unwrap_ureg(app_reg)
+
+    # If pint_pandas is loaded and PintType.ureg was pointed at a custom UnitRegistry,
+    # follow it so PhysPy `[unit]` literals stay compatible with pint-pandas columns.
+    pp = sys.modules.get("pint_pandas")
+    if pp is not None:
+        pp_ureg = getattr(getattr(pp, "PintType", None), "ureg", None)
+        if pp_ureg is not None and pp_ureg is not app_reg:
+            ureg = _unwrap_ureg(pp_ureg)
+
+    if _UREG is not ureg:
+        _configure_ureg(ureg)
         _UREG = ureg
     return _UREG
+
+
+def reset_ureg() -> None:
+    """Reset PhysPy, pint application registry, and pint-pandas cache on session reset."""
+    global _UREG
+    _UREG = None
+
+    pint_mod = sys.modules.get("pint")
+    if pint_mod is not None:
+        try:
+            pint_mod.set_application_registry(
+                pint_mod.UnitRegistry(autoconvert_offset_to_baseunit=True)
+            )
+        except Exception:
+            pass
+
+    pp = sys.modules.get("pint_pandas")
+    if pp is not None:
+        pint_type = getattr(pp, "PintType", None)
+        if pint_type is not None:
+            if pint_mod is not None:
+                try:
+                    pint_type.ureg = pint_mod.get_application_registry()
+                except Exception:
+                    pass
+            cache = getattr(pint_type, "_cache", None)
+            if isinstance(cache, dict):
+                cache.clear()
 
 
 def make_quantity(value: Any, unit_str: str) -> Any:

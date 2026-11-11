@@ -23,6 +23,29 @@ pub struct RunOutput {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct TableColumn {
+    name: String,
+    unit: Option<String>,
+    is_numeric: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TableRow {
+    index: String,
+    cells: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TableOutput {
+    index_name: String,
+    columns: Vec<TableColumn>,
+    rows: Vec<TableRow>,
+    total_rows: usize,
+    truncated: bool,
+    raw_text: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct CellOutput {
     stdout: String,
     stderr: String,
@@ -33,6 +56,10 @@ pub struct CellOutput {
     plots: Vec<String>,
     #[serde(default)]
     latex: Option<String>,
+    #[serde(default)]
+    tables: Vec<TableOutput>,
+    #[serde(default)]
+    non_table_stdout: Option<String>,
 }
 
 #[derive(Serialize)]

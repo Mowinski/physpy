@@ -39,6 +39,25 @@ export function createEditor({ parent, doc, onChange, onBlur, keys = [] }: Edito
   return new EditorView({ parent, state: EditorState.create({ doc, extensions }) });
 }
 
+/** Editable plain-text editor (e.g. for raw CSV/text view). */
+export function createPlainTextEditor({ parent, doc, onChange, onBlur, keys = [] }: EditorOptions): EditorView {
+  const extensions: Extension[] = [
+    keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
+    basicSetup,
+    oneDark,
+    EditorView.domEventHandlers({
+      blur: () => {
+        onBlur?.();
+        return false;
+      },
+    }),
+    EditorView.updateListener.of((u) => {
+      if (u.docChanged) onChange?.(u.state.doc.toString());
+    }),
+  ];
+  return new EditorView({ parent, state: EditorState.create({ doc, extensions }) });
+}
+
 /** Read-only viewer for the generated Python. */
 export function createViewer(parent: HTMLElement): EditorView {
   return new EditorView({

@@ -15,6 +15,7 @@ from .pipe import PipeTransformer, rewrite_pipe_tokens
 from .plotting import rewrite_plots
 from .power import rewrite_powers
 from .symbols import rewrite_symbols
+from .tables import rewrite_tables
 from .units import rewrite_units
 
 # Text -> text. Must preserve line numbers. Order matters:
@@ -24,6 +25,7 @@ SOURCE_PASSES: list[Callable[[str], str]] = [
     rewrite_consts,
     rewrite_exports,
     rewrite_plots,
+    rewrite_tables,
     rewrite_units,
     rewrite_matrix_literals,
     rewrite_percentages,

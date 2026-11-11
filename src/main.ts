@@ -9,6 +9,7 @@ import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex } from "./markdownLatex";
+import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -39,21 +40,40 @@ interface CellState {
   depsInstalling: boolean;
   btnRun: HTMLButtonElement;
   outputWrap: HTMLDivElement;
+  btnCopyOutput: HTMLButtonElement;
+  tableModeGroup: HTMLDivElement;
+  btnTableView: HTMLButtonElement;
+  btnTextView: HTMLButtonElement;
   outputPre: HTMLPreElement;
+  tablesWrap: HTMLDivElement;
   plotsWrap: HTMLDivElement;
   exportedBar: HTMLDivElement;
   latexWrap: HTMLDivElement;
+  lastTables: backend.TableOutput[];
+  lastFullStdout: string;
+  lastNonTableStdout: string;
+  lastStderr: string;
+  tableViewMode: "table" | "text";
   runCount: number | null;
 }
 
+type TabKind = "notebook" | "settings" | "csv";
+
 interface TabDoc {
   id: number;
-  kind?: "notebook" | "settings";
+  kind?: TabKind;
   path: string | null;
   untitledName: string;
   content: string;
   dirty: boolean;
   interpreterInfo?: backend.PythonInterpreterInfo | null;
+  csvMode?: CsvViewMode;
+  csvDelimiter?: CsvDelimiter;
+  csvHasHeader?: boolean;
+}
+
+function isCsvPath(path: string | null | undefined): boolean {
+  return !!path && /\.(csv|tsv)$/i.test(path.trim());
 }
 
 let nextCellId = 1;
@@ -72,6 +92,39 @@ let activeSettingsScope: "global" | "workspace" = "global";
 
 const notebookEl = $<HTMLDivElement>("notebook");
 const settingsViewEl = $<HTMLDivElement>("settings-view");
+const csvViewEl = $<HTMLDivElement>("csv-view");
+let csvEditor: CsvEditorController | null = null;
+
+function getCsvEditor(): CsvEditorController {
+  if (!csvEditor) {
+    csvEditor = new CsvEditorController({
+      container: csvViewEl,
+      onChange: () => markDirty(),
+      onSave: () => {
+        void saveFile();
+      },
+      onBlur: () => handleEditorBlur(),
+      onStateChange: (s) => {
+        const cur = activeTab();
+        if (cur && cur.kind === "csv") {
+          cur.csvMode = s.mode;
+          cur.csvDelimiter = s.delimiter;
+          cur.csvHasHeader = s.hasHeader;
+        }
+      },
+      openContextMenu: (x, y, items) => openContextMenu(x, y, items),
+    });
+  }
+  return csvEditor;
+}
+
+function getActiveTabSerializedContent(): string {
+  const cur = activeTab();
+  if (cur?.kind === "csv") {
+    return csvEditor ? csvEditor.getText() : cur.content;
+  }
+  return serializeDocument();
+}
 const btnCfgScopeGlobal = $<HTMLButtonElement>("btn-cfg-scope-global");
 const btnCfgScopeWorkspace = $<HTMLButtonElement>("btn-cfg-scope-workspace");
 const cfgFilePathEl = $<HTMLElement>("cfg-file-path");
@@ -319,7 +372,13 @@ function openContextMenu(x: number, y: number, items: MenuAction[]) {
 function saveActiveTabSnapshot() {
   const cur = activeTab();
   if (cur && cur.kind !== "settings") {
-    cur.content = serializeDocument();
+    cur.content = getActiveTabSerializedContent();
+    if (cur.kind === "csv" && csvEditor) {
+      const s = csvEditor.getState();
+      cur.csvMode = s.mode;
+      cur.csvDelimiter = s.delimiter;
+      cur.csvHasHeader = s.hasHeader;
+    }
     cur.path = currentPath;
     cur.dirty = dirty;
     if (currentConfig?.auto_save === "onFocusChange" || currentConfig?.auto_save === "onWindowChange") {
@@ -433,12 +492,13 @@ function renderTabsBar() {
 
 function createNewTab(opts?: { path?: string | null; content?: string; dirty?: boolean }): TabDoc {
   saveActiveTabSnapshot();
+  const kind: TabKind = isCsvPath(opts?.path) ? "csv" : "notebook";
   const tab: TabDoc = {
     id: nextTabId++,
-    kind: "notebook",
+    kind,
     path: opts?.path ?? null,
     untitledName: `untitled-${untitledCounter++}.ppy`,
-    content: opts?.content ?? "# %% Cell 1\n",
+    content: opts?.content ?? (kind === "csv" ? "" : "# %% Cell 1\n"),
     dirty: opts?.dirty ?? false,
   };
   tabs.push(tab);
@@ -473,18 +533,39 @@ function openSettingsTab(initialScope?: "global" | "workspace"): boolean {
 function switchToTab(tabId: number) {
   const target = tabs.find((t) => t.id === tabId);
   if (!target) return;
+  clearTimeout(autoSaveTimer);
   if (activeTabId && activeTabId !== tabId) {
     saveActiveTabSnapshot();
   }
   activeTabId = target.id;
   if (target.kind === "settings") {
     notebookEl.hidden = true;
+    csvViewEl.hidden = true;
     settingsViewEl.hidden = false;
     updateTitle();
     void loadSettingsScope(activeSettingsScope);
     return;
   }
+  if (target.kind === "csv") {
+    settingsViewEl.hidden = true;
+    notebookEl.hidden = true;
+    csvViewEl.hidden = false;
+    currentPath = target.path;
+    dirty = target.dirty;
+    getCsvEditor().load(target.content, {
+      path: target.path,
+      mode: target.csvMode ?? "table",
+      delimiter: target.csvDelimiter,
+      hasHeader: target.csvHasHeader ?? true,
+      dirty: target.dirty,
+    });
+    updateTitle();
+    getCsvEditor().focus();
+    saveSessionState();
+    return;
+  }
   settingsViewEl.hidden = true;
+  csvViewEl.hidden = true;
   notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
@@ -580,12 +661,13 @@ async function triggerAutoSave(reason: string) {
   const cur = activeTab();
   if (!cur || cur.kind === "settings") return;
 
-  const serialized = serializeDocument();
+  const serialized = getActiveTabSerializedContent();
   try {
     await backend.writeFileByPath(currentPath, serialized);
     dirty = false;
     cur.content = serialized;
     cur.dirty = false;
+    if (cur.kind === "csv") csvEditor?.markSaved();
     updateTitle();
     setStatus(`Auto-saved (${reason}) ${currentPath.split(/[\\/]/).pop()}`);
     void refreshFileTree();
@@ -598,7 +680,8 @@ function handleEditorBlur() {
   if (currentConfig?.auto_save === "onFocusChange" || currentConfig?.auto_save === "onWindowChange") {
     setTimeout(() => {
       const active = document.activeElement;
-      const insideEditor = active && (active.closest(".cm-editor") || active.closest(".cell-card"));
+      const insideEditor =
+        active && (active.closest(".cm-editor") || active.closest(".cell-card") || active.closest("#csv-view"));
       if (!insideEditor) {
         void triggerAutoSave("onFocusChange");
       }
@@ -1354,6 +1437,7 @@ function fileIcon(name: string): string {
   const lower = name.toLowerCase();
   if (lower.endsWith(".ppy")) return "📘";
   if (lower.endsWith(".ipynb")) return "📓";
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return "📊";
   if (lower.endsWith(".py")) return "🐍";
   if (lower.endsWith(".pdf")) return "📕";
   if (/\.(png|jpe?g|webp|svg|gif)$/.test(lower)) return "🖼";
@@ -1366,8 +1450,9 @@ async function promptNewFileIn(dirPath: string) {
   const name = window.prompt("New file name:", "notebook.ppy")?.trim();
   if (!name) return;
   const fullPath = `${dirPath.replace(/\/+$/, "")}/${name}`;
+  const initialContent = isCsvPath(name) ? "" : "# %% Cell 1\n";
   try {
-    await backend.writeFileByPath(fullPath, "# %% Cell 1\n");
+    await backend.writeFileByPath(fullPath, initialContent);
     expandedDirs.add(dirPath);
     await refreshFileTree();
     await openFileByPath(fullPath);
@@ -1640,13 +1725,15 @@ async function openFileByPath(path: string) {
     const cur = activeTab();
     if (cur && !cur.path && !cur.dirty && tabs.length === 1) {
       await resetSession(true);
+      cur.kind = isCsvPath(path) ? "csv" : "notebook";
       cur.path = path;
       cur.content = contents;
       cur.dirty = false;
-      currentPath = path;
-      dirty = false;
-      loadDocumentIntoCells(contents);
-      updateTitle();
+      cur.csvMode = undefined;
+      cur.csvDelimiter = undefined;
+      cur.csvHasHeader = undefined;
+      activeTabId = 0;
+      switchToTab(cur.id);
     } else {
       createNewTab({ path, content: contents, dirty: false });
     }
@@ -2132,9 +2219,11 @@ function renumberCells() {
 function markDirty() {
   dirty = true;
   updateTitle();
-  renderSessionExports();
-  clearTimeout(transpileTimer);
-  transpileTimer = window.setTimeout(refreshPython, 400);
+  if (activeTab()?.kind !== "csv") {
+    renderSessionExports();
+    clearTimeout(transpileTimer);
+    transpileTimer = window.setTimeout(refreshPython, 400);
+  }
 
   if (currentConfig?.auto_save === "afterDelay") {
     clearTimeout(autoSaveTimer);
@@ -2451,9 +2540,43 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   mediaViewer.className = "cell-media-viewer";
   mediaWrap.append(mediaBar, mediaViewer);
 
+const COPY_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"></path></svg>`;
+const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3.5 8.5 6.5 11.5 12.5 4.5"></polyline></svg>`;
+
   const outputWrap = document.createElement("div");
   outputWrap.className = "cell-output-wrap";
   outputWrap.hidden = true;
+
+  const outputActions = document.createElement("div");
+  outputActions.className = "cell-output-actions";
+
+  const tableModeGroup = document.createElement("div");
+  tableModeGroup.className = "cell-output-mode-toggle";
+  tableModeGroup.hidden = true;
+
+  const btnTableView = document.createElement("button");
+  btnTableView.type = "button";
+  btnTableView.className = "cell-output-mode-btn active";
+  btnTableView.textContent = "Table";
+  btnTableView.title = "View output as table";
+
+  const btnTextView = document.createElement("button");
+  btnTextView.type = "button";
+  btnTextView.className = "cell-output-mode-btn";
+  btnTextView.textContent = "Text";
+  btnTextView.title = "View raw text output";
+
+  tableModeGroup.append(btnTableView, btnTextView);
+
+  const btnCopyOutput = document.createElement("button");
+  btnCopyOutput.type = "button";
+  btnCopyOutput.className = "cell-copy-output-btn";
+  btnCopyOutput.title = "Copy output";
+  btnCopyOutput.setAttribute("aria-label", "Copy output");
+  btnCopyOutput.innerHTML = COPY_ICON_SVG;
+  btnCopyOutput.hidden = true;
+
+  outputActions.append(tableModeGroup, btnCopyOutput);
 
   const exportedBar = document.createElement("div");
   exportedBar.className = "cell-exported";
@@ -2461,6 +2584,10 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
 
   const outputPre = document.createElement("pre");
   outputPre.className = "cell-output";
+
+  const tablesWrap = document.createElement("div");
+  tablesWrap.className = "cell-tables-wrap";
+  tablesWrap.hidden = true;
 
   const plotsWrap = document.createElement("div");
   plotsWrap.className = "cell-plots";
@@ -2470,7 +2597,7 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   latexWrap.className = "cell-latex-output";
   latexWrap.hidden = true;
 
-  outputWrap.append(exportedBar, latexWrap, outputPre, plotsWrap);
+  outputWrap.append(outputActions, exportedBar, latexWrap, outputPre, tablesWrap, plotsWrap);
   card.append(header, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
@@ -2520,12 +2647,63 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
     depsInstalling: false,
     btnRun,
     outputWrap,
+    btnCopyOutput,
+    tableModeGroup,
+    btnTableView,
+    btnTextView,
     outputPre,
+    tablesWrap,
     plotsWrap,
     exportedBar,
     latexWrap,
+    lastTables: [],
+    lastFullStdout: "",
+    lastNonTableStdout: "",
+    lastStderr: "",
+    tableViewMode: "table",
     runCount: null,
   };
+
+  btnTableView.addEventListener("click", () => {
+    state.tableViewMode = "table";
+    applyCellOutputView(state);
+  });
+  btnTextView.addEventListener("click", () => {
+    state.tableViewMode = "text";
+    applyCellOutputView(state);
+  });
+
+  let copyFeedbackTimer: number | undefined;
+  btnCopyOutput.addEventListener("click", async () => {
+    const textToCopy =
+      state.lastTables.length > 0 && state.tableViewMode === "table"
+        ? tablesToTsv(state.lastTables)
+        : (!outputPre.hidden && outputPre.textContent) ||
+          (!latexWrap.hidden && latexWrap.dataset.latex) ||
+          (!exportedBar.hidden && exportedBar.textContent?.replace(/^↳ exported:\s*/, "")) ||
+          (state.lastTables.length > 0
+            ? state.lastTables.map((t) => t.raw_text).join("\n\n")
+            : "") ||
+          "";
+    if (!textToCopy) return;
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      btnCopyOutput.innerHTML = CHECK_ICON_SVG;
+      btnCopyOutput.classList.add("copied");
+      setStatus(
+        state.lastTables.length > 0 && state.tableViewMode === "table"
+          ? "Copied table (TSV) to clipboard"
+          : "Copied output to clipboard",
+      );
+      clearTimeout(copyFeedbackTimer);
+      copyFeedbackTimer = window.setTimeout(() => {
+        btnCopyOutput.innerHTML = COPY_ICON_SVG;
+        btnCopyOutput.classList.remove("copied");
+      }, 1500);
+    } catch (err) {
+      setStatus(`Failed to copy output: ${String(err)}`);
+    }
+  });
 
   btnSelectVenv.addEventListener("click", async () => {
     if (!requireTauri()) return;
@@ -2932,6 +3110,179 @@ async function runDepsCell(cell: CellState): Promise<boolean> {
   }
 }
 
+function tablesToTsv(tables: backend.TableOutput[]): string {
+  return tables
+    .map((t) => {
+      const headers = t.columns.map((c) => (c.unit ? `${c.name} [${c.unit}]` : c.name));
+      const lines = [headers.join("\t"), ...t.rows.map((r) => r.cells.join("\t"))];
+      return lines.join("\n");
+    })
+    .join("\n\n");
+}
+
+function parseStdoutPipeTables(stdout: string): backend.TableOutput[] {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length < 3) return [];
+  if (!lines.every((l) => l.startsWith("|") && l.endsWith("|"))) return [];
+
+  const splitRow = (line: string) =>
+    line
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => cell.trim());
+
+  const headers = splitRow(lines[0]);
+  const sep = splitRow(lines[1]);
+  if (
+    headers.length === 0 ||
+    sep.length !== headers.length ||
+    !sep.every((s) => /^:?-{2,}:?$/.test(s))
+  ) {
+    return [];
+  }
+
+  const dataRows = lines.slice(2).map(splitRow);
+  if (dataRows.some((r) => r.length !== headers.length)) return [];
+
+  const isNumericCol = headers.map((_, ci) =>
+    dataRows.every((r) => r[ci] === "" || /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(r[ci])),
+  );
+
+  return [
+    {
+      index_name: "",
+      columns: headers.map((name, ci) => ({
+        name,
+        unit: null,
+        is_numeric: isNumericCol[ci],
+      })),
+      rows: dataRows.map((cells, ri) => ({
+        index: String(ri),
+        cells,
+      })),
+      total_rows: dataRows.length,
+      truncated: false,
+      raw_text: stdout,
+    },
+  ];
+}
+
+function renderCellTables(container: HTMLDivElement, tables: backend.TableOutput[]): void {
+  container.innerHTML = "";
+  for (const tbl of tables) {
+    const card = document.createElement("div");
+    card.className = "cell-table-card";
+
+    const scroll = document.createElement("div");
+    scroll.className = "cell-table-scroll";
+
+    const table = document.createElement("table");
+    table.className = "csv-table cell-output-table";
+
+    const thead = document.createElement("thead");
+    const headTr = document.createElement("tr");
+
+    const cornerTh = document.createElement("th");
+    cornerTh.className = "csv-corner-th";
+    cornerTh.textContent = tbl.index_name || "#";
+    headTr.append(cornerTh);
+
+    for (const col of tbl.columns) {
+      const th = document.createElement("th");
+      const inner = document.createElement("div");
+      inner.className = "cell-table-th-inner";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "cell-table-th-name";
+      nameSpan.textContent = col.name;
+      inner.append(nameSpan);
+
+      if (col.unit) {
+        const unitSpan = document.createElement("span");
+        unitSpan.className = "cell-table-unit";
+        unitSpan.textContent = `[${col.unit}]`;
+        inner.append(unitSpan);
+      }
+
+      th.append(inner);
+      headTr.append(th);
+    }
+    thead.append(headTr);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const row of tbl.rows) {
+      const tr = document.createElement("tr");
+      const idxTh = document.createElement("th");
+      idxTh.className = "csv-row-th";
+      idxTh.textContent = row.index;
+      tr.append(idxTh);
+
+      row.cells.forEach((val, ci) => {
+        const td = document.createElement("td");
+        td.className = tbl.columns[ci]?.is_numeric ? "cell-table-td num" : "cell-table-td";
+        td.textContent = val;
+        tr.append(td);
+      });
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    scroll.append(table);
+    card.append(scroll);
+
+    const footer = document.createElement("div");
+    footer.className = "cell-table-footer";
+    const rowWord = tbl.total_rows === 1 ? "row" : "rows";
+    const colWord = tbl.columns.length === 1 ? "column" : "columns";
+    footer.textContent = tbl.truncated
+      ? `Showing first ${tbl.rows.length} of ${tbl.total_rows} ${rowWord} × ${tbl.columns.length} ${colWord}`
+      : `${tbl.total_rows} ${rowWord} × ${tbl.columns.length} ${colWord}`;
+    card.append(footer);
+
+    container.append(card);
+  }
+}
+
+function setOutputPreContent(pre: HTMLPreElement, stdout: string, stderr: string): void {
+  pre.innerHTML = "";
+  if (stdout) pre.append(stdout);
+  if (stderr) {
+    const err = document.createElement("span");
+    err.className = "stderr";
+    err.textContent = stderr;
+    pre.append(err);
+  }
+}
+
+function applyCellOutputView(cell: CellState): void {
+  const hasTables = cell.lastTables.length > 0;
+  cell.tableModeGroup.hidden = !hasTables;
+  cell.outputWrap.classList.toggle("has-table-toggle", hasTables);
+
+  if (hasTables) {
+    cell.btnTableView.classList.toggle("active", cell.tableViewMode === "table");
+    cell.btnTextView.classList.toggle("active", cell.tableViewMode === "text");
+    if (cell.tableViewMode === "table") {
+      cell.tablesWrap.hidden = false;
+      setOutputPreContent(cell.outputPre, cell.lastNonTableStdout, cell.lastStderr);
+      cell.outputPre.hidden = !(cell.lastNonTableStdout || cell.lastStderr);
+    } else {
+      cell.tablesWrap.hidden = true;
+      const fullText =
+        cell.lastFullStdout || cell.lastTables.map((t) => t.raw_text).join("\n\n");
+      setOutputPreContent(cell.outputPre, fullText, cell.lastStderr);
+      cell.outputPre.hidden = !(fullText || cell.lastStderr);
+    }
+  } else {
+    cell.tablesWrap.hidden = true;
+    setOutputPreContent(cell.outputPre, cell.lastFullStdout, cell.lastStderr);
+    cell.outputPre.hidden = !(cell.lastFullStdout || cell.lastStderr);
+  }
+}
+
 async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<boolean> {
   const idx = cells.indexOf(cell);
 
@@ -2986,14 +3337,29 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
       cell.exportedBar.hidden = true;
     }
 
-    cell.outputPre.innerHTML = "";
-    if (res.stdout) cell.outputPre.append(res.stdout);
-    if (res.stderr) {
-      const err = document.createElement("span");
-      err.className = "stderr";
-      err.textContent = res.stderr;
-      cell.outputPre.append(err);
+    const structuredTables = res.tables ?? [];
+    const tables =
+      structuredTables.length > 0
+        ? structuredTables
+        : !res.stderr && res.stdout
+          ? parseStdoutPipeTables(res.stdout)
+          : [];
+    const pipeFallbackUsed = structuredTables.length === 0 && tables.length > 0;
+
+    cell.lastTables = tables;
+    cell.lastFullStdout = res.stdout;
+    cell.lastNonTableStdout = pipeFallbackUsed
+      ? ""
+      : (res.non_table_stdout ?? (structuredTables.length > 0 ? "" : res.stdout));
+    cell.lastStderr = res.stderr;
+    cell.tableViewMode = "table";
+
+    if (tables.length > 0) {
+      renderCellTables(cell.tablesWrap, tables);
+    } else {
+      cell.tablesWrap.innerHTML = "";
     }
+    applyCellOutputView(cell);
 
     cell.plotsWrap.innerHTML = "";
     const plots = res.plots ?? [];
@@ -3053,6 +3419,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
 
     if (res.latex) {
       cell.latexWrap.hidden = false;
+      cell.latexWrap.dataset.latex = res.latex;
       cell.latexWrap.innerHTML = "";
       try {
         katex.render(res.latex, cell.latexWrap, { displayMode: true, throwOnError: false });
@@ -3061,14 +3428,16 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
       }
     } else {
       cell.latexWrap.hidden = true;
+      delete cell.latexWrap.dataset.latex;
       cell.latexWrap.innerHTML = "";
     }
 
-    const hasOut = Boolean(
-      res.stdout || res.stderr || exportedEntries.length > 0 || plots.length > 0 || res.latex,
+    const hasCopyableText = Boolean(
+      res.stdout || res.stderr || res.latex || exportedEntries.length > 0 || tables.length > 0,
     );
+    const hasOut = Boolean(hasCopyableText || plots.length > 0);
     cell.outputWrap.hidden = !hasOut;
-    cell.outputPre.hidden = !(res.stdout || res.stderr);
+    cell.btnCopyOutput.hidden = !hasCopyableText;
 
     renderSessionExports(res.all_exports);
     setStatus(`Cell ${idx + 1} finished (exit code ${res.code})`);
@@ -3087,6 +3456,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     cell.outputWrap.hidden = false;
     cell.outputPre.hidden = false;
     cell.outputPre.textContent = String(e);
+    cell.btnCopyOutput.hidden = false;
     setStatus("Error");
     return false;
   } finally {
@@ -3101,7 +3471,17 @@ async function resetSession(quiet = false): Promise<boolean> {
   for (const c of cells) {
     c.runCount = null;
     c.outputWrap.hidden = true;
+    c.outputWrap.classList.remove("has-table-toggle");
+    c.tableModeGroup.hidden = true;
+    c.btnCopyOutput.hidden = true;
+    c.tablesWrap.hidden = true;
+    c.tablesWrap.innerHTML = "";
+    c.lastTables = [];
+    c.lastFullStdout = "";
+    c.lastNonTableStdout = "";
+    c.lastStderr = "";
     c.latexWrap.hidden = true;
+    delete c.latexWrap.dataset.latex;
     c.latexWrap.innerHTML = "";
   }
   renumberCells();
@@ -3112,6 +3492,7 @@ async function resetSession(quiet = false): Promise<boolean> {
 
 async function runAllCells(): Promise<boolean> {
   if (!requireTauri()) return true;
+  if (activeTab()?.kind === "csv" || activeTab()?.kind === "settings") return true;
   await resetSession(true);
   for (const c of cells) {
     if (c.kind === "deps") {
@@ -3172,7 +3553,7 @@ async function saveFile(): Promise<boolean> {
     await saveSettingsScope();
     return true;
   }
-  const serialized = serializeDocument();
+  const serialized = getActiveTabSerializedContent();
   const path = await backend.saveFile(serialized, currentPath);
   if (path) {
     currentPath = path;
@@ -3182,6 +3563,7 @@ async function saveFile(): Promise<boolean> {
       cur.path = path;
       cur.content = serialized;
       cur.dirty = false;
+      if (cur.kind === "csv") csvEditor?.markSaved();
     }
     updateTitle();
     setStatus(`Saved ${path}`);
@@ -3234,6 +3616,9 @@ window.addEventListener("keydown", (e) => {
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "settings") {
     e.preventDefault();
     void saveSettingsScope();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "csv") {
+    e.preventDefault();
+    void saveFile();
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j" && e.shiftKey) {
     if (!document.activeElement?.closest(".cm-editor")) {
       e.preventDefault();

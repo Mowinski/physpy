@@ -9,6 +9,26 @@ export interface RunOutput {
   code: number | null;
 }
 
+export interface TableColumn {
+  name: string;
+  unit?: string | null;
+  is_numeric: boolean;
+}
+
+export interface TableRow {
+  index: string;
+  cells: string[];
+}
+
+export interface TableOutput {
+  index_name: string;
+  columns: TableColumn[];
+  rows: TableRow[];
+  total_rows: number;
+  truncated: boolean;
+  raw_text: string;
+}
+
 export interface CellOutput {
   stdout: string;
   stderr: string;
@@ -17,6 +37,8 @@ export interface CellOutput {
   all_exports: Record<string, string>;
   plots: string[];
   latex?: string | null;
+  tables?: TableOutput[];
+  non_table_stdout?: string | null;
 }
 
 export interface DirEntryItem {
@@ -70,7 +92,11 @@ export interface ConfigScopeData {
 /** False when the frontend runs in a plain browser (`npm run dev`). */
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
-const FILTERS = [{ name: "PhysPy", extensions: ["ppy", "py"] }];
+const FILTERS = [
+  { name: "PhysPy & Data", extensions: ["ppy", "py", "csv", "tsv"] },
+  { name: "CSV / TSV", extensions: ["csv", "tsv"] },
+  { name: "PhysPy Notebook", extensions: ["ppy", "py"] },
+];
 
 export const loadConfig = (workspaceDir: string | null) =>
   invoke<AppConfig>("load_config", { workspaceDir });

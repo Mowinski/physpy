@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import io
 import json
@@ -12,7 +13,7 @@ import re
 import sys
 import traceback
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import importer
@@ -21,7 +22,8 @@ from .matrix import MATRIX_FN, make_matrix, to_matrix_latex
 from .pipeline import compile_source, to_ast
 from .plotting import PLOT_FN, render_plot_png_base64
 from .symbols import IDENTIFIERS
-from .units import UNIT_FN, make_quantity
+from .tables import TABLE_FN, extract_table_data, is_tabular_object
+from .units import UNIT_FN, make_quantity, reset_ureg
 
 CELL_HEADER_RE = re.compile(r"^# %%[^\S\n]*(.*)$", re.MULTILINE)
 EXPORT_IMPORT_RE = re.compile(r"^[ \t]*export[ \t]+(?:import|from)\b.*$", re.MULTILINE)
@@ -46,6 +48,22 @@ class CellResult:
     all_exports: dict[str, str]  # all active exports in session: name -> short repr
     plots: list[str]  # base64-encoded PNG images produced by `plot ...`
     latex: str | None = None  # KaTeX/LaTeX string for matrix/expression display
+    tables: list[dict[str, Any]] = field(default_factory=list)  # structured DataFrame tables
+    non_table_stdout: str = ""  # stdout excluding auto-captured `print(df)` blocks
+
+
+class _CellStdout(io.StringIO):
+    """Captures full stdout while optionally excluding auto-captured table prints."""
+
+    def __init__(self, non_table_buf: io.StringIO) -> None:
+        super().__init__()
+        self._non_table = non_table_buf
+        self.suppress_non_table = False
+
+    def write(self, s: str) -> int:
+        if not self.suppress_non_table:
+            self._non_table.write(s)
+        return super().write(s)
 
 
 def split_cells(src: str) -> list[Cell]:
@@ -109,6 +127,7 @@ class NotebookSession:
         self.exports.clear()
         self.consts.clear()
         linecache.clearcache()
+        reset_ureg()
         try:
             import matplotlib.pyplot as plt
 
@@ -117,7 +136,8 @@ class NotebookSession:
             pass
 
     def run_cell(self, source: str, filename: str = "<cell>") -> CellResult:
-        out_buf = io.StringIO()
+        non_table_buf = io.StringIO()
+        out_buf = _CellStdout(non_table_buf)
         err_buf = io.StringIO()
 
         try:
@@ -167,13 +187,20 @@ class NotebookSession:
         cell_exports: dict[str, Any] = {}
         cell_consts: set[str] = set()
         cell_plots: list[str] = []
+        cell_tables: list[dict[str, Any]] = []
         cell_latex: str | None = None
 
         def _capture_plot(target: Any) -> None:
             cell_plots.append(render_plot_png_base64(target))
 
+        def _capture_table(target: Any) -> None:
+            cell_tables.append(extract_table_data(target))
+
         def _display_val(val: Any) -> None:
             nonlocal cell_latex
+            if is_tabular_object(val):
+                cell_tables.append(extract_table_data(val))
+                return
             mat_latex = to_matrix_latex(val)
             if mat_latex:
                 cell_latex = mat_latex
@@ -184,6 +211,20 @@ class NotebookSession:
             else:
                 out_buf.write(f"{val}\n")
 
+        def _cell_print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, flush: bool = False) -> None:
+            if file is None and len(args) == 1 and is_tabular_object(args[0]):
+                tbl = extract_table_data(args[0])
+                cell_tables.append(tbl)
+                out_buf.suppress_non_table = True
+                try:
+                    out_buf.write(tbl["raw_text"] + end)
+                    if flush:
+                        out_buf.flush()
+                finally:
+                    out_buf.suppress_non_table = False
+                return
+            builtins.print(*args, sep=sep, end=end, file=file, flush=flush)
+
         # Cell starts ONLY with builtins and previously exported variables!
         cell_ns: dict[str, Any] = {
             "__name__": "__main__",
@@ -193,8 +234,10 @@ class NotebookSession:
             "__exports__": cell_exports,
             "__consts__": cell_consts,
             PLOT_FN: _capture_plot,
+            TABLE_FN: _capture_table,
             UNIT_FN: make_quantity,
             MATRIX_FN: make_matrix,
+            "print": _cell_print,
             "display": _display_val,
             "disp": _display_val,
         }
@@ -215,15 +258,18 @@ class NotebookSession:
                     if code_last is not None:
                         last_val = eval(code_last, cell_ns)
                         if last_val is not None:
-                            mat_latex = to_matrix_latex(last_val)
-                            if mat_latex:
-                                cell_latex = mat_latex
-                            elif hasattr(last_val, "_repr_latex_"):
-                                raw = last_val._repr_latex_()
-                                if raw:
-                                    cell_latex = str(raw).strip("$")
-                            elif not out_buf.getvalue().strip():
-                                out_buf.write(f"{last_val}\n")
+                            if is_tabular_object(last_val):
+                                cell_tables.append(extract_table_data(last_val))
+                            else:
+                                mat_latex = to_matrix_latex(last_val)
+                                if mat_latex:
+                                    cell_latex = mat_latex
+                                elif hasattr(last_val, "_repr_latex_"):
+                                    raw = last_val._repr_latex_()
+                                    if raw:
+                                        cell_latex = str(raw).strip("$")
+                                elif not out_buf.getvalue().strip():
+                                    out_buf.write(f"{last_val}\n")
                 except SystemExit as exc:
                     exit_code = exc.code if isinstance(exc.code, int) else 0
                 except BaseException:
@@ -256,6 +302,8 @@ class NotebookSession:
             all_exports=self.summary(),
             plots=cell_plots,
             latex=cell_latex,
+            tables=cell_tables,
+            non_table_stdout=non_table_buf.getvalue(),
         )
 
     def ensure_global_imports(self, full_document: str) -> None:
@@ -339,6 +387,8 @@ def run_worker() -> int:
                     "all_exports": res.all_exports,
                     "plots": res.plots,
                     "latex": res.latex,
+                    "tables": res.tables,
+                    "non_table_stdout": res.non_table_stdout,
                 }
             except Exception as exc:
                 resp = {

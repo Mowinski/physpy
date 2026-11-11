@@ -28,8 +28,9 @@ def _is_stmt_start(prev_tok: tokenize.TokenInfo | None) -> bool:
     ) or (prev_tok.type == tokenize.OP and prev_tok.string == ";")
 
 
-def rewrite_plots(src: str) -> str:
-    if PLOT_KW not in src:
+def rewrite_stmt_command(src: str, keyword: str, func_name: str) -> str:
+    """Rewrite statement-level ``<keyword> <expr>`` into ``<func_name>(<expr>)``."""
+    if keyword not in src:
         return src
 
     toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
@@ -40,7 +41,7 @@ def rewrite_plots(src: str) -> str:
     while i < n:
         tok = toks[i]
         prev = toks[i - 1] if i > 0 else None
-        if tok.type == tokenize.NAME and tok.string == PLOT_KW and _is_stmt_start(prev):
+        if tok.type == tokenize.NAME and tok.string == keyword and _is_stmt_start(prev):
             nxt = toks[i + 1] if i + 1 < n else None
             if (
                 nxt is not None
@@ -74,7 +75,7 @@ def rewrite_plots(src: str) -> str:
                     j += 1
 
                 if tok.start[0] == end_tok.end[0]:
-                    edits.append((tok.start, nxt.start, f"{PLOT_FN}("))
+                    edits.append((tok.start, nxt.start, f"{func_name}("))
                     edits.append((end_tok.end, end_tok.end, ")"))
                 i = j
                 continue
@@ -87,6 +88,10 @@ def rewrite_plots(src: str) -> str:
     for (r1, c1), (r2, c2), replacement in reversed(edits):
         lines[r1 - 1] = lines[r1 - 1][:c1] + replacement + lines[r1 - 1][c2:]
     return "".join(lines)
+
+
+def rewrite_plots(src: str) -> str:
+    return rewrite_stmt_command(src, PLOT_KW, PLOT_FN)
 
 
 def resolve_figure(target: Any) -> Any:
