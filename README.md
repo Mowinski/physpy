@@ -56,6 +56,9 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 
 ### 3. Desktop IDE Features
 - **Visual Matrix Builder Dialog (`⊞ Matrix` / `⇧⌘M`)** — interactive grid modal with presets ($2\times2$, $3\times3$) and live KaTeX preview to insert matrix literals directly into the editor.
+- **Interactive Step Debugger (`🐞 Debug` / `⇧⌘D`)** — line-by-line cell debugging with step over (`F10`), step into (`F11`), step out, continue, and live local variables inspector.
+- **Code Formatter on Save (Black)** — automatic formatting of mathematical equations, arguments, and operators upon saving without line-length constraints (`format_on_save`, manual trigger `⇧⌥F`).
+- **Single-File Static HTML Export (`⇧⌘E`)** — export notebooks to standalone, shareable HTML files with KaTeX math rendering, interactive collapsible code blocks, and embedded plots.
 - **Collapsible File Explorer (`⌘B`)** — browse workspace folders and create, rename, or delete files and directories via the context menu.
 - **VS Code-Style Editor Tabs** — open multiple files in tabs (`⌘N`, `⌘W`, middle-click to close, right-click tab context menu).
 - **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, showing current runtime values (including `pint` units and NumPy arrays), pending unexecuted exports, and duplicate export warnings.

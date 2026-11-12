@@ -1,5 +1,6 @@
 import katex from "katex";
 import "katex/dist/katex.min.css";
+(window as any).katex = katex;
 import "./styles.css";
 import { EditorView } from "@codemirror/view";
 import demo from "../examples/demo.ppy?raw";
