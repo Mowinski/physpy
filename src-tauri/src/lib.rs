@@ -22,20 +22,20 @@ pub struct RunOutput {
     code: Option<i32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableColumn {
     name: String,
     unit: Option<String>,
     is_numeric: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableRow {
     index: String,
     cells: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableOutput {
     index_name: String,
     columns: Vec<TableColumn>,
@@ -71,7 +71,7 @@ pub struct SignatureHelpDto {
     doc: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellOutput {
     stdout: String,
     stderr: String,
@@ -86,6 +86,24 @@ pub struct CellOutput {
     tables: Vec<TableOutput>,
     #[serde(default)]
     non_table_stdout: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugEvent {
+    pub ok: bool,
+    pub event: String,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub cell_index: Option<usize>,
+    #[serde(default)]
+    pub locals: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub result: Option<CellOutput>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -123,12 +141,18 @@ pub struct GeminiModelInfo {
     display_name: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub font_family: String,
     pub font_size: f64,
     pub matrix_font_size: f64,
     pub line_numbers: bool,
+    #[serde(default = "default_true")]
+    pub format_on_save: bool,
     pub python_path: String,
     pub startup_dir: String,
     /// `restore` | `empty` | `demo` | `file`
@@ -441,6 +465,43 @@ async fn run_cell(
 }
 
 #[tauri::command]
+async fn debug_start_cell(
+    source: String,
+    path: Option<String>,
+    cwd: Option<String>,
+    cell_index: usize,
+    doc_source: Option<String>,
+) -> Result<DebugEvent, String> {
+    blocking(move || {
+        with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "debug_start",
+                "source": source,
+                "path": path,
+                "cwd": cwd,
+                "cell_index": cell_index,
+                "doc_source": doc_source.unwrap_or_default(),
+            }))?;
+            serde_json::from_value(resp).map_err(|e| e.to_string())
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn debug_action(action: String) -> Result<DebugEvent, String> {
+    blocking(move || {
+        with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "action": action,
+            }))?;
+            serde_json::from_value(resp).map_err(|e| e.to_string())
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 async fn reset_session() -> Result<(), String> {
     blocking(move || {
         with_worker(|w| {
@@ -502,6 +563,25 @@ async fn signature_python(
             Ok(serde_json::from_value(sig).ok())
         })?;
         Ok(maybe.flatten())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn format_cells(cells: Vec<String>) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "format_cells",
+                "cells": cells,
+            }))?;
+            if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Ok(Vec::new());
+            }
+            let res = resp.get("cells").cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+            Ok(serde_json::from_value(res).unwrap_or_default())
+        })?;
+        Ok(maybe.unwrap_or_default())
     })
     .await
 }
@@ -670,7 +750,10 @@ matrix_font_size: 135
 # 2. Show line numbers in notebook cells (true / false)
 line_numbers: true
 
-# 3. Default Python interpreter path (leave empty for automatic detection)
+# 3. Format code cells on save (true / false)
+format_on_save: true
+
+# 4. Default Python interpreter path (leave empty for automatic detection)
 python_path: \"\"
 
 # 4. Default directory where PhysPy opens on startup (~ expands to $HOME)
@@ -826,6 +909,15 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     cfg.line_numbers = b;
                 }
             }
+            "format_on_save"
+            | "formatOnSave"
+            | "editor.format_on_save"
+            | "editor.formatOnSave"
+            | "linter_on_save" => {
+                if let Some(b) = parse_yaml_bool(&scalar) {
+                    cfg.format_on_save = b;
+                }
+            }
             "python_path"
             | "pythonPath"
             | "default_python"
@@ -921,6 +1013,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         font_size: 14.5,
         matrix_font_size: 135.0,
         line_numbers: true,
+        format_on_save: true,
         python_path: String::new(),
         startup_dir: "~".to_string(),
         startup_mode: "restore".to_string(),
@@ -1059,6 +1152,7 @@ fn read_config_scope(
             font_size: 14.5,
             matrix_font_size: 135.0,
             line_numbers: true,
+            format_on_save: true,
             python_path: String::new(),
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),
@@ -1648,6 +1742,9 @@ pub fn run() {
             let save_item = MenuItemBuilder::with_id("menu_save", "Save")
                 .accelerator("CmdOrCtrl+S")
                 .build(app)?;
+            let export_html_item = MenuItemBuilder::with_id("menu_export_html", "Export to HTML…")
+                .accelerator("CmdOrCtrl+Shift+E")
+                .build(app)?;
             let close_tab_item = MenuItemBuilder::with_id("menu_close_tab", "Close Tab")
                 .accelerator("CmdOrCtrl+W")
                 .build(app)?;
@@ -1659,9 +1756,14 @@ pub fn run() {
                 .item(&open_folder_item)
                 .separator()
                 .item(&save_item)
+                .item(&export_html_item)
                 .separator()
                 .item(&close_tab_item)
                 .build()?;
+
+            let format_document_item = MenuItemBuilder::with_id("menu_format_document", "Format Notebook Cells")
+                .accelerator("Shift+Alt+F")
+                .build(app)?;
 
             let edit_submenu = SubmenuBuilder::new(app, "Edit")
                 .undo()
@@ -1671,7 +1773,65 @@ pub fn run() {
                 .copy()
                 .paste()
                 .select_all()
+                .separator()
+                .item(&format_document_item)
                 .build()?;
+
+            let toggle_collapse_item =
+                MenuItemBuilder::with_id("menu_toggle_collapse_all", "Toggle Collapse All")
+                    .accelerator("CmdOrCtrl+Alt+\\")
+                    .build(app)?;
+            let report_view_item = MenuItemBuilder::with_id("menu_report_view", "Report View")
+                .accelerator("CmdOrCtrl+Shift+R")
+                .build(app)?;
+            let toggle_variables_item =
+                MenuItemBuilder::with_id("menu_variables", "Variables Panel")
+                    .accelerator("CmdOrCtrl+J")
+                    .build(app)?;
+            let toggle_warnings_item = MenuItemBuilder::with_id("menu_warnings", "Warnings Panel")
+                .accelerator("CmdOrCtrl+Shift+J")
+                .build(app)?;
+            let toggle_code_item =
+                MenuItemBuilder::with_id("menu_python_code", "Generated Python Code")
+                    .accelerator("CmdOrCtrl+P")
+                    .build(app)?;
+            let toggle_sidebar_item =
+                MenuItemBuilder::with_id("menu_toggle_sidebar", "Toggle File Explorer")
+                    .accelerator("CmdOrCtrl+B")
+                    .build(app)?;
+
+            let view_submenu = SubmenuBuilder::new(app, "View")
+                .item(&toggle_collapse_item)
+                .item(&report_view_item)
+                .separator()
+                .item(&toggle_variables_item)
+                .item(&toggle_warnings_item)
+                .item(&toggle_code_item)
+                .separator()
+                .item(&toggle_sidebar_item)
+                .build()?;
+
+            let run_cell_item = MenuItemBuilder::with_id("menu_run_cell", "Run Cell")
+                .accelerator("CmdOrCtrl+Enter")
+                .build(app)?;
+            let run_all_item = MenuItemBuilder::with_id("menu_run_all", "Run All Cells")
+                .accelerator("CmdOrCtrl+Shift+Enter")
+                .build(app)?;
+            let debug_cell_item = MenuItemBuilder::with_id("menu_debug_cell", "Debug Cell…")
+                .accelerator("CmdOrCtrl+Shift+D")
+                .build(app)?;
+            let reset_session_item =
+                MenuItemBuilder::with_id("menu_reset_session", "Reset Python Session")
+                    .build(app)?;
+
+            let run_submenu = SubmenuBuilder::new(app, "Run")
+                .item(&run_cell_item)
+                .item(&run_all_item)
+                .item(&debug_cell_item)
+                .separator()
+                .item(&reset_session_item)
+                .build()?;
+
             let window_submenu = SubmenuBuilder::new(app, "Window")
                 .minimize()
                 .maximize()
@@ -1679,7 +1839,14 @@ pub fn run() {
                 .close_window()
                 .build()?;
             let menu = MenuBuilder::new(app)
-                .items(&[&app_submenu, &file_submenu, &edit_submenu, &window_submenu])
+                .items(&[
+                    &app_submenu,
+                    &file_submenu,
+                    &edit_submenu,
+                    &view_submenu,
+                    &run_submenu,
+                    &window_submenu,
+                ])
                 .build()?;
             app.set_menu(menu)?;
 
@@ -1693,7 +1860,10 @@ pub fn run() {
             let _ = app.emit("menu-action", id.to_string());
         })
         .invoke_handler(tauri::generate_handler![
+            format_cells,
             run_cell,
+            debug_start_cell,
+            debug_action,
             reset_session,
             complete_python,
             signature_python,
@@ -1736,6 +1906,7 @@ mod tests {
             font_size: 14.5,
             matrix_font_size: 135.0,
             line_numbers: true,
+            format_on_save: true,
             python_path: String::new(),
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),

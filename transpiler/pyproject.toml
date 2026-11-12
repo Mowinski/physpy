@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Transpiler for PhysPy: Python with physics-friendly syntax extensions (e.g. \\rho_0)."
 requires-python = ">=3.10"
 dependencies = [
+    "black>=24.0.0",
     "matplotlib>=3.10.9",
     "numpy>=2.2.6",
     "pint>=0.24.4",
@@ -13,7 +14,11 @@ dependencies = [
 physpy = "physpy.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "black>=26.10.1",
+    "pytest>=8",
+    "ruff>=0.17.5",
+]
 
 [build-system]
 requires = ["hatchling"]

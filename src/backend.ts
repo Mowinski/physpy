@@ -41,6 +41,19 @@ export interface CellOutput {
   non_table_stdout?: string | null;
 }
 
+export interface DebugEvent {
+  ok: boolean;
+  event: "paused" | "finished" | "error";
+  line?: number;
+  filename?: string;
+  cell_index?: number;
+  locals?: Record<string, string>;
+  result?: CellOutput;
+  error?: string;
+}
+
+export type DebugAction = "step_over" | "step_into" | "step_out" | "continue" | "stop";
+
 export interface DirEntryItem {
   name: string;
   path: string;
@@ -99,6 +112,7 @@ export interface AppConfig {
   font_size: number;
   matrix_font_size?: number;
   line_numbers: boolean;
+  format_on_save?: boolean;
   python_path: string;
   startup_dir: string;
   startup_mode: "restore" | "empty" | "demo" | "file";
@@ -304,6 +318,16 @@ export async function savePlotPng(base64Png: string, defaultPath: string): Promi
   return target;
 }
 
+export async function exportHtmlFile(htmlContent: string, defaultPath: string): Promise<string | null> {
+  const target = await save({
+    filters: [{ name: "HTML Document", extensions: ["html", "htm"] }],
+    defaultPath,
+  });
+  if (typeof target !== "string" || !target) return null;
+  await writeFileByPath(target, htmlContent);
+  return target;
+}
+
 export const createVenv = (baseDir: string, name?: string) =>
   invoke<PythonInterpreterInfo>("create_venv", { baseDir, name });
 
@@ -325,3 +349,33 @@ export const resolveVenv = (baseDir: string, venvRel: string) =>
 
 export const computeRelativePath = (baseDir: string, targetPath: string) =>
   invoke<string>("compute_relative_path", { baseDir, targetPath });
+
+export const debugStartCell = (
+  source: string,
+  path?: string | null,
+  cwd?: string | null,
+  cellIndex: number = 1,
+  docSource?: string,
+) =>
+  invoke<DebugEvent>("debug_start_cell", {
+    source,
+    path: path ?? null,
+    cwd: cwd ?? null,
+    cellIndex,
+    docSource,
+  });
+
+export const debugAction = (action: DebugAction) =>
+  invoke<DebugEvent>("debug_action", { action });
+
+export async function formatCells(cells: string[]): Promise<string[]> {
+  if (!inTauri) return cells;
+  try {
+    return await invoke<string[]>("format_cells", { cells });
+  } catch (err) {
+    console.warn("format_cells failed:", err);
+    return cells;
+  }
+}
+
+

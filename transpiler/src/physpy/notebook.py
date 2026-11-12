@@ -418,6 +418,97 @@ def run_worker() -> int:
                 exports=session.exports,
             )
             resp = {"ok": True, "signature": sig}
+        elif cmd == "format_code":
+            from .formatter import format_physpy_code
+
+            source = str(req.get("source", ""))
+            line_length = int(req.get("line_length", 999999))
+            formatted = format_physpy_code(source, line_length=line_length)
+            resp = {"ok": True, "formatted": formatted}
+        elif cmd == "format_cells":
+            from .formatter import format_cells_batch
+
+            raw_cells = req.get("cells", [])
+            line_length = int(req.get("line_length", 999999))
+            formatted_cells = format_cells_batch(
+                [str(c) for c in raw_cells], line_length=line_length
+            )
+            resp = {"ok": True, "cells": formatted_cells}
+        elif cmd == "debug_start":
+            from .debugger import debug_cell
+
+            path = req.get("path")
+            cwd = req.get("cwd")
+            cell_index = req.get("cell_index", 1)
+            source = req.get("source", "")
+            doc_source = req.get("doc_source", "")
+            work_dir: str | None = None
+            if path and os.path.exists(path):
+                work_dir = os.path.dirname(os.path.abspath(path))
+                label = f"{os.path.basename(path)}#cell-{cell_index}"
+            elif path and os.path.isdir(os.path.dirname(os.path.abspath(path))):
+                work_dir = os.path.dirname(os.path.abspath(path))
+                label = f"{os.path.basename(path)}#cell-{cell_index}"
+            else:
+                if cwd and os.path.isdir(cwd):
+                    work_dir = os.path.abspath(cwd)
+                label = f"<cell {cell_index}>"
+
+            def _send_rpc(payload: dict[str, Any]) -> None:
+                sys.__stdout__.write(f"{RPC_PREFIX}{json.dumps(payload)}\n")
+                sys.__stdout__.flush()
+
+            def _read_cmd() -> dict[str, Any]:
+                while True:
+                    line = sys.__stdin__.readline()
+                    if not line:
+                        return {"action": "stop"}
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        return json.loads(line)
+                    except Exception:
+                        return {"action": "stop"}
+
+            orig_dir = os.getcwd()
+            try:
+                if work_dir:
+                    try:
+                        os.chdir(work_dir)
+                    except OSError:
+                        pass
+                    if work_dir not in sys.path:
+                        sys.path.insert(0, work_dir)
+                if doc_source:
+                    session.ensure_global_imports(doc_source)
+                res = debug_cell(session, source, label, cell_index, _send_rpc, _read_cmd)
+                resp = {
+                    "ok": True,
+                    "event": "finished",
+                    "result": {
+                        "stdout": res.stdout,
+                        "stderr": res.stderr,
+                        "code": res.code,
+                        "exported": res.exported,
+                        "all_exports": res.all_exports,
+                        "plots": res.plots,
+                        "latex": res.latex,
+                        "tables": res.tables,
+                        "non_table_stdout": res.non_table_stdout,
+                    },
+                }
+            except Exception as exc:
+                resp = {
+                    "ok": False,
+                    "event": "error",
+                    "error": f"Internal debugger error: {traceback.format_exc()}",
+                }
+            finally:
+                try:
+                    os.chdir(orig_dir)
+                except OSError:
+                    pass
         else:
             resp = {"ok": False, "error": f"unknown command: {cmd}"}
 

@@ -8,6 +8,9 @@ import { matrixConcealField } from "./matrixConceal";
 import { symbolCompletions } from "./completion";
 import { constLinter } from "./constLint";
 import { createPythonAssistExtension, type PythonAssistProvider } from "./pythonAssist";
+import { debugLineField, setDebugLine } from "./debuggerExtension";
+
+export { setDebugLine };
 
 export interface EditorOptions {
   parent: HTMLElement;
@@ -35,6 +38,7 @@ export function createEditor({
     mathSymbols,
     matrixConcealField,
     constLinter,
+    debugLineField,
     oneDark,
     EditorView.domEventHandlers({
       blur: () => {

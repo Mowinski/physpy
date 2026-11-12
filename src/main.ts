@@ -1,22 +1,26 @@
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import "./styles.css";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import demo from "../examples/demo.ppy?raw";
 import * as backend from "./backend";
-import { createEditor, createViewer, setDoc } from "./editor/setup";
+import { createEditor, createViewer, setDoc, setDebugLine } from "./editor/setup";
 import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex } from "./markdownLatex";
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
+import {
+  generateStaticNotebookHtml,
+  type CodeExportVisibility,
+} from "./htmlExport";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 type CellKind = "code" | "markdown" | "media" | "deps";
 type CellCollapseMode = "expanded" | "output-only" | "collapsed";
 
-interface CellState {
+export interface CellState {
   id: number;
   kind: CellKind;
   title: string;
@@ -43,11 +47,17 @@ interface CellState {
   venvPath: string;
   depsInstalling: boolean;
   btnRun: HTMLButtonElement;
+  btnDebug: HTMLButtonElement;
+  debugBar: HTMLDivElement;
+  debugLineNumEl: HTMLElement;
+  debugFilenameEl: HTMLElement;
+  debugLocalsEl: HTMLDivElement;
   btnAi: HTMLButtonElement;
   aiWrap: HTMLDivElement;
   aiPromptInput: HTMLTextAreaElement;
   aiOpen: boolean;
   outputWrap: HTMLDivElement;
+  staleBadgeEl: HTMLSpanElement;
   btnCopyOutput: HTMLButtonElement;
   tableModeGroup: HTMLDivElement;
   btnTableView: HTMLButtonElement;
@@ -66,10 +76,12 @@ interface CellState {
   lastLatex: string | null;
   tableViewMode: "table" | "text";
   runCount: number | null;
+  outputStale: boolean;
 }
 
 interface SavedCellOutput {
   runCount: number | null;
+  outputStale?: boolean;
   exported: Record<string, string>;
   stdout: string;
   nonTableStdout: string;
@@ -165,6 +177,7 @@ const cfgFontFamilyInput = $<HTMLInputElement>("cfg-font-family");
 const cfgFontSizeInput = $<HTMLInputElement>("cfg-font-size");
 const cfgMatrixFontSizeInput = $<HTMLInputElement>("cfg-matrix-font-size");
 const cfgLineNumbersInput = $<HTMLInputElement>("cfg-line-numbers");
+const cfgFormatOnSaveInput = $<HTMLInputElement>("cfg-format-on-save");
 const cfgPythonPathInput = $<HTMLInputElement>("cfg-python-path");
 const cfgStartupDirInput = $<HTMLInputElement>("cfg-startup-dir");
 const cfgStartupModeSelect = $<HTMLSelectElement>("cfg-startup-mode");
@@ -227,6 +240,15 @@ const matrixColsInput = $<HTMLInputElement>("matrix-cols-input");
 const matrixVarName = $<HTMLInputElement>("matrix-var-name");
 const matrixInputsGrid = $<HTMLDivElement>("matrix-inputs-grid");
 const matrixPreviewRender = $<HTMLDivElement>("matrix-preview-render");
+const exportHtmlDialog = $<HTMLDialogElement>("export-html-dialog");
+const exportHtmlForm = $<HTMLFormElement>("export-html-form");
+const exportHtmlDocTitle = $<HTMLInputElement>("export-html-doc-title");
+const exportHtmlCodeMode = $<HTMLSelectElement>("export-html-code-mode");
+const exportHtmlCellList = $<HTMLDivElement>("export-html-cell-list");
+const btnExportSelectAll = $<HTMLButtonElement>("btn-export-select-all");
+const btnExportDeselectAll = $<HTMLButtonElement>("btn-export-deselect-all");
+const btnExportSelectOutputs = $<HTMLButtonElement>("btn-export-select-outputs");
+const btnCancelExportHtml = $<HTMLButtonElement>("btn-cancel-export-html");
 const contextMenuEl = $<HTMLDivElement>("context-menu");
 const contextMenuGroupEl = $<HTMLDivElement>("context-menu-group");
 const viewer = createViewer($("python"));
@@ -703,6 +725,7 @@ function attachDialogLightDismiss(dialog: HTMLDialogElement) {
 attachDialogLightDismiss(pythonDialog);
 attachDialogLightDismiss(ipynbDialog);
 attachDialogLightDismiss(matrixDialog);
+attachDialogLightDismiss(exportHtmlDialog);
 
 let currentConfig: backend.AppConfig | null = null;
 let autoSaveTimer: number | undefined;
@@ -818,6 +841,7 @@ function buildYamlFromSettingsForm(): string {
   const fontSize = Number(cfgFontSizeInput.value) || 14.5;
   const matrixSize = Number(cfgMatrixFontSizeInput.value) || 135;
   const lineNums = cfgLineNumbersInput.checked;
+  const formatOnSave = cfgFormatOnSaveInput.checked;
   const pyPath = cfgPythonPathInput.value.trim().replace(/"/g, '\\"');
   const startDir = (cfgStartupDirInput.value.trim() || "~").replace(/"/g, '\\"');
   const startMode = cfgStartupModeSelect.value || "restore";
@@ -840,7 +864,10 @@ function buildYamlFromSettingsForm(): string {
     "# 2. Show line numbers in notebook cells (true / false)",
     `line_numbers: ${lineNums}`,
     "",
-    "# 3. Default Python interpreter path (leave empty for automatic detection)",
+    "# 3. Format code cells on save (true / false)",
+    `format_on_save: ${formatOnSave}`,
+    "",
+    "# 4. Default Python interpreter path (leave empty for automatic detection)",
     `python_path: "${pyPath}"`,
     "",
     "# 4. Default directory where PhysPy opens on startup (~ expands to $HOME)",
@@ -960,6 +987,8 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       if (!Number.isNaN(n)) cfgMatrixFontSizeInput.value = String(n);
     } else if (key === "line_numbers" || key === "lineNumbers") {
       cfgLineNumbersInput.checked = /^(true|yes|on|1)$/i.test(val);
+    } else if (key === "format_on_save" || key === "formatOnSave" || key === "linter_on_save") {
+      cfgFormatOnSaveInput.checked = /^(true|yes|on|1)$/i.test(val);
     } else if (key === "python_path" || key === "pythonPath") {
       cfgPythonPathInput.value = val;
     } else if (key === "startup_dir" || key === "startupDir" || key === "default_dir") {
@@ -1036,6 +1065,7 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgFontSizeInput.value = String(data.parsed.font_size);
     cfgMatrixFontSizeInput.value = String(data.parsed.matrix_font_size || 135);
     cfgLineNumbersInput.checked = data.parsed.line_numbers;
+    cfgFormatOnSaveInput.checked = data.parsed.format_on_save !== false;
     cfgPythonPathInput.value = data.parsed.python_path;
     cfgStartupDirInput.value = data.parsed.startup_dir;
     cfgStartupModeSelect.value = data.parsed.startup_mode || "restore";
@@ -1089,6 +1119,7 @@ for (const inputEl of [
   cfgFontSizeInput,
   cfgMatrixFontSizeInput,
   cfgLineNumbersInput,
+  cfgFormatOnSaveInput,
   cfgPythonPathInput,
   cfgStartupDirInput,
   cfgStartupFileInput,
@@ -1588,6 +1619,192 @@ matrixDialogForm.addEventListener("submit", (e) => {
   if (submitter?.value === "insert") {
     e.preventDefault();
     submitMatrixDialog();
+  }
+});
+
+// --- Static HTML Export Dialog ----------------------------------------------
+
+function openExportHtmlDialog() {
+  const tab = activeTab();
+  if (!tab || tab.kind === "settings" || tab.kind === "csv") {
+    setStatus("Static HTML export is available for Python notebooks.");
+    return;
+  }
+
+  // Pre-fill default title based on current filename
+  const baseName = currentPath
+    ? currentPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? ""
+    : tab.untitledName.replace(/\.[^.]+$/, "");
+  exportHtmlDocTitle.value = baseName;
+  exportHtmlCodeMode.value = "folded";
+
+  // Build cell selection list
+  exportHtmlCellList.innerHTML = "";
+  if (cells.length === 0) {
+    exportHtmlCellList.innerHTML = `<div style="padding:10px;color:var(--dim);font-size:12px;">Notebook has no cells.</div>`;
+  } else {
+    cells.forEach((c, idx) => {
+      const row = document.createElement("label");
+      row.className = "export-cell-row";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.dataset.cellId = String(c.id);
+
+      const idxSpan = document.createElement("span");
+      idxSpan.className = "export-cell-idx";
+      idxSpan.textContent = `#${idx + 1}`;
+
+      const kindBadge = document.createElement("span");
+      kindBadge.className = `export-cell-kind ${c.kind}`;
+      kindBadge.textContent =
+        c.kind === "markdown"
+          ? "MD"
+          : c.kind === "media"
+            ? "MEDIA"
+            : c.kind === "deps"
+              ? "DEPS"
+              : "CODE";
+
+      const descSpan = document.createElement("span");
+      descSpan.className = "export-cell-preview";
+      const rawText =
+        c.title.trim() ||
+        c.view.state.doc.sliceString(0, 60).trim().replace(/\s+/g, " ") ||
+        "(empty)";
+      descSpan.textContent = rawText;
+      descSpan.title = rawText;
+
+      const pillsWrap = document.createElement("span");
+      pillsWrap.className = "export-cell-badges";
+
+      const hasPlots = Boolean(c.lastPlots && c.lastPlots.length > 0);
+      const hasTables = Boolean(c.lastTables && c.lastTables.length > 0);
+      const hasOut = Boolean(
+        c.lastFullStdout.trim() || c.lastNonTableStdout.trim() || c.lastLatex,
+      );
+      const hasErr = Boolean(c.lastStderr.trim());
+
+      if (hasPlots) {
+        const p = document.createElement("span");
+        p.className = "export-output-pill";
+        p.textContent = "plot";
+        pillsWrap.appendChild(p);
+      }
+      if (hasTables) {
+        const p = document.createElement("span");
+        p.className = "export-output-pill";
+        p.textContent = "table";
+        pillsWrap.appendChild(p);
+      }
+      if (hasOut) {
+        const p = document.createElement("span");
+        p.className = "export-output-pill";
+        p.textContent = "out";
+        pillsWrap.appendChild(p);
+      }
+      if (hasErr) {
+        const p = document.createElement("span");
+        p.className = "export-output-pill";
+        p.style.color = "var(--danger)";
+        p.textContent = "err";
+        pillsWrap.appendChild(p);
+      }
+
+      row.append(cb, idxSpan, kindBadge, descSpan, pillsWrap);
+      exportHtmlCellList.appendChild(row);
+    });
+  }
+
+  exportHtmlDialog.showModal();
+}
+
+btnExportSelectAll.addEventListener("click", () => {
+  exportHtmlCellList.querySelectorAll<HTMLInputElement>("input[type='checkbox']").forEach((cb) => {
+    cb.checked = true;
+  });
+});
+
+btnExportDeselectAll.addEventListener("click", () => {
+  exportHtmlCellList.querySelectorAll<HTMLInputElement>("input[type='checkbox']").forEach((cb) => {
+    cb.checked = false;
+  });
+});
+
+btnExportSelectOutputs.addEventListener("click", () => {
+  cells.forEach((c) => {
+    const cb = exportHtmlCellList.querySelector<HTMLInputElement>(
+      `input[data-cell-id="${c.id}"]`,
+    );
+    if (!cb) return;
+    if (c.kind === "markdown" || c.kind === "media") {
+      cb.checked = true;
+    } else if (c.kind === "code") {
+      const hasContent = Boolean(
+        (c.lastPlots && c.lastPlots.length > 0) ||
+          (c.lastTables && c.lastTables.length > 0) ||
+          c.lastFullStdout.trim() ||
+          c.lastNonTableStdout.trim() ||
+          c.lastLatex ||
+          c.lastStderr.trim(),
+      );
+      cb.checked = hasContent;
+    } else {
+      cb.checked = false;
+    }
+  });
+});
+
+btnCancelExportHtml.addEventListener("click", () => {
+  exportHtmlDialog.close();
+});
+
+exportHtmlForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const selectedIds = new Set<number>();
+  exportHtmlCellList
+    .querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked")
+    .forEach((cb) => {
+      const id = Number(cb.dataset.cellId);
+      if (!Number.isNaN(id)) selectedIds.add(id);
+    });
+
+  if (selectedIds.size === 0) {
+    setStatus("No cells selected for HTML export.");
+    return;
+  }
+
+  const title = exportHtmlDocTitle.value.trim();
+  const codeVisibility = (exportHtmlCodeMode.value || "folded") as CodeExportVisibility;
+  const notebookName = currentPath
+    ? currentPath.split(/[\\/]/).pop() ?? "notebook.ppy"
+    : (activeTab()?.untitledName ?? "notebook.ppy");
+
+  exportHtmlDialog.close();
+
+  try {
+    const html = generateStaticNotebookHtml(cells, {
+      title,
+      notebookName,
+      documentPath: currentPath,
+      codeVisibility,
+      selectedCellIds: selectedIds,
+    });
+
+    let defaultPath: string;
+    if (currentPath) {
+      defaultPath = currentPath.replace(/\.ppy$/i, "") + ".html";
+    } else {
+      defaultPath = notebookName.replace(/\.ppy$/i, "") + ".html";
+    }
+
+    const saved = await backend.exportHtmlFile(html, defaultPath);
+    if (saved) {
+      setStatus(`Exported static HTML report to ${saved}`);
+    }
+  } catch (err) {
+    setStatus(`Failed to export HTML: ${String(err)}`);
   }
 });
 
@@ -2384,13 +2601,23 @@ function renumberCells() {
   cells.forEach((c, idx) => {
     if (c.kind === "markdown") {
       c.badgeEl.textContent = "M↓ [md]";
+      c.badgeEl.classList.remove("is-stale");
+      c.badgeEl.title = `Cell ${idx + 1} (${c.kind})`;
     } else if (c.kind === "media") {
       c.badgeEl.textContent = "📄 [doc]";
+      c.badgeEl.classList.remove("is-stale");
+      c.badgeEl.title = `Cell ${idx + 1} (${c.kind})`;
+    } else if (c.outputStale) {
+      const num = c.runCount !== null ? `${c.runCount}*` : "*";
+      c.badgeEl.textContent = `In [${num}]`;
+      c.badgeEl.classList.add("is-stale");
+      c.badgeEl.title = `Cell ${idx + 1} (cached output from .ppyout — not executed in current Python session)`;
     } else {
       const num = c.runCount ?? " ";
       c.badgeEl.textContent = `In [${num}]`;
+      c.badgeEl.classList.remove("is-stale");
+      c.badgeEl.title = `Cell ${idx + 1} (${c.kind})`;
     }
-    c.badgeEl.title = `Cell ${idx + 1} (${c.kind})`;
   });
 }
 
@@ -2624,7 +2851,7 @@ function buildCellCollapseSummary(cell: CellState): { text: string; hasError: bo
 
   const hasError = Boolean(cell.lastStderr.trim());
   const hasOut = !cell.outputWrap.hidden;
-  const outTag = hasError ? " · err" : hasOut ? " · out" : "";
+  const outTag = hasError ? " · err" : hasOut ? (cell.outputStale ? " · cached" : " · out") : "";
   const base = !cell.title.trim() && clipped ? `${clipped} · ${lineLabel}` : lineLabel;
   return { text: `${base}${outTag}`, hasError };
 }
@@ -2773,6 +3000,7 @@ function applyCellKindUI(cell: CellState) {
     cell.mediaWrap.hidden = true;
     cell.depsWrap.hidden = true;
     cell.btnAi.hidden = false;
+    cell.btnDebug.hidden = false;
     cell.aiWrap.hidden = !cell.aiOpen;
     cell.btnRun.innerHTML = "▶ Run <kbd>⌘↵</kbd>";
     cell.btnRun.title = "Run this code cell (Cmd+Enter or Shift+Enter)";
@@ -2781,6 +3009,7 @@ function applyCellKindUI(cell: CellState) {
     cell.mediaWrap.hidden = true;
     cell.outputWrap.hidden = true;
     cell.btnAi.hidden = true;
+    cell.btnDebug.hidden = true;
     cell.aiWrap.hidden = true;
     updateMarkdownPreview(cell);
     cell.editorHost.hidden = !cell.mdEditing;
@@ -2798,6 +3027,7 @@ function applyCellKindUI(cell: CellState) {
     cell.mediaWrap.hidden = true;
     cell.outputWrap.hidden = true;
     cell.btnAi.hidden = true;
+    cell.btnDebug.hidden = true;
     cell.aiWrap.hidden = true;
     cell.depsWrap.hidden = false;
     cell.depsVenvBadge.textContent = cell.venvPath || ".venv";
@@ -2810,6 +3040,7 @@ function applyCellKindUI(cell: CellState) {
     cell.mdPreviewEl.hidden = true;
     cell.outputWrap.hidden = true;
     cell.btnAi.hidden = true;
+    cell.btnDebug.hidden = true;
     cell.aiWrap.hidden = true;
     cell.mediaWrap.hidden = false;
     cell.btnRun.innerHTML = "📂 Choose File…";
@@ -2884,6 +3115,15 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnRun.innerHTML = "▶ Run <kbd>⌘↵</kbd>";
   btnRun.title = "Run this cell (Cmd+Enter or Shift+Enter)";
 
+  const btnDebug = document.createElement("button");
+  btnDebug.type = "button";
+  btnDebug.className = "cell-btn debug";
+  btnDebug.innerHTML = "🐞 Debug";
+  btnDebug.title = "Step-by-step debugger (F10/F11)";
+  btnDebug.addEventListener("click", () => {
+    void startCellDebugging(state);
+  });
+
   const btnAdd = document.createElement("button");
   btnAdd.type = "button";
   btnAdd.className = "cell-btn";
@@ -2908,8 +3148,75 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnDel.textContent = "✕";
   btnDel.title = "Delete cell";
 
-  actions.append(btnAi, btnRun, btnAdd, btnUp, btnDown, btnDel);
+  actions.append(btnAi, btnDebug, btnRun, btnAdd, btnUp, btnDown, btnDel);
   header.append(btnCollapse, badgeEl, kindSelect, titleInput, collapseSummaryEl, actions);
+
+  // Step Debugger Control Bar
+  const debugBar = document.createElement("div");
+  debugBar.className = "cell-debug-bar";
+  debugBar.hidden = true;
+
+  const debugBarLeft = document.createElement("div");
+  debugBarLeft.className = "debug-bar-left";
+
+  const debugStatusPill = document.createElement("span");
+  debugStatusPill.className = "debug-status-pill";
+  const debugStatusDot = document.createElement("span");
+  debugStatusDot.className = "dot";
+  const debugStatusText = document.createElement("span");
+  debugStatusText.innerHTML = 'Paused at line <strong class="debug-line-num">1</strong>';
+  debugStatusPill.append(debugStatusDot, debugStatusText);
+
+  const debugLineNumEl = debugStatusText.querySelector<HTMLElement>(".debug-line-num")!;
+  const debugFilenameEl = document.createElement("span");
+  debugFilenameEl.className = "debug-filename-pill";
+  debugBarLeft.append(debugStatusPill, debugFilenameEl);
+
+  const debugBarActions = document.createElement("div");
+  debugBarActions.className = "debug-bar-actions";
+
+  const btnStepOver = document.createElement("button");
+  btnStepOver.type = "button";
+  btnStepOver.className = "debug-btn primary";
+  btnStepOver.innerHTML = "↷ Step <kbd>F10</kbd>";
+  btnStepOver.title = "Step Over: execute next line in this cell (F10)";
+  btnStepOver.addEventListener("click", () => void handleDebugAction("step_over"));
+
+  const btnStepInto = document.createElement("button");
+  btnStepInto.type = "button";
+  btnStepInto.className = "debug-btn";
+  btnStepInto.innerHTML = "⤓ Into <kbd>F11</kbd>";
+  btnStepInto.title = "Step Into: step inside function (F11)";
+  btnStepInto.addEventListener("click", () => void handleDebugAction("step_into"));
+
+  const btnStepOut = document.createElement("button");
+  btnStepOut.type = "button";
+  btnStepOut.className = "debug-btn";
+  btnStepOut.innerHTML = "⤒ Out <kbd>⇧F11</kbd>";
+  btnStepOut.title = "Step Out: return from current function (Shift+F11)";
+  btnStepOut.addEventListener("click", () => void handleDebugAction("step_out"));
+
+  const btnContinue = document.createElement("button");
+  btnContinue.type = "button";
+  btnContinue.className = "debug-btn";
+  btnContinue.innerHTML = "▶ Continue <kbd>F5</kbd>";
+  btnContinue.title = "Continue execution to the end of cell (F5)";
+  btnContinue.addEventListener("click", () => void handleDebugAction("continue"));
+
+  const btnStop = document.createElement("button");
+  btnStop.type = "button";
+  btnStop.className = "debug-btn danger";
+  btnStop.innerHTML = "⏹ Stop <kbd>Esc</kbd>";
+  btnStop.title = "Stop debugging session (Escape or Shift+F5)";
+  btnStop.addEventListener("click", () => void handleDebugAction("stop"));
+
+  debugBarActions.append(btnStepOver, btnStepInto, btnStepOut, btnContinue, btnStop);
+
+  const debugLocalsEl = document.createElement("div");
+  debugLocalsEl.className = "debug-locals-preview";
+  debugLocalsEl.hidden = true;
+
+  debugBar.append(debugBarLeft, debugBarActions, debugLocalsEl);
 
   // AI Cell Assistant prompt & proposal drawer
   const aiWrap = document.createElement("div");
@@ -3124,7 +3431,13 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   btnCopyOutput.innerHTML = COPY_ICON_SVG;
   btnCopyOutput.hidden = true;
 
-  outputActions.append(tableModeGroup, btnCopyOutput);
+  const staleBadgeEl = document.createElement("span");
+  staleBadgeEl.className = "cell-output-stale-badge";
+  staleBadgeEl.textContent = "cached · not run";
+  staleBadgeEl.title = "Output restored from .ppyout — run cell to execute in current Python session";
+  staleBadgeEl.hidden = true;
+
+  outputActions.append(staleBadgeEl, tableModeGroup, btnCopyOutput);
 
   const exportedBar = document.createElement("div");
   exportedBar.className = "cell-exported";
@@ -3146,7 +3459,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   latexWrap.hidden = true;
 
   outputWrap.append(outputActions, exportedBar, latexWrap, outputPre, tablesWrap, plotsWrap);
-  card.append(header, aiWrap, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
+  card.append(header, debugBar, aiWrap, depsWrap, editorHost, mdPreviewEl, mediaWrap, outputWrap);
 
   const view = createEditor({
     parent: editorHost,
@@ -3163,6 +3476,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
           return true;
         },
       },
+      { key: "F10", run: () => (activeDebugSession ? (void handleDebugAction("step_over"), true) : false) },
+      { key: "F11", run: () => (activeDebugSession ? (void handleDebugAction("step_into"), true) : false) },
+      { key: "Shift-F11", run: () => (activeDebugSession ? (void handleDebugAction("step_out"), true) : false) },
+      { key: "F5", run: () => (activeDebugSession ? (void handleDebugAction("continue"), true) : false) },
       { key: "Mod-s", run: () => (void saveFile(), true) },
       { key: "Mod-o", run: () => (void openFile(), true) },
       { key: "Mod-Shift-o", run: () => (void changeRootFolder(), true) },
@@ -3172,6 +3489,8 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       { key: "Mod-j", run: () => toggleVariablesDrawer() },
       { key: "Mod-Shift-j", run: () => toggleWarningsDrawer() },
       { key: "Mod-Shift-m", run: () => (openMatrixDialog(), true) },
+      { key: "Mod-Shift-e", run: () => (openExportHtmlDialog(), true) },
+      { key: "Mod-Shift-d", run: () => (void startCellDebugging(state), true) },
       { key: "Mod-p", run: () => togglePython() },
       { key: "Mod-Alt-[", run: () => (setCellCollapseMode(state, nextCellCollapseMode(state)), true) },
       { key: "Mod-Alt-]", run: () => (setCellCollapseMode(state, "expanded"), true) },
@@ -3219,11 +3538,17 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     venvPath: initial.venv || "",
     depsInstalling: false,
     btnRun,
+    btnDebug,
+    debugBar,
+    debugLineNumEl,
+    debugFilenameEl,
+    debugLocalsEl,
     btnAi,
     aiWrap,
     aiPromptInput,
     aiOpen: false,
     outputWrap,
+    staleBadgeEl,
     btnCopyOutput,
     tableModeGroup,
     btnTableView,
@@ -3242,6 +3567,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     lastLatex: null,
     tableViewMode: "table",
     runCount: null,
+    outputStale: false,
   };
 
   btnTableView.addEventListener("click", () => {
@@ -3527,7 +3853,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     }
   });
 
-  btnRun.addEventListener("click", () => {
+  btnRun.addEventListener("click", (e) => {
     if (state.kind === "markdown") {
       if (state.mdEditing) {
         const curDoc = state.view.state.doc.toString();
@@ -3545,6 +3871,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     }
     if (state.kind === "media") {
       void pickMediaForCell();
+      return;
+    }
+    if (e.altKey && state.kind === "code") {
+      void startCellDebugging(state);
       return;
     }
     void runSingleCell(state, false);
@@ -3593,6 +3923,12 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
                 : "▶ Run Cell",
         shortcut: state.kind === "media" ? undefined : "⌘↵",
         run: () => void runSingleCell(state, false),
+      },
+      {
+        label: "🐞 Debug Cell",
+        shortcut: "⇧⌘D",
+        disabled: state.kind !== "code",
+        run: () => void startCellDebugging(state),
       },
       { label: "▶▶ Run All Cells", shortcut: "⇧⌘↵", run: () => void runAllCells() },
       { separator: true },
@@ -3704,6 +4040,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
         disabled: Boolean(state.outputWrap.hidden),
         run: () => {
           state.outputWrap.hidden = true;
+          state.outputStale = false;
+          state.outputWrap.classList.remove("is-stale");
+          state.staleBadgeEl.hidden = true;
+          state.runCount = null;
           state.lastTables = [];
           state.lastFullStdout = "";
           state.lastNonTableStdout = "";
@@ -3715,6 +4055,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
           state.plotsWrap.innerHTML = "";
           state.latexWrap.innerHTML = "";
           state.exportedBar.hidden = true;
+          renumberCells();
           if (state.collapseMode === "output-only") {
             setCellCollapseMode(state, "collapsed");
           } else if (state.collapseMode !== "expanded") {
@@ -3775,6 +4116,10 @@ function moveCell(cell: CellState, delta: -1 | 1) {
 }
 
 function deleteCell(cell: CellState) {
+  if (activeDebugSession?.targetCell === cell) {
+    void handleDebugAction("stop");
+    endDebugSession();
+  }
   if (cell.mediaBlobUrl) {
     URL.revokeObjectURL(cell.mediaBlobUrl);
     cell.mediaBlobUrl = null;
@@ -3787,6 +4132,10 @@ function deleteCell(cell: CellState) {
     cell.mediaPath = "";
     cell.mediaInput.value = "";
     cell.outputWrap.hidden = true;
+    cell.outputStale = false;
+    cell.outputWrap.classList.remove("is-stale");
+    cell.staleBadgeEl.hidden = true;
+    cell.runCount = null;
     cell.lastTables = [];
     cell.lastFullStdout = "";
     cell.lastNonTableStdout = "";
@@ -3834,6 +4183,7 @@ function serializeCellOutput(cell: CellState): SavedCellOutput | null {
   if (!hasAny) return null;
   return {
     runCount: cell.runCount,
+    outputStale: cell.outputStale,
     exported: { ...cell.lastExported },
     stdout: cell.lastFullStdout,
     nonTableStdout: cell.lastNonTableStdout,
@@ -3854,8 +4204,14 @@ function snapshotNotebookOutputs(): NotebookOutputsFile {
   };
 }
 
-function applySavedCellOutput(cell: CellState, out: SavedCellOutput, cellIdx: number): boolean {
+function applySavedCellOutput(
+  cell: CellState,
+  out: SavedCellOutput,
+  cellIdx: number,
+  fromDisk = false,
+): boolean {
   cell.runCount = out.runCount;
+  cell.outputStale = fromDisk ? true : Boolean(out.outputStale);
   cell.lastExported = { ...(out.exported ?? {}) };
   const exportedEntries = Object.entries(cell.lastExported);
   if (exportedEntries.length > 0) {
@@ -3962,25 +4318,27 @@ function applySavedCellOutput(cell: CellState, out: SavedCellOutput, cellIdx: nu
   );
   const hasOut = Boolean(hasCopyableText || plots.length > 0);
   cell.outputWrap.hidden = !hasOut;
+  cell.outputWrap.classList.toggle("is-stale", hasOut && cell.outputStale);
+  cell.staleBadgeEl.hidden = !(hasOut && cell.outputStale);
   cell.btnCopyOutput.hidden = !hasCopyableText;
   return hasOut;
 }
 
-function restoreNotebookOutputs(snapshot: NotebookOutputsFile) {
-  if (typeof snapshot.execCounter === "number" && snapshot.execCounter > execCounter) {
+function restoreNotebookOutputs(snapshot: NotebookOutputsFile, fromDisk = false) {
+  if (!fromDisk && typeof snapshot.execCounter === "number" && snapshot.execCounter > execCounter) {
     execCounter = snapshot.execCounter;
   }
   const count = Math.min(cells.length, snapshot.cells?.length ?? 0);
   for (let i = 0; i < count; i++) {
     const out = snapshot.cells[i];
     if (out) {
-      applySavedCellOutput(cells[i], out, i);
+      applySavedCellOutput(cells[i], out, i, fromDisk);
       updateCellCollapseUI(cells[i]);
     }
   }
   renumberCells();
   updateCollapseToolbarButtons();
-  if (snapshot.allExports && Object.keys(snapshot.allExports).length > 0) {
+  if (!fromDisk && snapshot.allExports && Object.keys(snapshot.allExports).length > 0) {
     renderSessionExports(snapshot.allExports);
   }
 }
@@ -4028,9 +4386,14 @@ async function loadOutputsSidecarForTab(tabId: number, filePath: string): Promis
     const parsed = JSON.parse(raw) as NotebookOutputsFile;
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.cells)) return;
     const tab = tabs.find((t) => t.id === tabId);
-    if (tab) tab.savedOutputs = parsed;
+    if (tab) {
+      tab.savedOutputs = {
+        ...parsed,
+        cells: parsed.cells.map((c) => (c ? { ...c, outputStale: true } : null)),
+      };
+    }
     if (activeTabId === tabId && currentPath === filePath) {
-      restoreNotebookOutputs(parsed);
+      restoreNotebookOutputs(parsed, true);
     }
   } catch {
     // Missing or unreadable sidecar is normal for new/clean notebooks
@@ -4065,7 +4428,7 @@ function loadDocumentIntoCells(
   updateCollapseToolbarButtons();
   renderSessionExports();
   if (savedOutputs) {
-    restoreNotebookOutputs(savedOutputs);
+    restoreNotebookOutputs(savedOutputs, false);
   } else if (savedOutputs === undefined && currentPath && backend.inTauri) {
     void loadOutputsSidecarForTab(tabId ?? activeTabId, currentPath);
   }
@@ -4314,6 +4677,212 @@ function applyCellOutputView(cell: CellState): void {
   }
 }
 
+// --- Cell Step Debugger -----------------------------------------------------
+
+interface ActiveDebugSession {
+  targetCell: CellState;
+  currentHighlightedCell: CellState;
+  currentLine: number | null;
+  busy: boolean;
+}
+
+let activeDebugSession: ActiveDebugSession | null = null;
+
+function clearAllDebugHighlights() {
+  for (const c of cells) {
+    c.view.dispatch({ effects: setDebugLine.of(null) });
+    c.debugBar.hidden = true;
+    c.el.classList.remove("is-debugging");
+  }
+}
+
+function endDebugSession() {
+  clearAllDebugHighlights();
+  activeDebugSession = null;
+}
+
+function renderDebugLocals(localsEl: HTMLElement, locals: Record<string, string> | undefined) {
+  localsEl.innerHTML = "";
+  if (!locals || Object.keys(locals).length === 0) {
+    localsEl.hidden = true;
+    return;
+  }
+  localsEl.hidden = false;
+  const label = document.createElement("span");
+  label.className = "debug-locals-label";
+  label.textContent = "Locals:";
+  localsEl.appendChild(label);
+
+  for (const [k, v] of Object.entries(locals)) {
+    const pill = document.createElement("span");
+    pill.className = "debug-local-pill";
+    pill.innerHTML = `<strong>${k}</strong> = ${v}`;
+    pill.title = `${k}: ${v}`;
+    localsEl.appendChild(pill);
+  }
+}
+
+function handleDebugEvent(ev: backend.DebugEvent) {
+  if (!activeDebugSession) return;
+  activeDebugSession.busy = false;
+
+  if (ev.event === "paused") {
+    const line = ev.line ?? 1;
+    activeDebugSession.currentLine = line;
+
+    // Determine target cell
+    let targetCell = activeDebugSession.targetCell;
+    if (typeof ev.cell_index === "number" && ev.cell_index >= 1 && ev.cell_index <= cells.length) {
+      targetCell = cells[ev.cell_index - 1];
+    }
+
+    if (activeDebugSession.currentHighlightedCell !== targetCell) {
+      activeDebugSession.currentHighlightedCell.view.dispatch({ effects: setDebugLine.of(null) });
+      activeDebugSession.currentHighlightedCell = targetCell;
+    }
+
+    if (targetCell.collapseMode !== "expanded") {
+      setCellCollapseMode(targetCell, "expanded");
+    }
+
+    const docLines = targetCell.view.state.doc.lines;
+    const clampedLine = Math.max(1, Math.min(line, docLines));
+    const lineObj = targetCell.view.state.doc.line(clampedLine);
+
+    targetCell.view.dispatch({
+      effects: [setDebugLine.of(clampedLine), EditorView.scrollIntoView(lineObj.from)],
+    });
+
+    const initiatingCell = activeDebugSession.targetCell;
+    initiatingCell.debugBar.hidden = false;
+    initiatingCell.el.classList.add("is-debugging");
+    initiatingCell.debugLineNumEl.textContent = String(clampedLine);
+
+    if (targetCell !== initiatingCell) {
+      const idx = cells.indexOf(targetCell);
+      initiatingCell.debugFilenameEl.textContent = `(in Cell ${idx + 1})`;
+    } else {
+      initiatingCell.debugFilenameEl.textContent = "";
+    }
+
+    renderDebugLocals(initiatingCell.debugLocalsEl, ev.locals);
+    setStatus(`Paused at line ${clampedLine}`);
+  } else if (ev.event === "finished") {
+    const cell = activeDebugSession.targetCell;
+    const idx = cells.indexOf(cell);
+    endDebugSession();
+
+    if (ev.result) {
+      const res = ev.result;
+      const structuredTables = res.tables ?? [];
+      const tables =
+        structuredTables.length > 0
+          ? structuredTables
+          : !res.stderr && res.stdout
+            ? parseStdoutPipeTables(res.stdout)
+            : [];
+      const pipeFallbackUsed = structuredTables.length === 0 && tables.length > 0;
+
+      applySavedCellOutput(
+        cell,
+        {
+          runCount: ++execCounter,
+          exported: res.exported,
+          stdout: res.stdout,
+          nonTableStdout: pipeFallbackUsed
+            ? ""
+            : (res.non_table_stdout ?? (structuredTables.length > 0 ? "" : res.stdout)),
+          stderr: res.stderr,
+          tables,
+          plots: res.plots ?? [],
+          latex: res.latex ?? null,
+          tableViewMode: "table",
+        },
+        idx,
+      );
+      renumberCells();
+      renderSessionExports(res.all_exports);
+      scheduleWriteOutputsSidecar();
+    }
+    setStatus(`Debugging cell ${idx + 1} completed.`);
+  } else if (ev.event === "error") {
+    setStatus(`Debugger error: ${ev.error || "Unknown error"}`);
+    endDebugSession();
+  }
+}
+
+async function startCellDebugging(cell: CellState) {
+  if (cell.kind !== "code") return;
+  if (!requireTauri()) return;
+
+  if (activeDebugSession) {
+    await handleDebugAction("stop");
+  }
+
+  const idx = cells.indexOf(cell);
+  setStatus(`Starting debugger on cell ${idx + 1}…`);
+  if (cell.collapseMode !== "expanded") {
+    setCellCollapseMode(cell, "expanded");
+  }
+
+  activeDebugSession = {
+    targetCell: cell,
+    currentHighlightedCell: cell,
+    currentLine: 1,
+    busy: true,
+  };
+
+  cell.debugBar.hidden = false;
+  cell.el.classList.add("is-debugging");
+  cell.debugLineNumEl.textContent = "1";
+  cell.debugFilenameEl.textContent = "";
+
+  try {
+    const ev = await backend.debugStartCell(
+      cell.view.state.doc.toString(),
+      currentPath,
+      rootDir,
+      idx + 1,
+      serializeDocument(),
+    );
+    handleDebugEvent(ev);
+  } catch (err) {
+    setStatus(`Failed to start debugger: ${String(err)}`);
+    endDebugSession();
+  }
+}
+
+async function handleDebugAction(action: backend.DebugAction) {
+  if (!activeDebugSession) return;
+  if (activeDebugSession.busy) return;
+  activeDebugSession.busy = true;
+
+  try {
+    const ev = await backend.debugAction(action);
+    handleDebugEvent(ev);
+  } catch (err) {
+    setStatus(`Debug error: ${String(err)}`);
+    endDebugSession();
+  }
+}
+
+function getFocusedOrActiveCell(): CellState | undefined {
+  const focused = cells.find((c) => c.view.hasFocus);
+  if (focused) return focused;
+  const inDom = cells.find((c) => c.el.contains(document.activeElement));
+  if (inDom) return inDom;
+  return cells.find((c) => c.kind === "code") ?? cells[0];
+}
+
+function debugActiveCell() {
+  const target = getFocusedOrActiveCell();
+  if (target && target.kind === "code") {
+    void startCellDebugging(target);
+  } else {
+    setStatus("Select a Python code cell to debug.");
+  }
+}
+
 async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<boolean> {
   const idx = cells.indexOf(cell);
 
@@ -4409,6 +4978,9 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     return res.code === 0;
   } catch (e) {
     if (cell.collapseMode !== "expanded") setCellCollapseMode(cell, "expanded");
+    cell.outputStale = false;
+    cell.outputWrap.classList.remove("is-stale");
+    cell.staleBadgeEl.hidden = true;
     cell.lastStderr = String(e);
     cell.outputWrap.hidden = false;
     cell.outputPre.hidden = false;
@@ -4423,13 +4995,16 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
 }
 
 async function resetSession(quiet = false): Promise<boolean> {
+  endDebugSession();
   if (!requireTauri()) return true;
   await backend.resetSession();
   execCounter = 0;
   for (const c of cells) {
     c.runCount = null;
+    c.outputStale = false;
     c.outputWrap.hidden = true;
-    c.outputWrap.classList.remove("has-table-toggle");
+    c.outputWrap.classList.remove("has-table-toggle", "is-stale");
+    c.staleBadgeEl.hidden = true;
     c.tableModeGroup.hidden = true;
     c.btnCopyOutput.hidden = true;
     c.tablesWrap.hidden = true;
@@ -4518,11 +5093,49 @@ async function openFile(): Promise<boolean> {
   return true;
 }
 
+async function formatNotebookCells(): Promise<boolean> {
+  if (!backend.inTauri) return false;
+  const cur = activeTab();
+  if (!cur || cur.kind !== "notebook") return false;
+  const codeCells = cells.filter((c) => c.kind === "code");
+  if (codeCells.length === 0) return false;
+  const rawSources = codeCells.map((c) => c.view.state.doc.toString());
+  try {
+    const formattedSources = await backend.formatCells(rawSources);
+    let changed = false;
+    for (let i = 0; i < codeCells.length; i++) {
+      const cell = codeCells[i];
+      const oldText = rawSources[i];
+      const newText = formattedSources[i];
+      if (newText !== undefined && newText !== oldText) {
+        cell.view.dispatch({
+          changes: { from: 0, to: cell.view.state.doc.length, insert: newText },
+        });
+        changed = true;
+      }
+    }
+    if (changed) {
+      markDirty();
+    }
+    return changed;
+  } catch (err) {
+    console.warn("formatNotebookCells failed:", err);
+    return false;
+  }
+}
+
 async function saveFile(): Promise<boolean> {
   if (!requireTauri()) return true;
   if (activeTab()?.kind === "settings") {
     await saveSettingsScope();
     return true;
+  }
+  const cur = activeTab();
+  if (cur && cur.kind === "notebook") {
+    const shouldFormat = currentConfig ? currentConfig.format_on_save !== false : true;
+    if (shouldFormat) {
+      await formatNotebookCells();
+    }
   }
   const serialized = getActiveTabSerializedContent();
   const path = await backend.saveFile(serialized, currentPath);
@@ -4559,17 +5172,19 @@ $("btn-refresh-tree").addEventListener("click", () => void refreshFileTree());
 $("btn-new-tab").addEventListener("click", () => createNewTab());
 $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
-$("btn-toggle-collapse-all").addEventListener("click", () => {
+function handleToggleCollapseAll() {
   const cur = activeTab();
   if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
   const allCollapsed = cells.length > 0 && cells.every((c) => c.collapseMode === "collapsed");
   setAllCellsCollapseMode(allCollapsed ? "expanded" : "collapsed");
-});
-$("btn-report-view").addEventListener("click", () => {
+}
+
+function handleReportView() {
   const cur = activeTab();
   if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
   toggleReportView();
-});
+}
+
 $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-warnings").addEventListener("click", wrap(toggleWarningsDrawer));
 $("tab-drawer-variables").addEventListener("click", () => setDrawerTab("variables"));
@@ -4591,15 +5206,75 @@ backend.onMenuAction((actionId) => {
     void changeRootFolder();
   } else if (actionId === "menu_save") {
     void saveFile();
+  } else if (actionId === "menu_export_html") {
+    openExportHtmlDialog();
   } else if (actionId === "menu_close_tab") {
     closeTab(activeTabId);
+  } else if (actionId === "menu_toggle_collapse_all") {
+    handleToggleCollapseAll();
+  } else if (actionId === "menu_report_view") {
+    handleReportView();
+  } else if (actionId === "menu_variables") {
+    toggleVariablesDrawer();
+  } else if (actionId === "menu_warnings") {
+    toggleWarningsDrawer();
+  } else if (actionId === "menu_python_code") {
+    togglePython();
+  } else if (actionId === "menu_toggle_sidebar") {
+    toggleSidebar();
+  } else if (actionId === "menu_run_cell") {
+    const target = getFocusedOrActiveCell();
+    if (target) void runSingleCell(target, false);
+  } else if (actionId === "menu_run_all") {
+    void runAllCells();
+  } else if (actionId === "menu_debug_cell") {
+    debugActiveCell();
+  } else if (actionId === "menu_reset_session") {
+    void resetSession(false);
+  } else if (actionId === "menu_format_document") {
+    void formatNotebookCells().then((changed) => {
+      if (changed) setStatus("Formatted notebook cells");
+    });
   }
 });
 
 window.addEventListener("keydown", (e) => {
+  if (activeDebugSession) {
+    if (e.key === "F10") {
+      e.preventDefault();
+      void handleDebugAction("step_over");
+      return;
+    }
+    if (e.key === "F11" && !e.shiftKey) {
+      e.preventDefault();
+      void handleDebugAction("step_into");
+      return;
+    }
+    if (e.key === "F11" && e.shiftKey) {
+      e.preventDefault();
+      void handleDebugAction("step_out");
+      return;
+    }
+    if (e.key === "F5" && !e.shiftKey) {
+      e.preventDefault();
+      void handleDebugAction("continue");
+      return;
+    }
+    if (e.key === "Escape" || (e.key === "F5" && e.shiftKey)) {
+      e.preventDefault();
+      void handleDebugAction("stop");
+      return;
+    }
+  }
+
   if ((e.metaKey || e.ctrlKey) && e.key === ",") {
     e.preventDefault();
     openSettingsTab();
+  } else if (e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    void formatNotebookCells().then((changed) => {
+      if (changed) setStatus("Formatted notebook cells");
+    });
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "settings") {
     e.preventDefault();
     void saveSettingsScope();
@@ -4620,6 +5295,16 @@ window.addEventListener("keydown", (e) => {
     if (!document.activeElement?.closest(".cm-editor")) {
       e.preventDefault();
       openMatrixDialog();
+    }
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "e" && e.shiftKey) {
+    if (!document.activeElement?.closest(".cm-editor")) {
+      e.preventDefault();
+      openExportHtmlDialog();
+    }
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d" && e.shiftKey) {
+    if (!document.activeElement?.closest(".cm-editor")) {
+      e.preventDefault();
+      debugActiveCell();
     }
   }
 });

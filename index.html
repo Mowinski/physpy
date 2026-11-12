@@ -10,8 +10,6 @@
       <div id="toolbar">
         <button id="btn-run-all" type="button" class="primary" title="Reset session and run all cells (Shift+Cmd+Enter)">▶▶ Run All<kbd>⇧⌘↵</kbd></button>
         <button id="btn-reset" type="button" title="Clear exported variables">↻ Reset</button>
-        <button id="btn-toggle-collapse-all" type="button" title="Collapse all cells">⊟ Collapse All</button>
-        <button id="btn-report-view" type="button" title="Report View: hide code, keep outputs &amp; rendered Markdown">◫ Report View</button>
         <div class="toolbar-spacer"></div>
         <button id="btn-variables" type="button" title="Toggle exported variables panel (Cmd+J)" aria-expanded="false">
           𝑥 Variables<span id="variables-count" class="var-count-badge" hidden>0</span><kbd>⌘J</kbd>
@@ -104,6 +102,19 @@
                       <input id="cfg-line-numbers" type="checkbox" checked />
                       <span>Display line numbers inside notebook cells (<code>line_numbers</code>)</span>
                     </label>
+                  </div>
+                </div>
+
+                <div class="settings-card">
+                  <h3>Code Formatter on Save (Linter)</h3>
+                  <div class="settings-field">
+                    <label class="ipynb-checkbox">
+                      <input id="cfg-format-on-save" type="checkbox" checked />
+                      <span>Format code cells on save (<code>format_on_save</code>)</span>
+                    </label>
+                    <p class="settings-hint">
+                      Automatically formats spacing around operators, variables, and arguments (e.g. <code>-2 * β * (r - r_e)</code>) without line length limits (equations remain on single readable lines).
+                    </p>
                   </div>
                 </div>
 
@@ -407,6 +418,57 @@
         <div class="matrix-modal-actions">
           <button type="button" id="btn-cancel-matrix" class="btn-secondary">Cancel</button>
           <button type="submit" id="btn-submit-matrix" value="insert" class="primary">Insert Matrix</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="export-html-dialog" class="export-html-modal">
+      <form id="export-html-form" method="dialog">
+        <h2 id="export-html-title">Export Notebook to Static HTML</h2>
+        <p class="dialog-hint">
+          Generates a standalone, single-file HTML report. Code blocks are folded by default, and rendered Markdown, math formulas (KaTeX), tables, and plots are included.
+        </p>
+
+        <div class="dialog-custom-row">
+          <label for="export-html-doc-title">Document Title:</label>
+          <div class="dialog-input-group">
+            <input
+              id="export-html-doc-title"
+              type="text"
+              placeholder="Report Title (defaults to filename)…"
+            />
+          </div>
+        </div>
+
+        <div class="dialog-custom-row">
+          <label for="export-html-code-mode">Code Display:</label>
+          <div class="dialog-input-group">
+            <select id="export-html-code-mode" class="settings-select">
+              <option value="folded" selected>Folded by default (expandable via click)</option>
+              <option value="expanded">Expanded by default</option>
+              <option value="hidden">Hide code completely (results only)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="export-html-cells-header">
+          <span>Include Cells:</span>
+          <div class="export-html-quick-links">
+            <button type="button" id="btn-export-select-all" class="export-link-btn">Select All</button>
+            <span class="export-link-sep">·</span>
+            <button type="button" id="btn-export-deselect-all" class="export-link-btn">Deselect All</button>
+            <span class="export-link-sep">·</span>
+            <button type="button" id="btn-export-select-outputs" class="export-link-btn">Outputs &amp; Notes Only</button>
+          </div>
+        </div>
+
+        <div id="export-html-cell-list" class="export-html-cell-list">
+          <!-- Populated dynamically -->
+        </div>
+
+        <div class="dialog-footer">
+          <button type="button" id="btn-cancel-export-html">Cancel</button>
+          <button type="submit" id="btn-confirm-export-html" value="export" class="primary">Export HTML…</button>
         </div>
       </form>
     </dialog>
