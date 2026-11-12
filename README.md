@@ -1,7 +1,7 @@
 # PhysPy
 
 A multi-platform desktop Python notebook and IDE built for physics and engineering calculations.
-Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2`, `1000.0 [kg/m^3]`) — the editor renders them live as mathematical notation ($\rho_0$, $x^2$, `[kg/m³]`), and the transpiler converts them on the fly into standard Python.
+Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2`, `[1, 2; 3, 4]`, `1000.0 [kg/m^3]`) — the editor renders them live as mathematical notation ($\rho_0$, $x^2$, $\begin{pmatrix}1 & 2\\3 & 4\end{pmatrix}$, `[kg/m³]`), and the transpiler converts them on the fly into standard Python.
 
 **Stack:** Tauri 2 (Rust) · CodeMirror 6 + KaTeX (TypeScript/Vite) · `physpy` Python transpiler (`ast` + `tokenize` + `pint` + `matplotlib`)
 
@@ -15,6 +15,8 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 | PhysPy Syntax | Transpiled Python | Description |
 |---|---|---|
 | `\rho_0`, `\omega_0`, `\Delta x` | `ρ_0`, `ω_0`, `Δx` | Greek and physics symbols rendered live via KaTeX (with `\` autocomplete) |
+| `[1, 2; 3, 4]`, `[a; b; c]` | `np.array([[1, 2], [3, 4]])` | Native matrix syntax with `;` row separators, rendered live in KaTeX as a 2D matrix widget and formatted as LaTeX matrix output |
+| `15%`, `0.05% * v` | `0.15`, `0.0005 * v` | Percentage literals converted directly to numeric decimals |
 | `1000.0 [kg/m^3]`, `p.to("kPa")` | `__physpy_unit__(1000.0, 'kg/m^3')` | Physical units powered by `pint` (`pint.Quantity`) with automatic dimensional analysis and `.to(...)` conversion |
 | `const g = 9.81 [m/s^2]` | immutable constant | Blocks reassignment at the AST level and **immediately underlines reassignment attempts in red in the editor** |
 | `export x = ...`, `export const ...`, `export import ...` | stored in `__exports__` | Explicit sharing of variables, constants, functions, classes, and imports across `# %%` cells |
@@ -37,6 +39,14 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
   p = (\rho_0 * g * h).to("kPa")
   print(f"Hydrostatic pressure: {p:.2f}")
 
+  # %% Quantum spin & Pauli matrices (with live KaTeX rendering)
+  export \sigma_x = [0, 1; 1, 0]
+  export \sigma_z = [1, 0; 0, -1]
+  M = [1, 2; 3, 4]
+  commutator = \sigma_x @ \sigma_z - \sigma_z @ \sigma_x
+  print("Commutator [σ_x, σ_z]:")
+  commutator
+
   # %% Simple pendulum
   L = 2.0 [m]
   export \omega_0 = np.sqrt(g / L)
@@ -45,9 +55,10 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
   ```
 
 ### 3. Desktop IDE Features
+- **Visual Matrix Builder Dialog (`⊞ Matrix` / `⇧⌘M`)** — interactive grid modal with presets ($2\times2$, $3\times3$) and live KaTeX preview to insert matrix literals directly into the editor.
 - **Collapsible File Explorer (`⌘B`)** — browse workspace folders and create, rename, or delete files and directories via the context menu.
 - **VS Code-Style Editor Tabs** — open multiple files in tabs (`⌘N`, `⌘W`, middle-click to close, right-click tab context menu).
-- **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, showing current runtime values (including `pint` units), pending unexecuted exports, and duplicate export warnings.
+- **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, showing current runtime values (including `pint` units and NumPy arrays), pending unexecuted exports, and duplicate export warnings.
 - **Python Interpreter Selector** — modal dialog to switch the active Python environment (`.venv`, Conda, Homebrew, system Python, or custom binary path).
 - **Transpiled Python Preview (`⌘P`)** — live side panel displaying the generated plain Python code.
 

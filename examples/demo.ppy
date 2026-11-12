@@ -23,6 +23,17 @@ export T = (2 * np.pi / \omega_0).to("s")
 print(f"Angular frequency: {\omega_0:.3f}")
 print(f"Oscillation period: {T:.2f}")
 
+# %% Quantum spin & Pauli matrices (with live KaTeX rendering)
+# Semicolon-separated matrices are rendered live in KaTeX and executed as NumPy arrays!
+export \sigma_x = [0, 1; 1, 0]
+export \sigma_z = [1, 0; 0, -1]
+M = [1, 2; 3, 4]
+
+# Commutator [\sigma_x, \sigma_z] = -2i \sigma_y
+commutator = \sigma_x @ \sigma_z - \sigma_z @ \sigma_x
+print("Commutator [σ_x, σ_z]:")
+commutator
+
 # %% Damped harmonic oscillator plot (`plot plt`)
 import matplotlib.pyplot as plt
 
