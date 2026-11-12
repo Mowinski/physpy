@@ -1233,7 +1233,9 @@ fn list_dir(path: String) -> Result<Vec<DirEntryItem>, String> {
     let mut items: Vec<DirEntryItem> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if IGNORED_NAMES.contains(&name.as_str()) {
+        if IGNORED_NAMES.contains(&name.as_str())
+            || (name.starts_with('.') && name.ends_with(".ppyout"))
+        {
             continue;
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);

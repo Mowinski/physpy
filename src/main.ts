@@ -61,8 +61,30 @@ interface CellState {
   lastFullStdout: string;
   lastNonTableStdout: string;
   lastStderr: string;
+  lastExported: Record<string, string>;
+  lastPlots: string[];
+  lastLatex: string | null;
   tableViewMode: "table" | "text";
   runCount: number | null;
+}
+
+interface SavedCellOutput {
+  runCount: number | null;
+  exported: Record<string, string>;
+  stdout: string;
+  nonTableStdout: string;
+  stderr: string;
+  tables: backend.TableOutput[];
+  plots: string[];
+  latex: string | null;
+  tableViewMode: "table" | "text";
+}
+
+interface NotebookOutputsFile {
+  version: 1;
+  execCounter: number;
+  allExports: Record<string, string>;
+  cells: (SavedCellOutput | null)[];
 }
 
 type TabKind = "notebook" | "settings" | "csv";
@@ -76,6 +98,7 @@ interface TabDoc {
   dirty: boolean;
   interpreterInfo?: backend.PythonInterpreterInfo | null;
   collapsedCells?: CellCollapseMode[];
+  savedOutputs?: NotebookOutputsFile | null;
   csvMode?: CsvViewMode;
   csvDelimiter?: CsvDelimiter;
   csvHasHeader?: boolean;
@@ -395,6 +418,7 @@ function saveActiveTabSnapshot() {
     cur.content = getActiveTabSerializedContent();
     if (cur.kind !== "csv") {
       cur.collapsedCells = cells.map((c) => c.collapseMode);
+      cur.savedOutputs = snapshotNotebookOutputs();
     }
     if (cur.kind === "csv" && csvEditor) {
       const s = csvEditor.getState();
@@ -592,7 +616,7 @@ function switchToTab(tabId: number) {
   notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
-  loadDocumentIntoCells(target.content, target.collapsedCells);
+  loadDocumentIntoCells(target.content, target.collapsedCells, target.savedOutputs, target.id);
   updateTitle();
 
   if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
@@ -621,6 +645,8 @@ function closeTab(tabId: number) {
     tabs[0].untitledName = `untitled-${untitledCounter++}.ppy`;
     tabs[0].content = "# %% Cell 1\n";
     tabs[0].dirty = false;
+    tabs[0].collapsedCells = undefined;
+    tabs[0].savedOutputs = undefined;
     activeTabId = 0;
     switchToTab(tabs[0].id);
     saveSessionState();
@@ -3211,6 +3237,9 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     lastFullStdout: "",
     lastNonTableStdout: "",
     lastStderr: "",
+    lastExported: {},
+    lastPlots: [],
+    lastLatex: null,
     tableViewMode: "table",
     runCount: null,
   };
@@ -3218,10 +3247,12 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   btnTableView.addEventListener("click", () => {
     state.tableViewMode = "table";
     applyCellOutputView(state);
+    scheduleWriteOutputsSidecar();
   });
   btnTextView.addEventListener("click", () => {
     state.tableViewMode = "text";
     applyCellOutputView(state);
+    scheduleWriteOutputsSidecar();
   });
 
   let copyFeedbackTimer: number | undefined;
@@ -3673,12 +3704,23 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
         disabled: Boolean(state.outputWrap.hidden),
         run: () => {
           state.outputWrap.hidden = true;
+          state.lastTables = [];
+          state.lastFullStdout = "";
+          state.lastNonTableStdout = "";
           state.lastStderr = "";
+          state.lastExported = {};
+          state.lastPlots = [];
+          state.lastLatex = null;
+          state.tablesWrap.innerHTML = "";
+          state.plotsWrap.innerHTML = "";
+          state.latexWrap.innerHTML = "";
+          state.exportedBar.hidden = true;
           if (state.collapseMode === "output-only") {
             setCellCollapseMode(state, "collapsed");
           } else if (state.collapseMode !== "expanded") {
             updateCellCollapseUI(state);
           }
+          scheduleWriteOutputsSidecar();
         },
       },
       {
@@ -3728,6 +3770,7 @@ function moveCell(cell: CellState, delta: -1 | 1) {
   }
   renumberCells();
   persistCollapsedStateForActiveTab();
+  scheduleWriteOutputsSidecar();
   markDirty();
 }
 
@@ -3744,8 +3787,16 @@ function deleteCell(cell: CellState) {
     cell.mediaPath = "";
     cell.mediaInput.value = "";
     cell.outputWrap.hidden = true;
+    cell.lastTables = [];
+    cell.lastFullStdout = "";
+    cell.lastNonTableStdout = "";
+    cell.lastStderr = "";
+    cell.lastExported = {};
+    cell.lastPlots = [];
+    cell.lastLatex = null;
     setCellCollapseMode(cell, "expanded");
     applyCellKindUI(cell);
+    scheduleWriteOutputsSidecar();
     markDirty();
     return;
   }
@@ -3757,10 +3808,241 @@ function deleteCell(cell: CellState) {
   renumberCells();
   persistCollapsedStateForActiveTab();
   updateCollapseToolbarButtons();
+  scheduleWriteOutputsSidecar();
   markDirty();
 }
 
-function loadDocumentIntoCells(src: string, collapsedModes?: CellCollapseMode[]) {
+function getOutputsSidecarPath(notebookPath: string): string {
+  const sepIdx = Math.max(notebookPath.lastIndexOf("/"), notebookPath.lastIndexOf("\\"));
+  const dir = sepIdx >= 0 ? notebookPath.slice(0, sepIdx + 1) : "";
+  const file = sepIdx >= 0 ? notebookPath.slice(sepIdx + 1) : notebookPath;
+  const dotIdx = file.lastIndexOf(".");
+  const stem = dotIdx > 0 ? file.slice(0, dotIdx) : file;
+  return `${dir}.${stem}.ppyout`;
+}
+
+function serializeCellOutput(cell: CellState): SavedCellOutput | null {
+  const hasAny =
+    !cell.outputWrap.hidden ||
+    cell.runCount !== null ||
+    cell.lastPlots.length > 0 ||
+    cell.lastTables.length > 0 ||
+    Boolean(cell.lastLatex) ||
+    Boolean(cell.lastFullStdout) ||
+    Boolean(cell.lastStderr) ||
+    Object.keys(cell.lastExported).length > 0;
+  if (!hasAny) return null;
+  return {
+    runCount: cell.runCount,
+    exported: { ...cell.lastExported },
+    stdout: cell.lastFullStdout,
+    nonTableStdout: cell.lastNonTableStdout,
+    stderr: cell.lastStderr,
+    tables: cell.lastTables,
+    plots: [...cell.lastPlots],
+    latex: cell.lastLatex,
+    tableViewMode: cell.tableViewMode,
+  };
+}
+
+function snapshotNotebookOutputs(): NotebookOutputsFile {
+  return {
+    version: 1,
+    execCounter,
+    allExports: { ...sessionRuntimeExports },
+    cells: cells.map(serializeCellOutput),
+  };
+}
+
+function applySavedCellOutput(cell: CellState, out: SavedCellOutput, cellIdx: number): boolean {
+  cell.runCount = out.runCount;
+  cell.lastExported = { ...(out.exported ?? {}) };
+  const exportedEntries = Object.entries(cell.lastExported);
+  if (exportedEntries.length > 0) {
+    cell.exportedBar.hidden = false;
+    cell.exportedBar.textContent =
+      "↳ exported: " + exportedEntries.map(([k, v]) => `${k} = ${v}`).join(", ");
+  } else {
+    cell.exportedBar.hidden = true;
+    cell.exportedBar.textContent = "";
+  }
+
+  cell.lastTables = out.tables ?? [];
+  cell.lastFullStdout = out.stdout ?? "";
+  cell.lastNonTableStdout = out.nonTableStdout ?? "";
+  cell.lastStderr = out.stderr ?? "";
+  cell.tableViewMode = out.tableViewMode ?? "table";
+
+  if (cell.lastTables.length > 0) {
+    renderCellTables(cell.tablesWrap, cell.lastTables);
+  } else {
+    cell.tablesWrap.innerHTML = "";
+  }
+  applyCellOutputView(cell);
+
+  cell.plotsWrap.innerHTML = "";
+  const plots = out.plots ?? [];
+  cell.lastPlots = [...plots];
+  plots.forEach((b64, plotIdx) => {
+    const img = document.createElement("img");
+    img.className = "cell-plot";
+    img.src = `data:image/png;base64,${b64}`;
+    img.alt = "matplotlib plot";
+    img.title = "Right-click to save or copy plot image";
+    img.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const baseDir = currentPath
+        ? currentPath.replace(/[\\/][^\\/]+$/, "")
+        : (rootDir ?? "");
+      const stem = (cell.title || `cell-${cellIdx + 1}`)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "_")
+        .replace(/^_+|_+$/g, "") || `plot_${cellIdx + 1}`;
+      const fileName = plots.length > 1 ? `${stem}_${plotIdx + 1}.png` : `${stem}.png`;
+      const defaultPath = baseDir ? `${baseDir.replace(/\/+$/, "")}/${fileName}` : fileName;
+
+      openContextMenu(e.clientX, e.clientY, [
+        {
+          label: "💾 Save Plot Image As…",
+          run: async () => {
+            try {
+              const saved = await backend.savePlotPng(b64, defaultPath);
+              if (saved) {
+                setStatus(`Saved plot to ${saved}`);
+                await refreshFileTree();
+              }
+            } catch (err) {
+              setStatus(`Failed to save plot: ${String(err)}`);
+            }
+          },
+        },
+        {
+          label: "📋 Copy Image to Clipboard",
+          run: async () => {
+            try {
+              const resp = await fetch(`data:image/png;base64,${b64}`);
+              const blob = await resp.blob();
+              await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+              setStatus("Copied plot image to clipboard");
+            } catch (err) {
+              setStatus(`Could not copy image: ${String(err)}`);
+            }
+          },
+        },
+      ]);
+    });
+    cell.plotsWrap.append(img);
+  });
+  cell.plotsWrap.hidden = plots.length === 0;
+
+  cell.lastLatex = out.latex ?? null;
+  if (cell.lastLatex) {
+    cell.latexWrap.hidden = false;
+    cell.latexWrap.dataset.latex = cell.lastLatex;
+    cell.latexWrap.innerHTML = "";
+    try {
+      katex.render(cell.lastLatex, cell.latexWrap, { displayMode: true, throwOnError: false });
+    } catch {
+      cell.latexWrap.textContent = cell.lastLatex;
+    }
+  } else {
+    cell.latexWrap.hidden = true;
+    delete cell.latexWrap.dataset.latex;
+    cell.latexWrap.innerHTML = "";
+  }
+
+  const hasCopyableText = Boolean(
+    cell.lastFullStdout ||
+      cell.lastStderr ||
+      cell.lastLatex ||
+      exportedEntries.length > 0 ||
+      cell.lastTables.length > 0,
+  );
+  const hasOut = Boolean(hasCopyableText || plots.length > 0);
+  cell.outputWrap.hidden = !hasOut;
+  cell.btnCopyOutput.hidden = !hasCopyableText;
+  return hasOut;
+}
+
+function restoreNotebookOutputs(snapshot: NotebookOutputsFile) {
+  if (typeof snapshot.execCounter === "number" && snapshot.execCounter > execCounter) {
+    execCounter = snapshot.execCounter;
+  }
+  const count = Math.min(cells.length, snapshot.cells?.length ?? 0);
+  for (let i = 0; i < count; i++) {
+    const out = snapshot.cells[i];
+    if (out) {
+      applySavedCellOutput(cells[i], out, i);
+      updateCellCollapseUI(cells[i]);
+    }
+  }
+  renumberCells();
+  updateCollapseToolbarButtons();
+  if (snapshot.allExports && Object.keys(snapshot.allExports).length > 0) {
+    renderSessionExports(snapshot.allExports);
+  }
+}
+
+let outputsSaveTimer: number | undefined;
+
+async function writeOutputsSidecarNow(notebookPath: string | null = currentPath): Promise<void> {
+  if (!backend.inTauri || !notebookPath || isCsvPath(notebookPath)) return;
+  const sidecarPath = getOutputsSidecarPath(notebookPath);
+  const snapshot = snapshotNotebookOutputs();
+  const hasAnyCellOutput = snapshot.cells.some((c) => c !== null);
+  const hasExports = Object.keys(snapshot.allExports).length > 0;
+  if (!hasAnyCellOutput && !hasExports) {
+    try {
+      await backend.deletePath(sidecarPath);
+    } catch {
+      // Sidecar may not exist
+    }
+    return;
+  }
+  try {
+    await backend.writeFileByPath(sidecarPath, JSON.stringify(snapshot));
+  } catch (err) {
+    console.warn("Failed to write outputs sidecar:", sidecarPath, err);
+  }
+}
+
+function scheduleWriteOutputsSidecar(immediate = false): void {
+  clearTimeout(outputsSaveTimer);
+  if (!backend.inTauri || !currentPath || isCsvPath(currentPath)) return;
+  const targetPath = currentPath;
+  if (immediate) {
+    void writeOutputsSidecarNow(targetPath);
+    return;
+  }
+  outputsSaveTimer = window.setTimeout(() => {
+    void writeOutputsSidecarNow(targetPath);
+  }, 200);
+}
+
+async function loadOutputsSidecarForTab(tabId: number, filePath: string): Promise<void> {
+  if (!backend.inTauri || isCsvPath(filePath)) return;
+  try {
+    const raw = await backend.readFileByPath(getOutputsSidecarPath(filePath));
+    const parsed = JSON.parse(raw) as NotebookOutputsFile;
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.cells)) return;
+    const tab = tabs.find((t) => t.id === tabId);
+    if (tab) tab.savedOutputs = parsed;
+    if (activeTabId === tabId && currentPath === filePath) {
+      restoreNotebookOutputs(parsed);
+    }
+  } catch {
+    // Missing or unreadable sidecar is normal for new/clean notebooks
+  }
+}
+
+function loadDocumentIntoCells(
+  src: string,
+  collapsedModes?: CellCollapseMode[],
+  savedOutputs?: NotebookOutputsFile | null,
+  tabId?: number,
+) {
   for (const c of cells) {
     if (c.mediaBlobUrl) URL.revokeObjectURL(c.mediaBlobUrl);
     c.view.destroy();
@@ -3782,6 +4064,11 @@ function loadDocumentIntoCells(src: string, collapsedModes?: CellCollapseMode[])
   });
   updateCollapseToolbarButtons();
   renderSessionExports();
+  if (savedOutputs) {
+    restoreNotebookOutputs(savedOutputs);
+  } else if (savedOutputs === undefined && currentPath && backend.inTauri) {
+    void loadOutputsSidecarForTab(tabId ?? activeTabId, currentPath);
+  }
 
   // If document defines dependencies with a venv, auto-resolve & activate that venv
   const deps = parsedCells.find((c) => c.kind === "deps");
@@ -4071,18 +4358,6 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
       idx + 1,
       serializeDocument(),
     );
-    cell.runCount = ++execCounter;
-    renumberCells();
-
-    const exportedEntries = Object.entries(res.exported);
-    if (exportedEntries.length > 0) {
-      cell.exportedBar.hidden = false;
-      cell.exportedBar.textContent =
-        "↳ exported: " + exportedEntries.map(([k, v]) => `${k} = ${v}`).join(", ");
-    } else {
-      cell.exportedBar.hidden = true;
-    }
-
     const structuredTables = res.tables ?? [];
     const tables =
       structuredTables.length > 0
@@ -4092,100 +4367,26 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
           : [];
     const pipeFallbackUsed = structuredTables.length === 0 && tables.length > 0;
 
-    cell.lastTables = tables;
-    cell.lastFullStdout = res.stdout;
-    cell.lastNonTableStdout = pipeFallbackUsed
-      ? ""
-      : (res.non_table_stdout ?? (structuredTables.length > 0 ? "" : res.stdout));
-    cell.lastStderr = res.stderr;
-    cell.tableViewMode = "table";
-
-    if (tables.length > 0) {
-      renderCellTables(cell.tablesWrap, tables);
-    } else {
-      cell.tablesWrap.innerHTML = "";
-    }
-    applyCellOutputView(cell);
-
-    cell.plotsWrap.innerHTML = "";
-    const plots = res.plots ?? [];
-    plots.forEach((b64, plotIdx) => {
-      const img = document.createElement("img");
-      img.className = "cell-plot";
-      img.src = `data:image/png;base64,${b64}`;
-      img.alt = "matplotlib plot";
-      img.title = "Right-click to save or copy plot image";
-      img.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const baseDir = currentPath
-          ? currentPath.replace(/[\\/][^\\/]+$/, "")
-          : (rootDir ?? "");
-        const stem = (cell.title || `cell-${idx + 1}`)
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, "_")
-          .replace(/^_+|_+$/g, "") || `plot_${idx + 1}`;
-        const fileName = plots.length > 1 ? `${stem}_${plotIdx + 1}.png` : `${stem}.png`;
-        const defaultPath = baseDir ? `${baseDir.replace(/\/+$/, "")}/${fileName}` : fileName;
-
-        openContextMenu(e.clientX, e.clientY, [
-          {
-            label: "💾 Save Plot Image As…",
-            run: async () => {
-              try {
-                const saved = await backend.savePlotPng(b64, defaultPath);
-                if (saved) {
-                  setStatus(`Saved plot to ${saved}`);
-                  await refreshFileTree();
-                }
-              } catch (err) {
-                setStatus(`Failed to save plot: ${String(err)}`);
-              }
-            },
-          },
-          {
-            label: "📋 Copy Image to Clipboard",
-            run: async () => {
-              try {
-                const resp = await fetch(`data:image/png;base64,${b64}`);
-                const blob = await resp.blob();
-                await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-                setStatus("Copied plot image to clipboard");
-              } catch (err) {
-                setStatus(`Could not copy image: ${String(err)}`);
-              }
-            },
-          },
-        ]);
-      });
-      cell.plotsWrap.append(img);
-    });
-    cell.plotsWrap.hidden = plots.length === 0;
-
-    if (res.latex) {
-      cell.latexWrap.hidden = false;
-      cell.latexWrap.dataset.latex = res.latex;
-      cell.latexWrap.innerHTML = "";
-      try {
-        katex.render(res.latex, cell.latexWrap, { displayMode: true, throwOnError: false });
-      } catch (err) {
-        cell.latexWrap.textContent = res.latex;
-      }
-    } else {
-      cell.latexWrap.hidden = true;
-      delete cell.latexWrap.dataset.latex;
-      cell.latexWrap.innerHTML = "";
-    }
-
-    const hasCopyableText = Boolean(
-      res.stdout || res.stderr || res.latex || exportedEntries.length > 0 || tables.length > 0,
+    const hasOut = applySavedCellOutput(
+      cell,
+      {
+        runCount: ++execCounter,
+        exported: res.exported,
+        stdout: res.stdout,
+        nonTableStdout: pipeFallbackUsed
+          ? ""
+          : (res.non_table_stdout ?? (structuredTables.length > 0 ? "" : res.stdout)),
+        stderr: res.stderr,
+        tables,
+        plots: res.plots ?? [],
+        latex: res.latex ?? null,
+        tableViewMode: "table",
+      },
+      idx,
     );
-    const hasOut = Boolean(hasCopyableText || plots.length > 0);
-    cell.outputWrap.hidden = !hasOut;
-    cell.btnCopyOutput.hidden = !hasCopyableText;
-
+    renumberCells();
     renderSessionExports(res.all_exports);
+    scheduleWriteOutputsSidecar();
     setStatus(`Cell ${idx + 1} finished (exit code ${res.code})`);
     if (res.code !== 0 && cell.collapseMode !== "expanded") {
       setCellCollapseMode(cell, "expanded");
@@ -4208,10 +4409,12 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
     return res.code === 0;
   } catch (e) {
     if (cell.collapseMode !== "expanded") setCellCollapseMode(cell, "expanded");
+    cell.lastStderr = String(e);
     cell.outputWrap.hidden = false;
     cell.outputPre.hidden = false;
     cell.outputPre.textContent = String(e);
     cell.btnCopyOutput.hidden = false;
+    scheduleWriteOutputsSidecar();
     setStatus("Error");
     return false;
   } finally {
@@ -4235,6 +4438,12 @@ async function resetSession(quiet = false): Promise<boolean> {
     c.lastFullStdout = "";
     c.lastNonTableStdout = "";
     c.lastStderr = "";
+    c.lastExported = {};
+    c.lastPlots = [];
+    c.lastLatex = null;
+    c.plotsWrap.innerHTML = "";
+    c.plotsWrap.hidden = true;
+    c.exportedBar.hidden = true;
     c.latexWrap.hidden = true;
     delete c.latexWrap.dataset.latex;
     c.latexWrap.innerHTML = "";
@@ -4247,6 +4456,7 @@ async function resetSession(quiet = false): Promise<boolean> {
   updateCollapseToolbarButtons();
   if (!quiet) persistCollapsedStateForActiveTab();
   renderSessionExports({});
+  if (!quiet) scheduleWriteOutputsSidecar(true);
   if (!quiet) setStatus("Session reset (all exported variables cleared)");
   return true;
 }
@@ -4324,7 +4534,12 @@ async function saveFile(): Promise<boolean> {
       cur.path = path;
       cur.content = serialized;
       cur.dirty = false;
-      if (cur.kind === "csv") csvEditor?.markSaved();
+      if (cur.kind === "csv") {
+        csvEditor?.markSaved();
+      } else {
+        cur.savedOutputs = snapshotNotebookOutputs();
+        void writeOutputsSidecarNow(path);
+      }
     }
     updateTitle();
     setStatus(`Saved ${path}`);
