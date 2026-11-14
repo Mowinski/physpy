@@ -3073,3 +3073,417 @@ dialog.matrix-modal::backdrop {
   font-weight: 600;
 }
 
+
+/* Variable occurrence highlight & hover inspector */
+.cm-var-highlight {
+  background: rgba(97, 175, 239, 0.22);
+  border-radius: 2px;
+  outline: 1px solid rgba(97, 175, 239, 0.38);
+}
+
+.cm-hover-inspector {
+  background: #21252b;
+  border: 1px solid #3e4451;
+  border-radius: 6px;
+  padding: 6px 10px;
+  max-width: 420px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  color: #abb2bf;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cm-hover-inspector-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.cm-hover-inspector-header code {
+  font-family: var(--editor-font-family);
+  color: #61afef;
+  font-weight: 600;
+}
+
+.cm-hover-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.cm-hover-badge.export {
+  background: rgba(152, 195, 121, 0.16);
+  color: #98c379;
+  border: 1px solid rgba(152, 195, 121, 0.35);
+}
+
+.cm-hover-badge.const {
+  background: rgba(229, 192, 123, 0.16);
+  color: #e5c07b;
+  border: 1px solid rgba(229, 192, 123, 0.35);
+}
+
+.cm-hover-inspector-val {
+  font-family: var(--editor-font-family);
+  color: #e5c07b;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cm-hover-inspector-hint {
+  color: #7f848e;
+  font-size: 11px;
+}
+
+/* Sidebar Outline */
+#outline-section {
+  border-top: 1px solid #2c313c;
+  display: flex;
+  flex-direction: column;
+  max-height: 42%;
+  min-height: 30px;
+  flex-shrink: 0;
+}
+
+.outline-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.outline-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.outline-chevron {
+  font-size: 11px;
+  color: #7f848e;
+  width: 12px;
+  text-align: center;
+}
+
+.outline-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #7f848e;
+}
+
+.outline-list {
+  overflow-y: auto;
+  padding: 2px 4px 6px;
+}
+
+.outline-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #abb2bf;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outline-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.outline-item.level-2 {
+  padding-left: 18px;
+}
+
+.outline-item.level-3 {
+  padding-left: 28px;
+}
+
+.outline-kind-badge {
+  font-size: 10px;
+  font-family: var(--editor-font-family);
+  color: #61afef;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.outline-kind-badge.md {
+  color: #c678dd;
+}
+
+.outline-kind-badge.export {
+  color: #98c379;
+}
+
+.outline-empty {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: #7f848e;
+}
+
+/* Global Find & Replace Bar */
+.global-find-bar {
+  background: #21252b;
+  border-bottom: 1px solid #3e4451;
+  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+}
+
+.global-find-bar[hidden] {
+  display: none;
+}
+
+.global-find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.global-find-row[hidden] {
+  display: none;
+}
+
+.global-find-row input {
+  flex: 1;
+  min-width: 160px;
+  max-width: 340px;
+  background: #181a1f;
+  border: 1px solid #3e4451;
+  border-radius: 4px;
+  color: #abb2bf;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  font-family: var(--editor-font-family);
+}
+
+.global-find-row input:focus {
+  outline: none;
+  border-color: #61afef;
+}
+
+.global-find-status {
+  font-size: 11.5px;
+  color: #7f848e;
+  min-width: 48px;
+  text-align: center;
+}
+
+.find-toggle-btn.active {
+  background: rgba(97, 175, 239, 0.22);
+  border-color: #61afef;
+  color: #fff;
+}
+
+/* Stale output badge */
+.cell-stale-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(229, 192, 123, 0.16);
+  color: #e5c07b;
+  border: 1px solid rgba(229, 192, 123, 0.35);
+}
+
+.cell-stale-badge[hidden] {
+  display: none;
+}
+
+/* Pinned Plots Comparison Bar */
+.pinned-plots-bar {
+  background: #1e2229;
+  border-bottom: 1px solid #3e4451;
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  flex-shrink: 0;
+}
+
+.pinned-plots-bar[hidden] {
+  display: none;
+}
+
+.pinned-plots-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: #abb2bf;
+}
+
+.pinned-clear-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.pinned-plots-grid {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.pinned-plot-card {
+  position: relative;
+  background: #282c34;
+  border: 1px solid #3e4451;
+  border-radius: 6px;
+  padding: 6px;
+  flex: 0 0 auto;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pinned-plot-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #9da5b4;
+}
+
+.pinned-plot-card img {
+  width: 100%;
+  height: 150px;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 4px;
+  cursor: zoom-in;
+}
+
+.pinned-unpin-btn {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Interactive Plot Lightbox */
+.plot-lightbox-modal {
+  width: 92vw;
+  height: 88vh;
+  max-width: 1400px;
+  max-height: 920px;
+  background: #21252b;
+  color: #abb2bf;
+  border: 1px solid #3e4451;
+  border-radius: 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.plot-lightbox-modal:not([open]) {
+  display: none;
+}
+
+.plot-lightbox-modal::backdrop {
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.plot-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #181a1f;
+  border-bottom: 1px solid #3e4451;
+  flex-wrap: wrap;
+}
+
+.plot-lightbox-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #e5c07b;
+}
+
+.plot-lightbox-coords {
+  font-family: var(--editor-font-family);
+  font-size: 12px;
+  color: #61afef;
+  margin-right: auto;
+}
+
+.plot-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.plot-lightbox-stage {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #14161a;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.plot-lightbox-canvas {
+  position: relative;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.plot-lightbox-canvas img {
+  display: block;
+  max-width: 84vw;
+  max-height: 76vh;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+.plot-lb-crosshair-x {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(97, 175, 239, 0.75);
+  pointer-events: none;
+}
+
+.plot-lb-crosshair-y {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(97, 175, 239, 0.75);
+  pointer-events: none;
+}
+
+.plot-lb-measure-box {
+  position: absolute;
+  border: 1.5px dashed #e5c07b;
+  background: rgba(229, 192, 123, 0.14);
+  pointer-events: none;
+}
+
+.cell-plot {
+  cursor: zoom-in;
+}

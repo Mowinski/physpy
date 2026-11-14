@@ -12,6 +12,7 @@ import {
   setDebugLine,
   setDoc,
   setGlobalIndentConfig,
+  type VariableHoverInfo,
 } from "./editor/setup";
 import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
@@ -22,6 +23,13 @@ import {
   generateStaticNotebookHtml,
   type CodeExportVisibility,
 } from "./htmlExport";
+import {
+  findVariableAtOffset,
+  findVariableDefinition,
+  findVariableOccurrences,
+  getExportedNamesInCell,
+  validateVariableName,
+} from "./refactor";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -81,6 +89,7 @@ export interface CellState {
   lastStderr: string;
   lastExported: Record<string, string>;
   lastPlots: string[];
+  lastPlotMeta?: backend.PlotMeta[];
   lastLatex: string | null;
   tableViewMode: "table" | "text";
   runCount: number | null;
@@ -96,6 +105,7 @@ interface SavedCellOutput {
   stderr: string;
   tables: backend.TableOutput[];
   plots: string[];
+  plotMeta?: backend.PlotMeta[];
   latex: string | null;
   tableViewMode: "table" | "text";
 }
@@ -2108,6 +2118,55 @@ fileTreeEl.addEventListener("contextmenu", (e) => {
   ]);
 });
 
+const RECENT_FOLDERS_KEY = "physpy.recentFolders.v1";
+const MAX_RECENT_FOLDERS = 10;
+
+function loadRecentFolders(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_FOLDERS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentFolders(folders: string[]): void {
+  try {
+    localStorage.setItem(RECENT_FOLDERS_KEY, JSON.stringify(folders));
+  } catch {
+    // ignore storage errors
+  }
+  void backend.setRecentFolders(folders);
+}
+
+function recordRecentFolder(folderPath: string): void {
+  const trimmed = folderPath.trim();
+  if (!trimmed || trimmed === ".") return;
+  const existing = loadRecentFolders().filter((f) => f !== trimmed);
+  const next = [trimmed, ...existing].slice(0, MAX_RECENT_FOLDERS);
+  saveRecentFolders(next);
+}
+
+function clearRecentFolders(): void {
+  saveRecentFolders([]);
+}
+
+async function openWorkspaceFolder(folderPath: string): Promise<void> {
+  rootDir = folderPath;
+  expandedDirs.clear();
+  sidebarEl.hidden = false;
+  recordRecentFolder(folderPath);
+  await refreshFileTree();
+  setStatus(`Opened folder ${folderPath}`);
+  const cfg = await applyHierarchicalConfig(folderPath);
+  if (!cfg?.python_path) {
+    await autoSelectWorkspacePython(folderPath);
+  }
+}
+
 async function refreshFileTree() {
   if (!backend.inTauri) {
     fileTreeEl.innerHTML = `<div class="tree-empty">Browser mode</div>`;
@@ -2120,6 +2179,11 @@ async function refreshFileTree() {
       rootDir = ".";
     }
   }
+  if (rootDir && rootDir !== ".") {
+    recordRecentFolder(rootDir);
+  } else {
+    void backend.setRecentFolders(loadRecentFolders());
+  }
   const folderName = rootDir.split(/[\\/]/).filter(Boolean).pop() ?? rootDir;
   sidebarRootNameEl.textContent = folderName;
   sidebarRootNameEl.title = rootDir;
@@ -2130,15 +2194,7 @@ async function changeRootFolder(): Promise<boolean> {
   if (!requireTauri()) return true;
   const picked = await backend.pickFolder();
   if (picked) {
-    rootDir = picked;
-    expandedDirs.clear();
-    sidebarEl.hidden = false;
-    await refreshFileTree();
-    setStatus(`Opened folder ${picked}`);
-    const cfg = await applyHierarchicalConfig(picked);
-    if (!cfg?.python_path) {
-      await autoSelectWorkspacePython(picked);
-    }
+    await openWorkspaceFolder(picked);
   }
   return true;
 }
@@ -2674,6 +2730,7 @@ function markDirty() {
   updateTitle();
   if (activeTab()?.kind !== "csv") {
     renderSessionExports();
+    renderOutline();
     clearTimeout(transpileTimer);
     transpileTimer = window.setTimeout(refreshPython, 400);
   }
@@ -3540,10 +3597,16 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       { key: "Mod-Shift-e", run: () => (openExportHtmlDialog(), true) },
       { key: "Mod-Shift-d", run: () => (void startCellDebugging(state), true) },
       { key: "Mod-p", run: () => togglePython() },
+      { key: "Mod-f", run: () => (openGlobalFindBar(false, state), true) },
+      { key: "Mod-Shift-f", run: () => (openGlobalFindBar(true, state), true) },
+      { key: "Mod-Alt-f", run: () => (openGlobalFindBar(true, state), true) },
       { key: "Mod-Alt-[", run: () => (setCellCollapseMode(state, nextCellCollapseMode(state)), true) },
       { key: "Mod-Alt-]", run: () => (setCellCollapseMode(state, "expanded"), true) },
     ],
-    onChange: markDirty,
+    onChange: () => {
+      markCellAndBelowStale(state);
+      markDirty();
+    },
     onBlur: () => handleEditorBlur(),
     pythonAssist: {
       isEnabled: () => state.kind === "code",
@@ -3556,6 +3619,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
         backend.inTauri ? backend.completePython(req) : Promise.resolve([]),
       signature: (req) =>
         backend.inTauri ? backend.signaturePython(req) : Promise.resolve(null),
+    },
+    codeIntelligence: {
+      getHoverInfo: (varName) => getHoverInfoForVar(varName, state),
+      onGoToDefinition: (varName) => goToVariableDefinition(varName, state),
     },
   });
 
@@ -3957,6 +4024,20 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     e.preventDefault();
     e.stopPropagation();
     const idx = cells.indexOf(state);
+    let clickedVar: string | null = null;
+    if (state.kind === "code") {
+      const src = state.view.state.doc.toString();
+      const pos = state.view.posAtCoords({ x: e.clientX, y: e.clientY });
+      if (pos !== null) {
+        clickedVar = findVariableAtOffset(src, pos);
+      } else if (state.view.dom.contains(e.target as Node)) {
+        clickedVar = findVariableAtOffset(src, state.view.state.selection.main.head);
+      }
+    }
+    const isExportedVar = clickedVar
+      ? cells.some((c) => c.kind === "code" && getExportedNamesInCell(c.view.state.doc.toString()).has(clickedVar!))
+      : false;
+
     openContextMenu(e.clientX, e.clientY, [
       {
         label:
@@ -3979,6 +4060,33 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
         run: () => void startCellDebugging(state),
       },
       { label: "▶▶ Run All Cells", shortcut: "⇧⌘↵", run: () => void runAllCells() },
+      {
+        label: "⬆ Run All Above",
+        disabled: idx <= 0,
+        run: () => void runAllAbove(state),
+      },
+      {
+        label: "⬇ Run All Below",
+        run: () => void runAllBelow(state),
+      },
+      { separator: true },
+      {
+        label: clickedVar
+          ? `✏️ Refactor "${clickedVar}" (${isExportedVar ? "cały plik" : "komórka"})…`
+          : "✏️ Refactor Variable…",
+        disabled: !clickedVar,
+        run: () => {
+          if (clickedVar) openRefactorDialog(state, clickedVar, isExportedVar);
+        },
+      },
+      {
+        label: clickedVar ? `🔎 Go to Definition "${clickedVar}"` : "🔎 Go to Definition",
+        shortcut: "F12",
+        disabled: !clickedVar,
+        run: () => {
+          if (clickedVar) goToVariableDefinition(clickedVar, state);
+        },
+      },
       { separator: true },
       {
         label: "Insert Code Cell Below",
@@ -4286,34 +4394,44 @@ function applySavedCellOutput(
 
   cell.plotsWrap.innerHTML = "";
   const plots = out.plots ?? [];
+  const plotMeta = out.plotMeta ?? [];
   cell.lastPlots = [...plots];
+  cell.lastPlotMeta = [...plotMeta];
   plots.forEach((b64, plotIdx) => {
+    const meta = plotMeta[plotIdx];
+    const plotTitle = cell.title || `Cell ${cellIdx + 1}`;
     const img = document.createElement("img");
     img.className = "cell-plot";
     img.src = `data:image/png;base64,${b64}`;
     img.alt = "matplotlib plot";
-    img.title = "Right-click to save or copy plot image";
+    img.title = "Click to inspect/zoom · Right-click for options";
+    img.addEventListener("click", () => {
+      openPlotLightbox(b64, meta, plotTitle, cell, cellIdx, plotIdx, plots.length);
+    });
     img.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const baseDir = currentPath
-        ? currentPath.replace(/[\\/][^\\/]+$/, "")
-        : (rootDir ?? "");
-      const stem = (cell.title || `cell-${cellIdx + 1}`)
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]+/g, "_")
-        .replace(/^_+|_+$/g, "") || `plot_${cellIdx + 1}`;
-      const fileName = plots.length > 1 ? `${stem}_${plotIdx + 1}.png` : `${stem}.png`;
-      const defaultPath = baseDir ? `${baseDir.replace(/\/+$/, "")}/${fileName}` : fileName;
+      const defaultPng = getPlotDefaultPath(cell, cellIdx, plotIdx, plots.length, "png");
+      const defaultSvg = getPlotDefaultPath(cell, cellIdx, plotIdx, plots.length, "svg");
+      const defaultPdf = getPlotDefaultPath(cell, cellIdx, plotIdx, plots.length, "pdf");
 
       openContextMenu(e.clientX, e.clientY, [
         {
-          label: "💾 Save Plot Image As…",
+          label: "🔍 Inspect / Zoom Plot",
+          run: () => openPlotLightbox(b64, meta, plotTitle, cell, cellIdx, plotIdx, plots.length),
+        },
+        {
+          label: "📌 Pin Plot for Comparison",
+          run: () => pinPlotItem(b64, meta, plotTitle),
+        },
+        { separator: true },
+        {
+          label: "💾 Save Plot as PNG…",
           run: async () => {
             try {
-              const saved = await backend.savePlotPng(b64, defaultPath);
+              const saved = await backend.savePlotPng(b64, defaultPng);
               if (saved) {
+                rememberPlotDir(saved);
                 setStatus(`Saved plot to ${saved}`);
                 await refreshFileTree();
               }
@@ -4322,6 +4440,44 @@ function applySavedCellOutput(
             }
           },
         },
+        ...(meta?.svg
+          ? [
+              {
+                label: "📐 Save Plot as SVG…",
+                run: async () => {
+                  try {
+                    const saved = await backend.savePlotSvg(meta.svg, defaultSvg);
+                    if (saved) {
+                      rememberPlotDir(saved);
+                      setStatus(`Saved vector plot to ${saved}`);
+                      await refreshFileTree();
+                    }
+                  } catch (err) {
+                    setStatus(`Failed to save SVG: ${String(err)}`);
+                  }
+                },
+              },
+            ]
+          : []),
+        ...(meta?.pdf
+          ? [
+              {
+                label: "📄 Save Plot as PDF…",
+                run: async () => {
+                  try {
+                    const saved = await backend.savePlotPdf(meta.pdf, defaultPdf);
+                    if (saved) {
+                      rememberPlotDir(saved);
+                      setStatus(`Saved PDF plot to ${saved}`);
+                      await refreshFileTree();
+                    }
+                  } catch (err) {
+                    setStatus(`Failed to save PDF: ${String(err)}`);
+                  }
+                },
+              },
+            ]
+          : []),
         {
           label: "📋 Copy Image to Clipboard",
           run: async () => {
@@ -4475,6 +4631,7 @@ function loadDocumentIntoCells(
   });
   updateCollapseToolbarButtons();
   renderSessionExports();
+  renderOutline();
   if (savedOutputs) {
     restoreNotebookOutputs(savedOutputs, false);
   } else if (savedOutputs === undefined && currentPath && backend.inTauri) {
@@ -4843,6 +5000,7 @@ function handleDebugEvent(ev: backend.DebugEvent) {
           stderr: res.stderr,
           tables,
           plots: res.plots ?? [],
+          plotMeta: res.plot_meta ?? [],
           latex: res.latex ?? null,
           tableViewMode: "table",
         },
@@ -4996,6 +5154,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
         stderr: res.stderr,
         tables,
         plots: res.plots ?? [],
+        plotMeta: res.plot_meta ?? [],
         latex: res.latex ?? null,
         tableViewMode: "table",
       },
@@ -5084,11 +5243,16 @@ async function resetSession(quiet = false): Promise<boolean> {
   return true;
 }
 
-async function runAllCells(): Promise<boolean> {
+async function runCellsRange(startIdx: number, endIdx: number, resetBefore: boolean): Promise<boolean> {
   if (!requireTauri()) return true;
   if (activeTab()?.kind === "csv" || activeTab()?.kind === "settings") return true;
-  await resetSession(true);
-  for (const c of cells) {
+  if (resetBefore) {
+    await resetSession(true);
+  }
+  const from = Math.max(0, startIdx);
+  const to = Math.min(cells.length - 1, endIdx);
+  for (let i = from; i <= to; i++) {
+    const c = cells[i];
     if (c.kind === "deps") {
       const ok = await runDepsCell(c);
       if (!ok) break;
@@ -5107,6 +5271,22 @@ async function runAllCells(): Promise<boolean> {
     if (!ok) break;
   }
   return true;
+}
+
+async function runAllCells(): Promise<boolean> {
+  return runCellsRange(0, cells.length - 1, true);
+}
+
+async function runAllAbove(targetCell: CellState): Promise<boolean> {
+  const idx = cells.indexOf(targetCell);
+  if (idx <= 0) return true;
+  return runCellsRange(0, idx - 1, true);
+}
+
+async function runAllBelow(targetCell: CellState): Promise<boolean> {
+  const idx = cells.indexOf(targetCell);
+  if (idx === -1) return true;
+  return runCellsRange(idx, cells.length - 1, false);
 }
 
 // --- Python preview & File I/O ---------------------------------------------
@@ -5245,6 +5425,10 @@ backend.onMenuOpenSettings(() => {
   openSettingsTab();
 });
 
+backend.onMenuOpenRecentFolder((folderPath) => {
+  void openWorkspaceFolder(folderPath);
+});
+
 backend.onMenuAction((actionId) => {
   if (actionId === "menu_new_tab") {
     createNewTab();
@@ -5252,6 +5436,9 @@ backend.onMenuAction((actionId) => {
     void openFile();
   } else if (actionId === "menu_open_folder") {
     void changeRootFolder();
+  } else if (actionId === "menu_clear_recent_folders") {
+    clearRecentFolders();
+    setStatus("Cleared recently opened folders");
   } else if (actionId === "menu_save") {
     void saveFile();
   } else if (actionId === "menu_export_html") {
@@ -5318,6 +5505,12 @@ window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === ",") {
     e.preventDefault();
     openSettingsTab();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f" && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    openGlobalFindBar(false);
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f" && (e.shiftKey || e.altKey)) {
+    e.preventDefault();
+    openGlobalFindBar(true);
   } else if (e.shiftKey && e.altKey && e.key.toLowerCase() === "f") {
     e.preventDefault();
     void formatNotebookCells().then((changed) => {
@@ -5356,6 +5549,867 @@ window.addEventListener("keydown", (e) => {
     }
   }
 });
+
+function openRefactorDialog(cell: CellState, varName: string, isExported: boolean): void {
+  const dialog = $<HTMLDialogElement>("refactor-dialog");
+  const form = $<HTMLFormElement>("refactor-form");
+  const scopeHint = $<HTMLParagraphElement>("refactor-scope-hint");
+  const input = $<HTMLInputElement>("refactor-new-name");
+  const errorEl = $<HTMLParagraphElement>("refactor-error");
+  const btnCancel = $<HTMLButtonElement>("btn-cancel-refactor");
+
+  const targetCells = isExported ? cells.filter((c) => c.kind === "code") : [cell];
+  const cellOccurrences = targetCells
+    .map((c) => ({
+      cell: c,
+      ranges: findVariableOccurrences(c.view.state.doc.toString(), varName),
+    }))
+    .filter((item) => item.ranges.length > 0);
+  const totalCount = cellOccurrences.reduce((acc, item) => acc + item.ranges.length, 0);
+
+  scopeHint.textContent = isExported
+    ? `Zmienna "${varName}" jest eksportowana — zmiana w całym pliku (${totalCount} wystąpień w ${cellOccurrences.length} komórkach).`
+    : `Zmienna "${varName}" jest lokalna — zmiana tylko w tej komórce (${totalCount} wystąpień).`;
+
+  input.value = varName;
+  errorEl.textContent = "";
+
+  const closeDialog = () => {
+    form.onsubmit = null;
+    btnCancel.onclick = null;
+    if (dialog.open) dialog.close();
+  };
+
+  btnCancel.onclick = () => closeDialog();
+
+  form.onsubmit = (ev) => {
+    ev.preventDefault();
+    const res = validateVariableName(input.value);
+    if (!res.ok) {
+      errorEl.textContent = res.reason;
+      input.focus();
+      return;
+    }
+    const newName = res.name;
+    if (newName === varName) {
+      closeDialog();
+      return;
+    }
+
+    for (const { cell: targetCell, ranges } of cellOccurrences) {
+      targetCell.view.dispatch({
+        changes: ranges.map((r) => ({ from: r.from, to: r.to, insert: newName })),
+      });
+    }
+    markDirty();
+    closeDialog();
+    cell.view.focus();
+    setStatus(`Refactored "${varName}" → "${newName}" (${totalCount})`);
+  };
+
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+
+function getHoverInfoForVar(varName: string, cell: CellState): VariableHoverInfo | null {
+  const pyName = replaceSymbolsInIdent(varName);
+  const scanned = scanExportsInCells();
+  const exportMeta = scanned.get(pyName) ?? scanned.get(varName);
+  const runtimeVal = sessionRuntimeExports[pyName] ?? sessionRuntimeExports[varName];
+
+  const isLocalConst = new RegExp(`(?:^|\\n)[ \\t]*const[ \\t]+${varName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(
+    cell.view.state.doc.toString(),
+  );
+  const isExported = !!exportMeta || runtimeVal !== undefined;
+  const isConst = !!exportMeta?.isConst || isLocalConst;
+
+  if (!isExported && !isConst && runtimeVal === undefined) {
+    // Check if variable is defined in this cell at all (avoid noisy tooltips on unknown/external names)
+    const def = findVariableDefinition(cell.view.state.doc.toString(), varName);
+    if (!def) return null;
+  }
+
+  return {
+    name: varName,
+    value: runtimeVal,
+    isExported,
+    isConst,
+  };
+}
+
+function goToVariableDefinition(varName: string, fromCell: CellState): boolean {
+  const isExported = cells.some(
+    (c) => c.kind === "code" && getExportedNamesInCell(c.view.state.doc.toString()).has(varName),
+  );
+  const searchCells = isExported
+    ? [
+        ...cells.filter((c) => c.kind === "code" && getExportedNamesInCell(c.view.state.doc.toString()).has(varName)),
+        ...cells.filter((c) => c.kind === "code"),
+      ]
+    : [fromCell];
+
+  const seen = new Set<CellState>();
+  for (const c of searchCells) {
+    if (seen.has(c) || c.kind !== "code") continue;
+    seen.add(c);
+    const def = findVariableDefinition(c.view.state.doc.toString(), varName);
+    if (def) {
+      if (c.collapseMode !== "expanded") {
+        setCellCollapseMode(c, "expanded");
+      }
+      c.el.scrollIntoView({ behavior: "smooth", block: "center" });
+      c.view.dispatch({
+        selection: { anchor: def.from, head: def.to },
+        scrollIntoView: true,
+      });
+      c.view.focus();
+      return true;
+    }
+  }
+  setStatus(`Nie znaleziono definicji dla "${varName}"`);
+  return false;
+}
+
+let outlineCollapsed = false;
+function initOutlineToggle(): void {
+  const header = $("outline-header");
+  const list = $("outline-list");
+  const chevron = $("outline-chevron");
+  header.addEventListener("click", () => {
+    outlineCollapsed = !outlineCollapsed;
+    list.hidden = outlineCollapsed;
+    chevron.textContent = outlineCollapsed ? "▸" : "▾";
+    header.setAttribute("aria-expanded", String(!outlineCollapsed));
+  });
+}
+initOutlineToggle();
+
+function renderOutline(): void {
+  const listEl = $("outline-list");
+  const countEl = $("outline-count");
+  listEl.innerHTML = "";
+
+  interface OutlineEntry {
+    label: string;
+    badge: string;
+    badgeClass: string;
+    level: number;
+    cell: CellState;
+    offset?: number;
+  }
+
+  const entries: OutlineEntry[] = [];
+  cells.forEach((cell, idx) => {
+    const title = cell.title.trim();
+    if (title) {
+      entries.push({
+        label: title,
+        badge: cell.kind === "markdown" ? "MD" : cell.kind === "deps" ? "PKG" : `[${idx + 1}]`,
+        badgeClass: cell.kind === "markdown" ? "md" : "",
+        level: 1,
+        cell,
+      });
+    }
+    if (cell.kind === "markdown") {
+      const lines = cell.view.state.doc.toString().split(/\r?\n/);
+      let pos = 0;
+      for (const line of lines) {
+        const m = /^(#{1,3})\s+(.+)$/.exec(line);
+        if (m) {
+          const text = m[2].trim();
+          if (text && text !== title) {
+            entries.push({
+              label: text,
+              badge: m[1],
+              badgeClass: "md",
+              level: m[1].length,
+              cell,
+              offset: pos,
+            });
+          }
+        }
+        pos += line.length + 1;
+      }
+    } else if (cell.kind === "code") {
+      const exported = getExportedNamesInCell(cell.view.state.doc.toString());
+      if (!title && exported.size > 0) {
+        const preview = [...exported].slice(0, 3).join(", ") + (exported.size > 3 ? "…" : "");
+        entries.push({
+          label: preview,
+          badge: "exp",
+          badgeClass: "export",
+          level: 1,
+          cell,
+        });
+      }
+    }
+  });
+
+  countEl.textContent = entries.length > 0 ? String(entries.length) : "";
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "outline-empty";
+    empty.textContent = "Brak tytułów komórek ani nagłówków";
+    listEl.append(empty);
+    return;
+  }
+
+  for (const item of entries) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `outline-item level-${item.level}`;
+    btn.title = item.label;
+
+    const badge = document.createElement("span");
+    badge.className = `outline-kind-badge ${item.badgeClass}`;
+    badge.textContent = item.badge;
+
+    const text = document.createElement("span");
+    text.textContent = item.label;
+
+    btn.append(badge, text);
+    btn.addEventListener("click", () => {
+      if (item.cell.collapseMode !== "expanded") {
+        setCellCollapseMode(item.cell, "expanded");
+      }
+      item.cell.el.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (item.cell.kind === "code" || (item.cell.kind === "markdown" && item.cell.mdEditing)) {
+        const pos = item.offset ?? 0;
+        item.cell.view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
+        item.cell.view.focus();
+      }
+    });
+    listEl.append(btn);
+  }
+}
+
+interface GlobalMatch {
+  cell: CellState;
+  from: number;
+  to: number;
+}
+
+let findCaseSensitive = false;
+let findMatches: GlobalMatch[] = [];
+let findActiveIdx = -1;
+
+function computeGlobalFindMatches(): void {
+  const query = $<HTMLInputElement>("global-find-input").value;
+  const statusEl = $<HTMLSpanElement>("global-find-status");
+  findMatches = [];
+  if (!query) {
+    findActiveIdx = -1;
+    statusEl.textContent = "0 / 0";
+    return;
+  }
+
+  const needle = findCaseSensitive ? query : query.toLowerCase();
+  for (const c of cells) {
+    if (c.kind === "media") continue;
+    const doc = c.view.state.doc.toString();
+    const haystack = findCaseSensitive ? doc : doc.toLowerCase();
+    let idx = 0;
+    while (idx <= haystack.length - needle.length) {
+      const hit = haystack.indexOf(needle, idx);
+      if (hit === -1) break;
+      findMatches.push({ cell: c, from: hit, to: hit + needle.length });
+      idx = hit + Math.max(1, needle.length);
+    }
+  }
+
+  if (findMatches.length === 0) {
+    findActiveIdx = -1;
+    statusEl.textContent = "0 / 0";
+  } else {
+    if (findActiveIdx < 0 || findActiveIdx >= findMatches.length) {
+      findActiveIdx = 0;
+    }
+    statusEl.textContent = `${findActiveIdx + 1} / ${findMatches.length}`;
+  }
+}
+
+function jumpToGlobalMatch(index: number, focusEditor = false): void {
+  if (findMatches.length === 0) return;
+  findActiveIdx = ((index % findMatches.length) + findMatches.length) % findMatches.length;
+  const match = findMatches[findActiveIdx];
+  $<HTMLSpanElement>("global-find-status").textContent = `${findActiveIdx + 1} / ${findMatches.length}`;
+
+  if (match.cell.collapseMode !== "expanded") {
+    setCellCollapseMode(match.cell, "expanded");
+  }
+  if (match.cell.kind === "markdown" && !match.cell.mdEditing) {
+    match.cell.mdEditing = true;
+    applyCellKindUI(match.cell);
+  }
+  match.cell.el.scrollIntoView({ behavior: "smooth", block: "center" });
+  match.cell.view.dispatch({
+    selection: { anchor: match.from, head: match.to },
+    scrollIntoView: true,
+  });
+  if (focusEditor) {
+    match.cell.view.focus();
+  }
+}
+
+function initGlobalFindBar(): void {
+  const bar = $("global-find-bar");
+  const findInput = $<HTMLInputElement>("global-find-input");
+  const replaceRow = $("global-replace-row");
+  const replaceInput = $<HTMLInputElement>("global-replace-input");
+  const btnCase = $<HTMLButtonElement>("btn-find-case");
+  const btnPrev = $<HTMLButtonElement>("btn-find-prev");
+  const btnNext = $<HTMLButtonElement>("btn-find-next");
+  const btnReplaceToggle = $<HTMLButtonElement>("btn-find-replace-toggle");
+  const btnReplaceOne = $<HTMLButtonElement>("btn-replace-one");
+  const btnReplaceAll = $<HTMLButtonElement>("btn-replace-all");
+  const btnClose = $<HTMLButtonElement>("btn-find-close");
+
+  findInput.addEventListener("input", () => {
+    findActiveIdx = 0;
+    computeGlobalFindMatches();
+    if (findMatches.length > 0) jumpToGlobalMatch(0, false);
+  });
+
+  findInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (findMatches.length === 0) computeGlobalFindMatches();
+      jumpToGlobalMatch(e.shiftKey ? findActiveIdx - 1 : findActiveIdx + 1, false);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      bar.hidden = true;
+    }
+  });
+
+  replaceInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      bar.hidden = true;
+    }
+  });
+
+  btnCase.addEventListener("click", () => {
+    findCaseSensitive = !findCaseSensitive;
+    btnCase.classList.toggle("active", findCaseSensitive);
+    findActiveIdx = 0;
+    computeGlobalFindMatches();
+    if (findMatches.length > 0) jumpToGlobalMatch(0, false);
+  });
+
+  btnPrev.addEventListener("click", () => jumpToGlobalMatch(findActiveIdx - 1, false));
+  btnNext.addEventListener("click", () => jumpToGlobalMatch(findActiveIdx + 1, false));
+
+  btnReplaceToggle.addEventListener("click", () => {
+    replaceRow.hidden = !replaceRow.hidden;
+    btnReplaceToggle.classList.toggle("active", !replaceRow.hidden);
+  });
+
+  btnReplaceOne.addEventListener("click", () => {
+    if (findMatches.length === 0 || findActiveIdx < 0) return;
+    const match = findMatches[findActiveIdx];
+    const replacement = replaceInput.value;
+    match.cell.view.dispatch({
+      changes: { from: match.from, to: match.to, insert: replacement },
+    });
+    markDirty();
+    computeGlobalFindMatches();
+    if (findMatches.length > 0) {
+      jumpToGlobalMatch(Math.min(findActiveIdx, findMatches.length - 1), false);
+    }
+  });
+
+  btnReplaceAll.addEventListener("click", () => {
+    const query = findInput.value;
+    if (!query) return;
+    computeGlobalFindMatches();
+    if (findMatches.length === 0) return;
+
+    const replacement = replaceInput.value;
+    const byCell = new Map<CellState, GlobalMatch[]>();
+    for (const m of findMatches) {
+      const arr = byCell.get(m.cell) ?? [];
+      arr.push(m);
+      byCell.set(m.cell, arr);
+    }
+    const count = findMatches.length;
+    for (const [c, list] of byCell) {
+      c.view.dispatch({
+        changes: list.map((m) => ({ from: m.from, to: m.to, insert: replacement })),
+      });
+    }
+    markDirty();
+    computeGlobalFindMatches();
+    setStatus(`Replaced ${count} occurrence(s) across ${byCell.size} cell(s)`);
+  });
+
+  btnClose.addEventListener("click", () => {
+    bar.hidden = true;
+  });
+}
+initGlobalFindBar();
+
+function openGlobalFindBar(showReplace: boolean, fromCell?: CellState): void {
+  const bar = $("global-find-bar");
+  const findInput = $<HTMLInputElement>("global-find-input");
+  const replaceRow = $("global-replace-row");
+  const btnReplaceToggle = $<HTMLButtonElement>("btn-find-replace-toggle");
+
+  bar.hidden = false;
+  replaceRow.hidden = !showReplace;
+  btnReplaceToggle.classList.toggle("active", showReplace);
+
+  if (fromCell) {
+    const sel = fromCell.view.state.selection.main;
+    if (!sel.empty && sel.to - sel.from <= 80) {
+      const selected = fromCell.view.state.doc.sliceString(sel.from, sel.to);
+      if (!selected.includes("\n")) {
+        findInput.value = selected;
+      }
+    }
+  }
+
+  findActiveIdx = 0;
+  computeGlobalFindMatches();
+  findInput.focus();
+  findInput.select();
+}
+
+function rememberPlotDir(savedPath: string): void {
+  const savedDir = savedPath.replace(/[\\/][^\\/]+$/, "");
+  if (savedDir && savedDir !== savedPath) {
+    try {
+      localStorage.setItem("physpy_last_plot_dir", savedDir);
+    } catch {
+      // Ignore localStorage errors
+    }
+  }
+}
+
+function getPlotDefaultPath(
+  cell: CellState,
+  cellIdx: number,
+  plotIdx: number,
+  totalPlots: number,
+  ext: string,
+): string {
+  let lastPlotDir = "";
+  try {
+    lastPlotDir = localStorage.getItem("physpy_last_plot_dir") ?? "";
+  } catch {
+    // Ignore localStorage errors
+  }
+  const baseDir =
+    lastPlotDir || (currentPath ? currentPath.replace(/[\\/][^\\/]+$/, "") : (rootDir ?? ""));
+  const stem =
+    (cell.title || `cell-${cellIdx + 1}`)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || `plot_${cellIdx + 1}`;
+  const fileName = totalPlots > 1 ? `${stem}_${plotIdx + 1}.${ext}` : `${stem}.${ext}`;
+  return baseDir ? `${baseDir.replace(/[\\/]+$/, "")}/${fileName}` : fileName;
+}
+
+function markCellAndBelowStale(editedCell: CellState): void {
+  if (editedCell.kind !== "code") return;
+  const startIdx = cells.indexOf(editedCell);
+  if (startIdx === -1) return;
+  let changed = false;
+  for (let i = startIdx; i < cells.length; i++) {
+    const c = cells[i];
+    if (c.kind !== "code") continue;
+    const hasOut =
+      c.lastFullStdout.length > 0 ||
+      c.lastStderr.length > 0 ||
+      c.lastPlots.length > 0 ||
+      c.lastTables.length > 0 ||
+      c.lastLatex !== null ||
+      Object.keys(c.lastExported).length > 0;
+    if (hasOut && !c.outputStale) {
+      c.outputStale = true;
+      c.outputWrap.classList.add("is-stale");
+      c.staleBadgeEl.hidden = false;
+      changed = true;
+    }
+  }
+  if (changed) {
+    renumberCells();
+  }
+}
+
+interface PinnedPlotItem {
+  id: number;
+  b64: string;
+  meta?: backend.PlotMeta;
+  title: string;
+  timeLabel: string;
+}
+
+let nextPinnedId = 1;
+const pinnedPlots: PinnedPlotItem[] = [];
+
+function pinPlotItem(b64: string, meta: backend.PlotMeta | undefined, title: string): void {
+  const now = new Date();
+  const timeLabel = now.toTimeString().slice(0, 8);
+  pinnedPlots.push({ id: nextPinnedId++, b64, meta, title, timeLabel });
+  renderPinnedPlots();
+  setStatus(`Pinned plot from "${title}"`);
+}
+
+function renderPinnedPlots(): void {
+  const bar = $("pinned-plots-bar");
+  const grid = $("pinned-plots-grid");
+  const countEl = $("pinned-plots-count");
+  countEl.textContent = String(pinnedPlots.length);
+  bar.hidden = pinnedPlots.length === 0;
+  grid.innerHTML = "";
+
+  for (const item of pinnedPlots) {
+    const card = document.createElement("div");
+    card.className = "pinned-plot-card";
+
+    const hdr = document.createElement("div");
+    hdr.className = "pinned-plot-card-header";
+    const lbl = document.createElement("span");
+    lbl.textContent = `${item.title} · ${item.timeLabel}`;
+    const btnUnpin = document.createElement("button");
+    btnUnpin.type = "button";
+    btnUnpin.className = "pinned-unpin-btn";
+    btnUnpin.textContent = "✕";
+    btnUnpin.title = "Unpin plot";
+    btnUnpin.addEventListener("click", () => {
+      const idx = pinnedPlots.findIndex((p) => p.id === item.id);
+      if (idx !== -1) {
+        pinnedPlots.splice(idx, 1);
+        renderPinnedPlots();
+      }
+    });
+    hdr.append(lbl, btnUnpin);
+
+    const img = document.createElement("img");
+    img.src = `data:image/png;base64,${item.b64}`;
+    img.alt = item.title;
+    img.title = "Click to inspect/zoom";
+    img.addEventListener("click", () => {
+      openPlotLightbox(item.b64, item.meta, `${item.title} (${item.timeLabel})`);
+    });
+
+    card.append(hdr, img);
+    grid.append(card);
+  }
+}
+
+$("btn-clear-pinned-plots").addEventListener("click", () => {
+  pinnedPlots.length = 0;
+  renderPinnedPlots();
+});
+
+function formatCoordVal(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs < 1e-3 || abs >= 1e5) return v.toExponential(4);
+  return Number(v.toPrecision(5)).toString();
+}
+
+function mapNormToAxes(
+  normX: number,
+  normY: number,
+  axes: backend.PlotAxesMeta[],
+): { x: number; y: number; ax: backend.PlotAxesMeta } | null {
+  for (const ax of axes) {
+    if (normX >= ax.left && normX <= ax.right && normY >= ax.top && normY <= ax.bottom) {
+      const w = ax.right - ax.left;
+      const h = ax.bottom - ax.top;
+      if (w <= 0 || h <= 0) continue;
+      const u = (normX - ax.left) / w;
+      const v = (ax.bottom - normY) / h;
+
+      let x: number;
+      if (ax.xscale === "log" && ax.xlim[0] > 0 && ax.xlim[1] > 0) {
+        const l0 = Math.log10(ax.xlim[0]);
+        const l1 = Math.log10(ax.xlim[1]);
+        x = 10 ** (l0 + u * (l1 - l0));
+      } else {
+        x = ax.xlim[0] + u * (ax.xlim[1] - ax.xlim[0]);
+      }
+
+      let y: number;
+      if (ax.yscale === "log" && ax.ylim[0] > 0 && ax.ylim[1] > 0) {
+        const l0 = Math.log10(ax.ylim[0]);
+        const l1 = Math.log10(ax.ylim[1]);
+        y = 10 ** (l0 + v * (l1 - l0));
+      } else {
+        y = ax.ylim[0] + v * (ax.ylim[1] - ax.ylim[0]);
+      }
+
+      return { x, y, ax };
+    }
+  }
+  return null;
+}
+
+interface LightboxState {
+  b64: string;
+  meta?: backend.PlotMeta;
+  title: string;
+  cell?: CellState;
+  cellIdx: number;
+  plotIdx: number;
+  totalPlots: number;
+  scale: number;
+  tx: number;
+  ty: number;
+  lastCoordText: string;
+}
+
+let lbState: LightboxState | null = null;
+
+function openPlotLightbox(
+  b64: string,
+  meta: backend.PlotMeta | undefined,
+  title: string,
+  cell?: CellState,
+  cellIdx = 0,
+  plotIdx = 0,
+  totalPlots = 1,
+): void {
+  const dialog = $<HTMLDialogElement>("plot-lightbox-dialog");
+  const img = $<HTMLImageElement>("plot-lightbox-img");
+  const canvas = $("plot-lightbox-canvas");
+  const titleEl = $("plot-lightbox-title");
+  const coordsEl = $("plot-lightbox-coords");
+  const btnSvg = $<HTMLButtonElement>("btn-lb-save-svg");
+  const btnPdf = $<HTMLButtonElement>("btn-lb-save-pdf");
+
+  lbState = {
+    b64,
+    meta,
+    title,
+    cell,
+    cellIdx,
+    plotIdx,
+    totalPlots,
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    lastCoordText: "",
+  };
+
+  titleEl.textContent = title;
+  coordsEl.textContent =
+    meta && meta.axes.length > 0
+      ? "Hover over axes for (x, y) · Wheel to zoom · Drag to pan · Shift+Drag to measure Δ"
+      : "Wheel to zoom · Drag to pan";
+  img.src = meta?.svg
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(meta.svg)}`
+    : `data:image/png;base64,${b64}`;
+  canvas.style.transform = "translate(0px, 0px) scale(1)";
+  $("plot-lb-crosshair-x").hidden = true;
+  $("plot-lb-crosshair-y").hidden = true;
+  $("plot-lb-measure-box").hidden = true;
+  btnSvg.hidden = !meta?.svg;
+  btnPdf.hidden = !meta?.pdf;
+
+  if (!dialog.open) dialog.showModal();
+}
+
+function initPlotLightbox(): void {
+  const dialog = $<HTMLDialogElement>("plot-lightbox-dialog");
+  const stage = $("plot-lightbox-stage");
+  const canvas = $("plot-lightbox-canvas");
+  const img = $<HTMLImageElement>("plot-lightbox-img");
+  const coordsEl = $("plot-lightbox-coords");
+  const chX = $("plot-lb-crosshair-x");
+  const chY = $("plot-lb-crosshair-y");
+  const measureBox = $("plot-lb-measure-box");
+
+  const applyTransform = () => {
+    if (!lbState) return;
+    canvas.style.transform = `translate(${lbState.tx}px, ${lbState.ty}px) scale(${lbState.scale})`;
+  };
+
+  let dragging = false;
+  let measuring = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let origTx = 0;
+  let origTy = 0;
+  let measureStartNormX = 0;
+  let measureStartNormY = 0;
+  let measureStartPxX = 0;
+  let measureStartPxY = 0;
+
+  stage.addEventListener(
+    "wheel",
+    (e) => {
+      if (!lbState) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nextScale = Math.max(0.5, Math.min(16, lbState.scale * factor));
+      const rect = stage.getBoundingClientRect();
+      const cx = e.clientX - (rect.left + rect.width / 2);
+      const cy = e.clientY - (rect.top + rect.height / 2);
+      const ratio = nextScale / lbState.scale;
+      lbState.tx = cx - (cx - lbState.tx) * ratio;
+      lbState.ty = cy - (cy - lbState.ty) * ratio;
+      lbState.scale = nextScale;
+      applyTransform();
+    },
+    { passive: false },
+  );
+
+  stage.addEventListener("mousedown", (e) => {
+    if (!lbState || e.button !== 0) return;
+    const imgRect = img.getBoundingClientRect();
+    if (e.shiftKey && imgRect.width > 0 && imgRect.height > 0) {
+      measuring = true;
+      measureStartNormX = (e.clientX - imgRect.left) / imgRect.width;
+      measureStartNormY = (e.clientY - imgRect.top) / imgRect.height;
+      measureStartPxX = measureStartNormX * img.clientWidth;
+      measureStartPxY = measureStartNormY * img.clientHeight;
+      measureBox.hidden = false;
+      measureBox.style.left = `${measureStartPxX}px`;
+      measureBox.style.top = `${measureStartPxY}px`;
+      measureBox.style.width = "0px";
+      measureBox.style.height = "0px";
+    } else {
+      dragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      origTx = lbState.tx;
+      origTy = lbState.ty;
+    }
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!lbState || !dialog.open) return;
+    if (dragging) {
+      lbState.tx = origTx + (e.clientX - dragStartX);
+      lbState.ty = origTy + (e.clientY - dragStartY);
+      applyTransform();
+      return;
+    }
+
+    const imgRect = img.getBoundingClientRect();
+    if (imgRect.width <= 0 || imgRect.height <= 0) return;
+    const normX = (e.clientX - imgRect.left) / imgRect.width;
+    const normY = (e.clientY - imgRect.top) / imgRect.height;
+    const insideImg = normX >= 0 && normX <= 1 && normY >= 0 && normY <= 1;
+
+    if (insideImg) {
+      chX.hidden = false;
+      chY.hidden = false;
+      chX.style.left = `${normX * img.clientWidth}px`;
+      chY.style.top = `${normY * img.clientHeight}px`;
+    } else {
+      chX.hidden = true;
+      chY.hidden = true;
+    }
+
+    if (measuring) {
+      const curPxX = Math.max(0, Math.min(img.clientWidth, normX * img.clientWidth));
+      const curPxY = Math.max(0, Math.min(img.clientHeight, normY * img.clientHeight));
+      measureBox.style.left = `${Math.min(measureStartPxX, curPxX)}px`;
+      measureBox.style.top = `${Math.min(measureStartPxY, curPxY)}px`;
+      measureBox.style.width = `${Math.abs(curPxX - measureStartPxX)}px`;
+      measureBox.style.height = `${Math.abs(curPxY - measureStartPxY)}px`;
+
+      if (lbState.meta && lbState.meta.axes.length > 0) {
+        const p1 = mapNormToAxes(measureStartNormX, measureStartNormY, lbState.meta.axes);
+        const p2 = mapNormToAxes(normX, normY, lbState.meta.axes);
+        if (p1 && p2) {
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const slope = dx !== 0 ? dy / dx : NaN;
+          const summary = `Δx = ${formatCoordVal(dx)}, Δy = ${formatCoordVal(dy)}` +
+            (Number.isFinite(slope) ? `, Δy/Δx = ${formatCoordVal(slope)}` : "");
+          lbState.lastCoordText = summary;
+          coordsEl.textContent = summary;
+        }
+      }
+      return;
+    }
+
+    if (insideImg && lbState.meta && lbState.meta.axes.length > 0) {
+      const mapped = mapNormToAxes(normX, normY, lbState.meta.axes);
+      if (mapped) {
+        const txt = `x = ${formatCoordVal(mapped.x)}, y = ${formatCoordVal(mapped.y)}`;
+        lbState.lastCoordText = `(${formatCoordVal(mapped.x)}, ${formatCoordVal(mapped.y)})`;
+        coordsEl.textContent = txt;
+      }
+    }
+  });
+
+  window.addEventListener("mouseup", () => {
+    dragging = false;
+    measuring = false;
+  });
+
+  $("btn-lb-reset-zoom").addEventListener("click", () => {
+    if (!lbState) return;
+    lbState.scale = 1;
+    lbState.tx = 0;
+    lbState.ty = 0;
+    measureBox.hidden = true;
+    applyTransform();
+  });
+
+  $("btn-lb-copy-coords").addEventListener("click", async () => {
+    if (!lbState?.lastCoordText) return;
+    try {
+      await navigator.clipboard.writeText(lbState.lastCoordText);
+      setStatus(`Copied ${lbState.lastCoordText}`);
+    } catch {
+      // Ignore clipboard errors
+    }
+  });
+
+  $("btn-lb-pin").addEventListener("click", () => {
+    if (!lbState) return;
+    pinPlotItem(lbState.b64, lbState.meta, lbState.title);
+  });
+
+  $("btn-lb-save-png").addEventListener("click", async () => {
+    if (!lbState) return;
+    const def = lbState.cell
+      ? getPlotDefaultPath(lbState.cell, lbState.cellIdx, lbState.plotIdx, lbState.totalPlots, "png")
+      : "plot.png";
+    const saved = await backend.savePlotPng(lbState.b64, def);
+    if (saved) {
+      rememberPlotDir(saved);
+      setStatus(`Saved plot to ${saved}`);
+    }
+  });
+
+  $("btn-lb-save-svg").addEventListener("click", async () => {
+    if (!lbState?.meta?.svg) return;
+    const def = lbState.cell
+      ? getPlotDefaultPath(lbState.cell, lbState.cellIdx, lbState.plotIdx, lbState.totalPlots, "svg")
+      : "plot.svg";
+    const saved = await backend.savePlotSvg(lbState.meta.svg, def);
+    if (saved) {
+      rememberPlotDir(saved);
+      setStatus(`Saved vector plot to ${saved}`);
+    }
+  });
+
+  $("btn-lb-save-pdf").addEventListener("click", async () => {
+    if (!lbState?.meta?.pdf) return;
+    const def = lbState.cell
+      ? getPlotDefaultPath(lbState.cell, lbState.cellIdx, lbState.plotIdx, lbState.totalPlots, "pdf")
+      : "plot.pdf";
+    const saved = await backend.savePlotPdf(lbState.meta.pdf, def);
+    if (saved) {
+      rememberPlotDir(saved);
+      setStatus(`Saved PDF plot to ${saved}`);
+    }
+  });
+
+  $("btn-lb-close").addEventListener("click", () => dialog.close());
+}
+initPlotLightbox();
 
 async function initializeAppStartup() {
   const cfg = await applyHierarchicalConfig(null, true);

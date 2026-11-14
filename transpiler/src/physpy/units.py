@@ -15,6 +15,7 @@ import tokenize
 from typing import Any
 
 UNIT_FN = "__physpy_unit__"
+CONVERT_FN = "__physpy_convert__"
 
 _UREG: Any = None
 _MICRO_SPACE_RE = re.compile(r"μ\s+([A-Za-zΩ]+)")
@@ -102,8 +103,17 @@ def make_quantity(value: Any, unit_str: str) -> Any:
     return get_ureg().Quantity(value, normalized)
 
 
-# Make `__physpy_unit__` available in builtins so any compiled `.ppy` module or test works.
+def convert_quantity(value: Any, unit_str: str) -> Any:
+    """Convert ``value`` to ``unit_str`` (or attach ``unit_str`` if plain scalar/array)."""
+    normalized = _MICRO_SPACE_RE.sub(r"μ\1", unit_str.strip())
+    if hasattr(value, "to"):
+        return value.to(normalized)
+    return get_ureg().Quantity(value, normalized)
+
+
+# Make `__physpy_unit__` and `__physpy_convert__` available in builtins.
 setattr(builtins, UNIT_FN, make_quantity)
+setattr(builtins, CONVERT_FN, convert_quantity)
 
 
 def _find_value_start(toks: list[tokenize.TokenInfo], num_idx: int) -> tuple[int, int]:
@@ -193,6 +203,111 @@ def rewrite_units(src: str) -> str:
                     edits.append((row, val_start[1], rbracket.end[1], replacement))
                     i = j + 1
                     continue
+        i += 1
+
+    if edits:
+        for row, c1, c2, replacement in reversed(edits):
+            lines[row - 1] = lines[row - 1][:c1] + replacement + lines[row - 1][c2:]
+        src = "".join(lines)
+
+    return _rewrite_unit_conversions(src)
+
+
+def _find_postfix_start(toks: list[tokenize.TokenInfo], arrow_idx: int, row: int) -> tuple[int, int] | None:
+    """Return start (row, col) of the postfix expression immediately before ``->`` on ``row``."""
+    k = arrow_idx - 1
+    while k >= 0 and toks[k].type in (tokenize.NL, tokenize.NEWLINE):
+        k -= 1
+    if k < 0 or toks[k].start[0] != row:
+        return None
+
+    while k >= 0 and toks[k].start[0] == row:
+        t = toks[k]
+        if t.type == tokenize.OP and t.string in (")", "]"):
+            close_ch = t.string
+            open_ch = "(" if close_ch == ")" else "["
+            depth = 1
+            k -= 1
+            while k >= 0 and depth > 0:
+                if toks[k].type == tokenize.OP:
+                    if toks[k].string == close_ch:
+                        depth += 1
+                    elif toks[k].string == open_ch:
+                        depth -= 1
+                k -= 1
+            if depth != 0:
+                return None
+            # If preceded by a NAME or `.` on the same row, continue to include `fn(...)` / `obj.fn(...)`
+            if k >= 0 and toks[k].start[0] == row and toks[k].type == tokenize.NAME:
+                continue
+            start_idx = k + 1
+            return toks[start_idx].start if toks[start_idx].start[0] == row else None
+        if t.type == tokenize.NAME:
+            if k >= 2 and toks[k - 1].type == tokenize.OP and toks[k - 1].string == "." and toks[k - 2].start[0] == row:
+                k -= 2
+                continue
+            return t.start
+        if t.type == tokenize.NUMBER:
+            return _find_value_start(toks, k)
+        return None
+    return None
+
+
+def _rewrite_unit_conversions(src: str) -> str:
+    """Rewrite ``expr -> [unit]`` on a single line into ``__physpy_convert__(expr, 'unit')``."""
+    if "->" not in src or "[" not in src:
+        return src
+
+    toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    lines = src.splitlines(keepends=True)
+    edits: list[tuple[int, int, int, str]] = []
+
+    i = 0
+    n = len(toks)
+    while i < n:
+        tok = toks[i]
+        if (
+            tok.type == tokenize.OP
+            and tok.string == "->"
+            and i + 1 < n
+            and toks[i + 1].type == tokenize.OP
+            and toks[i + 1].string == "["
+            and toks[i + 1].start[0] == tok.end[0]
+        ):
+            row = tok.end[0]
+            lbracket = toks[i + 1]
+            j = i + 2
+            depth = 1
+            rbracket: tokenize.TokenInfo | None = None
+            while j < n:
+                t = toks[j]
+                if t.start[0] != row or t.type in (
+                    tokenize.NEWLINE,
+                    tokenize.NL,
+                    tokenize.COMMENT,
+                    tokenize.ENDMARKER,
+                ):
+                    break
+                if t.type == tokenize.OP and t.string == "[":
+                    depth += 1
+                elif t.type == tokenize.OP and t.string == "]":
+                    depth -= 1
+                    if depth == 0:
+                        rbracket = t
+                        break
+                j += 1
+
+            if rbracket is not None:
+                lhs_start = _find_postfix_start(toks, i, row)
+                if lhs_start is not None:
+                    line_str = lines[row - 1]
+                    unit_raw = line_str[lbracket.end[1] : rbracket.start[1]].strip()
+                    lhs_raw = line_str[lhs_start[1] : tok.start[1]].strip()
+                    if unit_raw and lhs_raw:
+                        replacement = f"{CONVERT_FN}({lhs_raw}, {unit_raw!r})"
+                        edits.append((row, lhs_start[1], rbracket.end[1], replacement))
+                        i = j + 1
+                        continue
         i += 1
 
     if not edits:

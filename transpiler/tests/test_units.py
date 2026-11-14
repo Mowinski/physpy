@@ -120,3 +120,19 @@ def test_units_follow_pint_pandas_custom_ureg_and_restore_on_reset(monkeypatch):
     )
     assert res_after.code == 0, res_after.stderr
     assert res_after.stdout.strip() == "3.0 mV"
+
+
+def test_unit_conversion_arrow():
+    session = NotebookSession()
+    res = session.run_cell(
+        "def f(x: int) -> list[int]:\n"
+        "    return [x]\n"
+        "u1 = 1.5 [V] -> [mV]\n"
+        "a = 20\n"
+        "N = 4\n"
+        "u2 = (a / N) -> [mV]\n"
+        "u3 = u1 -> [V]\n"
+        "print(f'{u1:.0f}', f'{u2:.0f}', f'{u3:.1f}')\n"
+    )
+    assert res.code == 0, res.stderr
+    assert res.stdout.strip() == "1500 mV 5 mV 1.5 V"

@@ -12,7 +12,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, OnceLock, TryLockError};
 
 use serde::{Deserialize, Serialize};
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 
 #[derive(Serialize)]
@@ -72,6 +72,34 @@ pub struct SignatureHelpDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlotAxesMeta {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+    pub xlim: [f64; 2],
+    pub ylim: [f64; 2],
+    #[serde(default)]
+    pub xscale: String,
+    #[serde(default)]
+    pub yscale: String,
+    #[serde(default)]
+    pub xlabel: String,
+    #[serde(default)]
+    pub ylabel: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlotMeta {
+    #[serde(default)]
+    pub svg: String,
+    #[serde(default)]
+    pub pdf: String,
+    #[serde(default)]
+    pub axes: Vec<PlotAxesMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellOutput {
     stdout: String,
     stderr: String,
@@ -80,6 +108,8 @@ pub struct CellOutput {
     all_exports: HashMap<String, String>,
     #[serde(default)]
     plots: Vec<String>,
+    #[serde(default)]
+    plot_meta: Vec<PlotMeta>,
     #[serde(default)]
     latex: Option<String>,
     #[serde(default)]
@@ -1739,6 +1769,234 @@ fn compute_relative_path(base_dir: String, target_path: String) -> Result<String
     Ok(rel.to_string_lossy().into_owned())
 }
 
+static RECENT_SUBMENU: OnceLock<Mutex<Option<Submenu<tauri::Wry>>>> = OnceLock::new();
+static RECENT_FOLDERS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn recent_submenu_mutex() -> &'static Mutex<Option<Submenu<tauri::Wry>>> {
+    RECENT_SUBMENU.get_or_init(|| Mutex::new(None))
+}
+
+fn recent_folders_mutex() -> &'static Mutex<Vec<String>> {
+    RECENT_FOLDERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn rebuild_recent_submenu(app: &tauri::AppHandle, folders: &[String]) -> Result<(), String> {
+    if let Ok(mut list_guard) = recent_folders_mutex().lock() {
+        *list_guard = folders.to_vec();
+    }
+    let guard = recent_submenu_mutex().lock().map_err(|e| e.to_string())?;
+    let Some(ref submenu) = *guard else {
+        return Ok(());
+    };
+    if let Ok(items) = submenu.items() {
+        for item in items {
+            let _ = submenu.remove(&item);
+        }
+    }
+    if folders.is_empty() {
+        let empty_item = MenuItemBuilder::with_id("menu_recent_empty", "No Recent Folders")
+            .enabled(false)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let _ = submenu.append(&empty_item);
+        return Ok(());
+    }
+    let home = home_dir_path();
+    for (idx, folder) in folders.iter().enumerate() {
+        let folder_name = Path::new(folder)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| folder.clone());
+        let display_path = if let Some(ref h) = home {
+            if let Ok(rel) = Path::new(folder).strip_prefix(h) {
+                if rel.as_os_str().is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{}", rel.to_string_lossy())
+                }
+            } else {
+                folder.clone()
+            }
+        } else {
+            folder.clone()
+        };
+        let label = format!("{folder_name} — {display_path}");
+        let item = MenuItemBuilder::with_id(format!("menu_recent_folder_{idx}"), label)
+            .build(app)
+            .map_err(|e| e.to_string())?;
+        let _ = submenu.append(&item);
+    }
+    if let Ok(sep) = PredefinedMenuItem::separator(app) {
+        let _ = submenu.append(&sep);
+    }
+    let clear_item = MenuItemBuilder::with_id("menu_clear_recent_folders", "Clear Recently Opened")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let _ = submenu.append(&clear_item);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_recent_folders(app: tauri::AppHandle, folders: Vec<String>) -> Result<(), String> {
+    rebuild_recent_submenu(&app, &folders)
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct WindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
+static LAST_WINDOW_STATE: std::sync::Mutex<Option<(WindowState, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+fn window_state_path() -> Option<PathBuf> {
+    Some(home_dir_path()?.join(".physpy").join("window_state.json"))
+}
+
+fn load_window_state() -> Option<WindowState> {
+    let path = window_state_path()?;
+    let data = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn save_window_state(state: &WindowState) {
+    let Some(path) = window_state_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn window_intersects_monitors(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    monitors: &[tauri::Monitor],
+) -> bool {
+    if monitors.is_empty() {
+        return true;
+    }
+    let wx2 = x.saturating_add(width as i32);
+    let wy2 = y.saturating_add(height as i32);
+    monitors.iter().any(|m| {
+        let mx1 = m.position().x;
+        let my1 = m.position().y;
+        let mx2 = mx1.saturating_add(m.size().width as i32);
+        let my2 = my1.saturating_add(m.size().height as i32);
+        let ox = wx2.min(mx2).saturating_sub(x.max(mx1));
+        let oy = wy2.min(my2).saturating_sub(y.max(my1));
+        ox >= 80 && oy >= 60
+    })
+}
+
+fn restore_main_window_state(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Some(state) = load_window_state() else {
+        return;
+    };
+    if state.width < 300 || state.height < 250 {
+        return;
+    }
+    let monitors = window.available_monitors().unwrap_or_default();
+    if !window_intersects_monitors(state.x, state.y, state.width, state.height, &monitors) {
+        return;
+    }
+    if let Ok(mut guard) = LAST_WINDOW_STATE.lock() {
+        *guard = Some((state, std::time::Instant::now()));
+    }
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+        state.width,
+        state.height,
+    )));
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+        state.x,
+        state.y,
+    )));
+    if state.maximized {
+        let _ = window.maximize();
+    }
+}
+
+fn capture_and_save_window_state(window: &tauri::Window, force_flush: bool) {
+    if window.label() != "main" {
+        return;
+    }
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let mut guard = match LAST_WINDOW_STATE.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    let next_state = if maximized {
+        if let Some((prev, _)) = *guard {
+            WindowState {
+                maximized: true,
+                ..prev
+            }
+        } else {
+            let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+                return;
+            };
+            if size.width < 300 || size.height < 250 {
+                return;
+            }
+            WindowState {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+                maximized: true,
+            }
+        }
+    } else {
+        let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+            return;
+        };
+        if size.width < 300 || size.height < 250 {
+            return;
+        }
+        WindowState {
+            x: pos.x,
+            y: pos.y,
+            width: size.width,
+            height: size.height,
+            maximized: false,
+        }
+    };
+
+    let now = std::time::Instant::now();
+    let should_write = force_flush
+        || guard
+            .map(|(prev, last)| {
+                prev != next_state
+                    && now.duration_since(last) >= std::time::Duration::from_millis(400)
+            })
+            .unwrap_or(true);
+
+    if should_write {
+        *guard = Some((next_state, now));
+        drop(guard);
+        save_window_state(&next_state);
+    } else if let Some((_, last)) = *guard {
+        *guard = Some((next_state, last));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1772,6 +2030,11 @@ pub fn run() {
             let open_folder_item = MenuItemBuilder::with_id("menu_open_folder", "Open Folder…")
                 .accelerator("CmdOrCtrl+Shift+O")
                 .build(app)?;
+            let recent_submenu = SubmenuBuilder::new(app, "Open Recent").build()?;
+            if let Ok(mut guard) = recent_submenu_mutex().lock() {
+                *guard = Some(recent_submenu.clone());
+            }
+            let _ = rebuild_recent_submenu(app.handle(), &[]);
             let save_item = MenuItemBuilder::with_id("menu_save", "Save")
                 .accelerator("CmdOrCtrl+S")
                 .build(app)?;
@@ -1787,6 +2050,7 @@ pub fn run() {
                 .separator()
                 .item(&open_file_item)
                 .item(&open_folder_item)
+                .item(&recent_submenu)
                 .separator()
                 .item(&save_item)
                 .item(&export_html_item)
@@ -1882,17 +2146,36 @@ pub fn run() {
                 ])
                 .build()?;
             app.set_menu(menu)?;
+            restore_main_window_state(app.handle());
 
             Ok(())
+        })
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                capture_and_save_window_state(window, false);
+            }
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                capture_and_save_window_state(window, true);
+            }
+            _ => {}
         })
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if id == "open_settings" {
                 let _ = app.emit("menu-open-settings", ());
+            } else if let Some(idx_str) = id.strip_prefix("menu_recent_folder_") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    if let Ok(guard) = recent_folders_mutex().lock() {
+                        if let Some(folder) = guard.get(idx) {
+                            let _ = app.emit("menu-open-recent-folder", folder.clone());
+                        }
+                    }
+                }
             }
             let _ = app.emit("menu-action", id.to_string());
         })
         .invoke_handler(tauri::generate_handler![
+            set_recent_folders,
             format_cells,
             run_cell,
             debug_start_cell,

@@ -126,15 +126,89 @@ def resolve_figure(target: Any) -> Any:
     )
 
 
-def render_plot_png_base64(target: Any) -> str:
-    """Render ``target`` into a base64-encoded PNG image and close the figure."""
+def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]]:
+    """Extract normalized top-left bounding boxes and axis limits for interactive cursor readout."""
+    axes_meta: list[dict[str, Any]] = []
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        fig_bbox = fig.get_tightbbox(renderer)
+        if fig_bbox is None:
+            return axes_meta
+        dpi = float(fig.dpi)
+        img_x0 = float(fig_bbox.x0) * dpi - pad_inches * dpi
+        img_y0 = float(fig_bbox.y0) * dpi - pad_inches * dpi
+        img_w = (float(fig_bbox.width) + 2.0 * pad_inches) * dpi
+        img_h = (float(fig_bbox.height) + 2.0 * pad_inches) * dpi
+        if img_w <= 0 or img_h <= 0:
+            return axes_meta
+
+        for ax in getattr(fig, "axes", []):
+            try:
+                ax_box = ax.get_window_extent(renderer)
+                xlim = [float(v) for v in ax.get_xlim()]
+                ylim = [float(v) for v in ax.get_ylim()]
+                axes_meta.append(
+                    {
+                        "left": (float(ax_box.x0) - img_x0) / img_w,
+                        "right": (float(ax_box.x1) - img_x0) / img_w,
+                        "top": 1.0 - (float(ax_box.y1) - img_y0) / img_h,
+                        "bottom": 1.0 - (float(ax_box.y0) - img_y0) / img_h,
+                        "xlim": xlim,
+                        "ylim": ylim,
+                        "xscale": str(ax.get_xscale()),
+                        "yscale": str(ax.get_yscale()),
+                        "xlabel": str(ax.get_xlabel() or ""),
+                        "ylabel": str(ax.get_ylabel() or ""),
+                    }
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return axes_meta
+
+
+def render_plot_bundle(target: Any) -> dict[str, Any]:
+    """Render ``target`` into PNG (base64), SVG (text), PDF (base64), and axes metadata."""
     fig = resolve_figure(target)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=140, bbox_inches="tight")
+    pad_inches = 0.1
+    axes_meta = _extract_axes_meta(fig, pad_inches=pad_inches)
+
+    png_buf = io.BytesIO()
+    fig.savefig(png_buf, format="png", dpi=140, bbox_inches="tight", pad_inches=pad_inches)
+
+    svg_text = ""
+    try:
+        svg_buf = io.BytesIO()
+        fig.savefig(svg_buf, format="svg", bbox_inches="tight", pad_inches=pad_inches)
+        svg_text = svg_buf.getvalue().decode("utf-8")
+    except Exception:
+        svg_text = ""
+
+    pdf_b64 = ""
+    try:
+        pdf_buf = io.BytesIO()
+        fig.savefig(pdf_buf, format="pdf", bbox_inches="tight", pad_inches=pad_inches)
+        pdf_b64 = base64.b64encode(pdf_buf.getvalue()).decode("ascii")
+    except Exception:
+        pdf_b64 = ""
+
     try:
         import matplotlib.pyplot as plt
 
         plt.close(fig)
     except Exception:
         pass
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return {
+        "png": base64.b64encode(png_buf.getvalue()).decode("ascii"),
+        "svg": svg_text,
+        "pdf": pdf_b64,
+        "axes": axes_meta,
+    }
+
+
+def render_plot_png_base64(target: Any) -> str:
+    """Render ``target`` into a base64-encoded PNG image and close the figure."""
+    return render_plot_bundle(target)["png"]

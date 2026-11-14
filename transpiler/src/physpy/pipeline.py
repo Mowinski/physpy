@@ -10,6 +10,7 @@ from .consts import ConstTransformer, rewrite_consts
 from .exports import ExportTransformer, rewrite_exports
 from .implicit_mul import rewrite_implicit_mul
 from .matrix import rewrite_matrix_literals
+from .numbers import rewrite_number_spaces
 from .percentages import rewrite_percentages
 from .pipe import PipeTransformer, rewrite_pipe_tokens
 from .plotting import rewrite_plots
@@ -22,6 +23,7 @@ from .units import rewrite_units
 # rewrite_symbols must run first, because tokenize cannot handle `\rho`.
 SOURCE_PASSES: list[Callable[[str], str]] = [
     rewrite_symbols,
+    rewrite_number_spaces,
     rewrite_consts,
     rewrite_exports,
     rewrite_plots,

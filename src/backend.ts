@@ -29,6 +29,25 @@ export interface TableOutput {
   raw_text: string;
 }
 
+export interface PlotAxesMeta {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  xlim: [number, number];
+  ylim: [number, number];
+  xscale: string;
+  yscale: string;
+  xlabel: string;
+  ylabel: string;
+}
+
+export interface PlotMeta {
+  svg: string;
+  pdf: string;
+  axes: PlotAxesMeta[];
+}
+
 export interface CellOutput {
   stdout: string;
   stderr: string;
@@ -36,6 +55,7 @@ export interface CellOutput {
   exported: Record<string, string>;
   all_exports: Record<string, string>;
   plots: string[];
+  plot_meta?: PlotMeta[];
   latex?: string | null;
   tables?: TableOutput[];
   non_table_stdout?: string | null;
@@ -172,6 +192,22 @@ export function onMenuAction(handler: (actionId: string) => void): void {
   void listen<string>("menu-action", (event) => {
     if (event.payload) handler(event.payload);
   });
+}
+
+export function onMenuOpenRecentFolder(handler: (folderPath: string) => void): void {
+  if (!inTauri) return;
+  void listen<string>("menu-open-recent-folder", (event) => {
+    if (event.payload) handler(event.payload);
+  });
+}
+
+export async function setRecentFolders(folders: string[]): Promise<void> {
+  if (!inTauri) return;
+  try {
+    await invoke("set_recent_folders", { folders });
+  } catch (err) {
+    console.warn("set_recent_folders failed:", err);
+  }
 }
 
 export const runCell = (
@@ -312,6 +348,31 @@ export async function savePlotPng(base64Png: string, defaultPath: string): Promi
   });
   if (typeof target !== "string" || !target) return null;
   const binStr = atob(base64Png);
+  const bytes = new Array<number>(binStr.length);
+  for (let i = 0; i < binStr.length; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  await invoke("write_binary_file", { path: target, bytes });
+  return target;
+}
+
+export async function savePlotSvg(svgText: string, defaultPath: string): Promise<string | null> {
+  const target = await save({
+    filters: [{ name: "SVG Vector Image", extensions: ["svg"] }],
+    defaultPath,
+  });
+  if (typeof target !== "string" || !target) return null;
+  await writeFileByPath(target, svgText);
+  return target;
+}
+
+export async function savePlotPdf(base64Pdf: string, defaultPath: string): Promise<string | null> {
+  const target = await save({
+    filters: [{ name: "PDF Document", extensions: ["pdf"] }],
+    defaultPath,
+  });
+  if (typeof target !== "string" || !target) return null;
+  const binStr = atob(base64Pdf);
   const bytes = new Array<number>(binStr.length);
   for (let i = 0; i < binStr.length; i++) {
     bytes[i] = binStr.charCodeAt(i);

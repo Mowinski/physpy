@@ -36,12 +36,43 @@
             </div>
           </div>
           <div id="file-tree"></div>
+          <div id="outline-section">
+            <div id="outline-header" class="outline-header" role="button" tabindex="0" aria-expanded="true">
+              <span id="outline-chevron" class="outline-chevron">▾</span>
+              <span class="sidebar-title">Outline</span>
+              <span id="outline-count" class="outline-count"></span>
+            </div>
+            <div id="outline-list" class="outline-list"></div>
+          </div>
         </aside>
         <div id="workspace-center">
           <div id="tabs-bar">
             <button id="btn-sidebar" type="button" class="tab-sidebar-btn" title="Toggle file explorer (Cmd+B)">☰ Files</button>
             <div id="tabs-list" role="tablist" aria-label="Open files"></div>
             <button id="btn-new-tab" type="button" class="tab-new-btn" title="New untitled tab (Cmd+N)">+</button>
+          </div>
+          <div id="global-find-bar" class="global-find-bar" hidden>
+            <div class="global-find-row">
+              <input id="global-find-input" type="text" placeholder="Find across all cells…" autocomplete="off" spellcheck="false" />
+              <button id="btn-find-case" type="button" class="find-toggle-btn" title="Match Case">Aa</button>
+              <span id="global-find-status" class="global-find-status">0 / 0</span>
+              <button id="btn-find-prev" type="button" title="Previous match (Shift+Enter)">↑</button>
+              <button id="btn-find-next" type="button" title="Next match (Enter)">↓</button>
+              <button id="btn-find-replace-toggle" type="button" class="find-toggle-btn" title="Toggle Replace">⇄</button>
+              <button id="btn-find-close" type="button" title="Close (Esc)">✕</button>
+            </div>
+            <div id="global-replace-row" class="global-find-row" hidden>
+              <input id="global-replace-input" type="text" placeholder="Replace with…" autocomplete="off" spellcheck="false" />
+              <button id="btn-replace-one" type="button">Replace</button>
+              <button id="btn-replace-all" type="button">Replace All</button>
+            </div>
+          </div>
+          <div id="pinned-plots-bar" class="pinned-plots-bar" hidden>
+            <div class="pinned-plots-header">
+              <span>📌 Pinned Plots (<span id="pinned-plots-count">0</span>)</span>
+              <button id="btn-clear-pinned-plots" type="button" class="pinned-clear-btn">Clear All</button>
+            </div>
+            <div id="pinned-plots-grid" class="pinned-plots-grid"></div>
           </div>
           <div id="notebook"></div>
           <div id="settings-view" hidden>
@@ -486,6 +517,50 @@
           <button type="submit" id="btn-confirm-export-html" value="export" class="primary">Export HTML…</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="refactor-dialog" class="export-html-modal" style="max-width: 440px;">
+      <form id="refactor-form" method="dialog">
+        <h2>Refactor Variable</h2>
+        <p id="refactor-scope-hint" class="dialog-hint"></p>
+
+        <div class="dialog-custom-row">
+          <label for="refactor-new-name">New Name:</label>
+          <div class="dialog-input-group">
+            <input id="refactor-new-name" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+        <p id="refactor-error" class="dialog-hint" style="color: #f87171; min-height: 1.2em; margin-top: 4px;"></p>
+
+        <div class="dialog-footer">
+          <button type="button" id="btn-cancel-refactor">Cancel</button>
+          <button type="submit" id="btn-confirm-refactor" value="refactor" class="primary">Rename</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="plot-lightbox-dialog" class="plot-lightbox-modal">
+      <div class="plot-lightbox-toolbar">
+        <span id="plot-lightbox-title" class="plot-lightbox-title">Plot Inspector</span>
+        <span id="plot-lightbox-coords" class="plot-lightbox-coords">Hover over axes for (x, y) · Wheel to zoom · Drag to pan · Shift+Drag to measure Δ</span>
+        <div class="plot-lightbox-actions">
+          <button type="button" id="btn-lb-reset-zoom">Reset Zoom</button>
+          <button type="button" id="btn-lb-copy-coords">📋 Copy (x, y)</button>
+          <button type="button" id="btn-lb-pin">📌 Pin</button>
+          <button type="button" id="btn-lb-save-png">💾 PNG</button>
+          <button type="button" id="btn-lb-save-svg">📐 SVG</button>
+          <button type="button" id="btn-lb-save-pdf">📄 PDF</button>
+          <button type="button" id="btn-lb-close">✕</button>
+        </div>
+      </div>
+      <div id="plot-lightbox-stage" class="plot-lightbox-stage">
+        <div id="plot-lightbox-canvas" class="plot-lightbox-canvas">
+          <img id="plot-lightbox-img" alt="Plot preview" draggable="false" />
+          <div id="plot-lb-crosshair-x" class="plot-lb-crosshair-x" hidden></div>
+          <div id="plot-lb-crosshair-y" class="plot-lb-crosshair-y" hidden></div>
+          <div id="plot-lb-measure-box" class="plot-lb-measure-box" hidden></div>
+        </div>
+      </div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

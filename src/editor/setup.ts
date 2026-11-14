@@ -10,9 +10,14 @@ import { matrixConcealField } from "./matrixConceal";
 import { symbolCompletions } from "./completion";
 import { constLinter } from "./constLint";
 import { createPythonAssistExtension, type PythonAssistProvider } from "./pythonAssist";
+import {
+  createCodeIntelligenceExtension,
+  type CodeIntelligenceProvider,
+  type VariableHoverInfo,
+} from "./codeIntelligence";
 import { debugLineField, setDebugLine } from "./debuggerExtension";
 
-export { setDebugLine };
+export { setDebugLine, type CodeIntelligenceProvider, type VariableHoverInfo };
 
 const indentConfigCompartment = new Compartment();
 let defaultUseTabs = false;
@@ -42,6 +47,7 @@ export interface EditorOptions {
   onBlur?: () => void;
   keys?: { key: string; run: () => boolean }[];
   pythonAssist?: PythonAssistProvider;
+  codeIntelligence?: CodeIntelligenceProvider;
 }
 
 export function createEditor({
@@ -51,6 +57,7 @@ export function createEditor({
   onBlur,
   keys = [],
   pythonAssist,
+  codeIntelligence,
 }: EditorOptions): EditorView {
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
@@ -60,6 +67,7 @@ export function createEditor({
     python(),
     symbolCompletions,
     ...(pythonAssist ? createPythonAssistExtension(pythonAssist) : []),
+    ...createCodeIntelligenceExtension(codeIntelligence),
     mathSymbols,
     matrixConcealField,
     constLinter,

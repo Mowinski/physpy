@@ -21,7 +21,7 @@ from .complete import get_completions, get_signature
 from .errors import TranspileError
 from .matrix import MATRIX_FN, make_matrix, to_matrix_latex
 from .pipeline import compile_source, to_ast
-from .plotting import PLOT_FN, render_plot_png_base64
+from .plotting import PLOT_FN, render_plot_bundle
 from .symbols import IDENTIFIERS
 from .tables import TABLE_FN, extract_table_data, is_tabular_object
 from .units import UNIT_FN, make_quantity, reset_ureg
@@ -51,6 +51,7 @@ class CellResult:
     latex: str | None = None  # KaTeX/LaTeX string for matrix/expression display
     tables: list[dict[str, Any]] = field(default_factory=list)  # structured DataFrame tables
     non_table_stdout: str = ""  # stdout excluding auto-captured `print(df)` blocks
+    plot_meta: list[dict[str, Any]] = field(default_factory=list)  # SVG/PDF/axes metadata per plot
 
 
 class _CellStdout(io.StringIO):
@@ -188,11 +189,20 @@ class NotebookSession:
         cell_exports: dict[str, Any] = {}
         cell_consts: set[str] = set()
         cell_plots: list[str] = []
+        cell_plot_meta: list[dict[str, Any]] = []
         cell_tables: list[dict[str, Any]] = []
         cell_latex: str | None = None
 
         def _capture_plot(target: Any) -> None:
-            cell_plots.append(render_plot_png_base64(target))
+            bundle = render_plot_bundle(target)
+            cell_plots.append(bundle["png"])
+            cell_plot_meta.append(
+                {
+                    "svg": bundle["svg"],
+                    "pdf": bundle["pdf"],
+                    "axes": bundle["axes"],
+                }
+            )
 
         def _capture_table(target: Any) -> None:
             cell_tables.append(extract_table_data(target))
@@ -305,6 +315,7 @@ class NotebookSession:
             latex=cell_latex,
             tables=cell_tables,
             non_table_stdout=non_table_buf.getvalue(),
+            plot_meta=cell_plot_meta,
         )
 
     def ensure_global_imports(self, full_document: str) -> None:
@@ -387,6 +398,7 @@ def run_worker() -> int:
                     "exported": res.exported,
                     "all_exports": res.all_exports,
                     "plots": res.plots,
+                    "plot_meta": res.plot_meta,
                     "latex": res.latex,
                     "tables": res.tables,
                     "non_table_stdout": res.non_table_stdout,
@@ -493,6 +505,7 @@ def run_worker() -> int:
                         "exported": res.exported,
                         "all_exports": res.all_exports,
                         "plots": res.plots,
+                        "plot_meta": res.plot_meta,
                         "latex": res.latex,
                         "tables": res.tables,
                         "non_table_stdout": res.non_table_stdout,
