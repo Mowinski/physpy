@@ -1,6 +1,8 @@
 import { basicSetup } from "codemirror";
+import { indentWithTab } from "@codemirror/commands";
+import { indentUnit } from "@codemirror/language";
 import { python } from "@codemirror/lang-python";
-import { EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { mathSymbols } from "./mathSymbols";
@@ -11,6 +13,27 @@ import { createPythonAssistExtension, type PythonAssistProvider } from "./python
 import { debugLineField, setDebugLine } from "./debuggerExtension";
 
 export { setDebugLine };
+
+const indentConfigCompartment = new Compartment();
+let defaultUseTabs = false;
+let defaultTabSize = 4;
+
+function buildIndentExtensions(useTabs: boolean, tabSize: number): Extension[] {
+  const safeSize = Math.max(1, Math.min(16, Math.round(tabSize || 4)));
+  const unit = useTabs ? "\t" : " ".repeat(safeSize);
+  return [indentUnit.of(unit), EditorState.tabSize.of(safeSize)];
+}
+
+export function setGlobalIndentConfig(useTabs: boolean, tabSize: number): void {
+  defaultUseTabs = useTabs;
+  defaultTabSize = Math.max(1, Math.min(16, Math.round(tabSize || 4)));
+}
+
+export function reconfigureEditorIndent(view: EditorView, useTabs: boolean, tabSize: number): void {
+  view.dispatch({
+    effects: indentConfigCompartment.reconfigure(buildIndentExtensions(useTabs, tabSize)),
+  });
+}
 
 export interface EditorOptions {
   parent: HTMLElement;
@@ -32,6 +55,8 @@ export function createEditor({
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
+    keymap.of([indentWithTab]),
+    indentConfigCompartment.of(buildIndentExtensions(defaultUseTabs, defaultTabSize)),
     python(),
     symbolCompletions,
     ...(pythonAssist ? createPythonAssistExtension(pythonAssist) : []),
@@ -58,6 +83,8 @@ export function createPlainTextEditor({ parent, doc, onChange, onBlur, keys = []
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
+    keymap.of([indentWithTab]),
+    indentConfigCompartment.of(buildIndentExtensions(defaultUseTabs, defaultTabSize)),
     oneDark,
     EditorView.domEventHandlers({
       blur: () => {

@@ -119,6 +119,21 @@
                 </div>
 
                 <div class="settings-card">
+                  <h3>Indentation (Tab / Shift+Tab)</h3>
+                  <div class="settings-field">
+                    <label for="cfg-indent-type">Indent Using (<code>indent_type</code>)</label>
+                    <select id="cfg-indent-type" class="settings-select">
+                      <option value="spaces">Spaces (Python PEP 8 default)</option>
+                      <option value="tab">Tab character (\t)</option>
+                    </select>
+                  </div>
+                  <div class="settings-field" id="cfg-tab-size-row">
+                    <label for="cfg-tab-size">Spaces per Tab (<code>tab_size</code>)</label>
+                    <input id="cfg-tab-size" type="number" min="1" max="16" step="1" value="4" />
+                  </div>
+                </div>
+
+                <div class="settings-card">
                   <h3>3. Default Python Interpreter</h3>
                   <div class="settings-field">
                     <label for="cfg-python-path">Python Executable Path (<code>python_path</code>)</label>

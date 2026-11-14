@@ -113,6 +113,8 @@ export interface AppConfig {
   matrix_font_size?: number;
   line_numbers: boolean;
   format_on_save?: boolean;
+  indent_type?: "spaces" | "tab" | string;
+  tab_size?: number;
   python_path: string;
   startup_dir: string;
   startup_mode: "restore" | "empty" | "demo" | "file";

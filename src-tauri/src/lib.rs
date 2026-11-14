@@ -145,6 +145,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_indent_type() -> String {
+    "spaces".to_string()
+}
+
+fn default_tab_size() -> u32 {
+    4
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub font_family: String,
@@ -153,6 +161,10 @@ pub struct AppConfig {
     pub line_numbers: bool,
     #[serde(default = "default_true")]
     pub format_on_save: bool,
+    #[serde(default = "default_indent_type")]
+    pub indent_type: String,
+    #[serde(default = "default_tab_size")]
+    pub tab_size: u32,
     pub python_path: String,
     pub startup_dir: String,
     /// `restore` | `empty` | `demo` | `file`
@@ -753,7 +765,11 @@ line_numbers: true
 # 3. Format code cells on save (true / false)
 format_on_save: true
 
-# 4. Default Python interpreter path (leave empty for automatic detection)
+# 4. Indentation: spaces | tab, and spaces per Tab (tab_size)
+indent_type: spaces
+tab_size: 4
+
+# 5. Default Python interpreter path (leave empty for automatic detection)
 python_path: \"\"
 
 # 4. Default directory where PhysPy opens on startup (~ expands to $HOME)
@@ -918,6 +934,19 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     cfg.format_on_save = b;
                 }
             }
+            "indent_type" | "indentType" | "editor.indentType" | "tab_mode" | "tabMode" => {
+                let m = scalar.trim().to_ascii_lowercase();
+                if matches!(m.as_str(), "tab" | "tabs") {
+                    cfg.indent_type = "tab".to_string();
+                } else if matches!(m.as_str(), "space" | "spaces") {
+                    cfg.indent_type = "spaces".to_string();
+                }
+            }
+            "tab_size" | "tabSize" | "indent_size" | "indentSize" | "editor.tabSize" => {
+                if let Ok(n) = scalar.trim().parse::<u32>() {
+                    cfg.tab_size = n.clamp(1, 16);
+                }
+            }
             "python_path"
             | "pythonPath"
             | "default_python"
@@ -1014,6 +1043,8 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         matrix_font_size: 135.0,
         line_numbers: true,
         format_on_save: true,
+        indent_type: "spaces".to_string(),
+        tab_size: 4,
         python_path: String::new(),
         startup_dir: "~".to_string(),
         startup_mode: "restore".to_string(),
@@ -1153,6 +1184,8 @@ fn read_config_scope(
             matrix_font_size: 135.0,
             line_numbers: true,
             format_on_save: true,
+            indent_type: "spaces".to_string(),
+            tab_size: 4,
             python_path: String::new(),
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),
@@ -1907,6 +1940,8 @@ mod tests {
             matrix_font_size: 135.0,
             line_numbers: true,
             format_on_save: true,
+            indent_type: "spaces".to_string(),
+            tab_size: 4,
             python_path: String::new(),
             startup_dir: "~".to_string(),
             startup_mode: "restore".to_string(),

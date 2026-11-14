@@ -5,7 +5,14 @@ import "./styles.css";
 import { EditorView } from "@codemirror/view";
 import demo from "../examples/demo.ppy?raw";
 import * as backend from "./backend";
-import { createEditor, createViewer, setDoc, setDebugLine } from "./editor/setup";
+import {
+  createEditor,
+  createViewer,
+  reconfigureEditorIndent,
+  setDebugLine,
+  setDoc,
+  setGlobalIndentConfig,
+} from "./editor/setup";
 import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
@@ -179,6 +186,9 @@ const cfgFontSizeInput = $<HTMLInputElement>("cfg-font-size");
 const cfgMatrixFontSizeInput = $<HTMLInputElement>("cfg-matrix-font-size");
 const cfgLineNumbersInput = $<HTMLInputElement>("cfg-line-numbers");
 const cfgFormatOnSaveInput = $<HTMLInputElement>("cfg-format-on-save");
+const cfgIndentTypeSelect = $<HTMLSelectElement>("cfg-indent-type");
+const cfgTabSizeInput = $<HTMLInputElement>("cfg-tab-size");
+const cfgTabSizeRow = $<HTMLDivElement>("cfg-tab-size-row");
 const cfgPythonPathInput = $<HTMLInputElement>("cfg-python-path");
 const cfgStartupDirInput = $<HTMLInputElement>("cfg-startup-dir");
 const cfgStartupModeSelect = $<HTMLSelectElement>("cfg-startup-mode");
@@ -791,6 +801,13 @@ async function applyHierarchicalConfig(
     document.documentElement.style.setProperty("--editor-matrix-font-size", `${matrixScale}%`);
     notebookEl.classList.toggle("hide-line-numbers", !cfg.line_numbers);
 
+    const useTabs = cfg.indent_type === "tab";
+    const tabSize = Math.max(1, Math.min(16, Number(cfg.tab_size) || 4));
+    setGlobalIndentConfig(useTabs, tabSize);
+    for (const c of cells) {
+      reconfigureEditorIndent(c.view, useTabs, tabSize);
+    }
+
     if (isInitialBoot && !rootDir && cfg.resolved_startup_dir) {
       rootDir = cfg.resolved_startup_dir;
     }
@@ -833,6 +850,13 @@ function updateAutoSaveDelayRowVisibility() {
   }
 }
 
+function updateTabSizeRowVisibility() {
+  if (cfgTabSizeRow) {
+    cfgTabSizeRow.style.display =
+      cfgIndentTypeSelect.value === "spaces" ? "flex" : "none";
+  }
+}
+
 function buildYamlFromSettingsForm(): string {
   const scopeTitle =
     activeSettingsScope === "workspace"
@@ -843,6 +867,8 @@ function buildYamlFromSettingsForm(): string {
   const matrixSize = Number(cfgMatrixFontSizeInput.value) || 135;
   const lineNums = cfgLineNumbersInput.checked;
   const formatOnSave = cfgFormatOnSaveInput.checked;
+  const indentType = cfgIndentTypeSelect.value === "tab" ? "tab" : "spaces";
+  const tabSize = Math.max(1, Math.min(16, Math.round(Number(cfgTabSizeInput.value) || 4)));
   const pyPath = cfgPythonPathInput.value.trim().replace(/"/g, '\\"');
   const startDir = (cfgStartupDirInput.value.trim() || "~").replace(/"/g, '\\"');
   const startMode = cfgStartupModeSelect.value || "restore";
@@ -868,7 +894,11 @@ function buildYamlFromSettingsForm(): string {
     "# 3. Format code cells on save (true / false)",
     `format_on_save: ${formatOnSave}`,
     "",
-    "# 4. Default Python interpreter path (leave empty for automatic detection)",
+    "# 4. Indentation: spaces | tab, and spaces per Tab",
+    `indent_type: ${indentType}`,
+    `tab_size: ${tabSize}`,
+    "",
+    "# 5. Default Python interpreter path (leave empty for automatic detection)",
     `python_path: "${pyPath}"`,
     "",
     "# 4. Default directory where PhysPy opens on startup (~ expands to $HOME)",
@@ -990,6 +1020,12 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       cfgLineNumbersInput.checked = /^(true|yes|on|1)$/i.test(val);
     } else if (key === "format_on_save" || key === "formatOnSave" || key === "linter_on_save") {
       cfgFormatOnSaveInput.checked = /^(true|yes|on|1)$/i.test(val);
+    } else if (key === "indent_type" || key === "indentType" || key === "tab_mode" || key === "tabMode") {
+      const m = val.toLowerCase();
+      cfgIndentTypeSelect.value = m === "tab" || m === "tabs" ? "tab" : "spaces";
+    } else if (key === "tab_size" || key === "tabSize" || key === "indent_size" || key === "indentSize") {
+      const n = parseInt(val, 10);
+      if (!Number.isNaN(n)) cfgTabSizeInput.value = String(Math.max(1, Math.min(16, n)));
     } else if (key === "python_path" || key === "pythonPath") {
       cfgPythonPathInput.value = val;
     } else if (key === "startup_dir" || key === "startupDir" || key === "default_dir") {
@@ -1037,6 +1073,7 @@ function syncSettingsFormFromYamlText(yamlText: string) {
   }
   updateStartupFileRowVisibility();
   updateAutoSaveDelayRowVisibility();
+  updateTabSizeRowVisibility();
 }
 
 async function loadSettingsScope(scope: "global" | "workspace") {
@@ -1067,6 +1104,8 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgMatrixFontSizeInput.value = String(data.parsed.matrix_font_size || 135);
     cfgLineNumbersInput.checked = data.parsed.line_numbers;
     cfgFormatOnSaveInput.checked = data.parsed.format_on_save !== false;
+    cfgIndentTypeSelect.value = data.parsed.indent_type === "tab" ? "tab" : "spaces";
+    cfgTabSizeInput.value = String(data.parsed.tab_size || 4);
     cfgPythonPathInput.value = data.parsed.python_path;
     cfgStartupDirInput.value = data.parsed.startup_dir;
     cfgStartupModeSelect.value = data.parsed.startup_mode || "restore";
@@ -1081,6 +1120,7 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     syncSettingsFormFromYamlText(data.raw_yaml);
     updateStartupFileRowVisibility();
     updateAutoSaveDelayRowVisibility();
+    updateTabSizeRowVisibility();
     markSettingsTabDirty(false);
     if (data.effective.ai_api_key || cfgAiApiKeyInput.value.trim()) {
       void refreshAiModelsList(true);
@@ -1121,6 +1161,7 @@ for (const inputEl of [
   cfgMatrixFontSizeInput,
   cfgLineNumbersInput,
   cfgFormatOnSaveInput,
+  cfgTabSizeInput,
   cfgPythonPathInput,
   cfgStartupDirInput,
   cfgStartupFileInput,
@@ -1181,6 +1222,12 @@ cfgStartupModeSelect.addEventListener("change", () => {
 
 cfgAutoSaveSelect.addEventListener("change", () => {
   updateAutoSaveDelayRowVisibility();
+  cfgRawYamlInput.value = buildYamlFromSettingsForm();
+  markSettingsTabDirty(true);
+});
+
+cfgIndentTypeSelect.addEventListener("change", () => {
+  updateTabSizeRowVisibility();
   cfgRawYamlInput.value = buildYamlFromSettingsForm();
   markSettingsTabDirty(true);
 });
