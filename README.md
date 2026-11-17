@@ -15,10 +15,13 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 | PhysPy Syntax | Transpiled Python | Description |
 |---|---|---|
 | `\rho_0`, `\omega_0`, `\Delta x` | `ρ_0`, `ω_0`, `Δx` | Greek and physics symbols rendered live via KaTeX (with `\` autocomplete) |
+| `\bar{u}`, `\overline{czas}`, `\hat{x}`, `\vec{v}`, `\dot{x}`, `\ddot{x}`, `\tilde{p}`, `\prime{t}`, `\dprime{t}`, `\u_\bar{t}` | `ū`, `czas̄`, `x̂`, `v⃗`, `tʹ`, `tʺ`, `u_t̄` | LaTeX accents & primes on variables and subscripts, rendered live via KaTeX |
+| `\const{g}`, `\const{c}`, `\const{k_B}`, `\const{R}`, `\const{N_A}`, `\const{hbar}`, `\const{eps_0}` | `__physpy_const__('g')` | Built-in CODATA/SI physical constants with `pint` units (safe even if `g` is used as a local variable) |
 | `[1, 2; 3, 4]`, `[a; b; c]` | `np.array([[1, 2], [3, 4]])` | Native matrix syntax with `;` row separators, rendered live in KaTeX as a 2D matrix widget and formatted as LaTeX matrix output |
 | `15%`, `0.05% * v` | `0.15`, `0.0005 * v` | Percentage literals converted directly to numeric decimals |
-| `1000.0 [kg/m^3]`, `p.to("kPa")` | `__physpy_unit__(1000.0, 'kg/m^3')` | Physical units powered by `pint` (`pint.Quantity`) with automatic dimensional analysis and `.to(...)` conversion |
-| `const g = 9.81 [m/s^2]` | immutable constant | Blocks reassignment at the AST level and **immediately underlines reassignment attempts in red in the editor** |
+| `1000.0 [kg/m^3]`, `p -> [kPa]` | `__physpy_unit__(1000.0, 'kg/m^3')`, `__physpy_convert__(p, 'kPa')` | Physical units powered by `pint` (`pint.Quantity`) with automatic dimensional analysis and `-> [unit]` conversion |
+| `sqrt(x^2 + y^2)`, `np.sqrt(...)` | `sqrt(x**2 + y**2)` | Rendered live in the editor as $\sqrt{x^2 + y^2}$ via KaTeX |
+| `const g = 9.81 [m/s^2]` | immutable constant | Blocks reassignment at the AST level, highlights `const` variables in gold, and **immediately underlines reassignment attempts in red in the editor** |
 | `export x = ...`, `export const ...`, `export import ...` | stored in `__exports__` | Explicit sharing of variables, constants, functions, classes, and imports across `# %%` cells |
 | `2(\rho_0 + g)` | `2*(ρ_0 + g)` | Implicit multiplication after numeric literals before `(` |
 | `x^2`, `x^(n+1)` | `x**2`, `x**(n+1)` | Exponentiation with `^` rendered as superscripts ($x^2$, $x^{n+1}$) in the editor |
@@ -55,6 +58,8 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
   ```
 
 ### 3. Desktop IDE Features
+- **Sticky Cell Headers & Quick Insertion** — cell headers stay pinned to the top while scrolling long cells, with a `+` menu to insert cells above or below.
+- **Pinned Plots Gallery & Compare Mode** — pin plots from any cell, reorder them, rename them inline, or switch to side-by-side **Compare** mode to inspect multiple charts at once.
 - **Visual Matrix Builder Dialog (`⊞ Matrix` / `⇧⌘M`)** — interactive grid modal with presets ($2\times2$, $3\times3$) and live KaTeX preview to insert matrix literals directly into the editor.
 - **Interactive Step Debugger (`🐞 Debug` / `⇧⌘D`)** — line-by-line cell debugging with step over (`F10`), step into (`F11`), step out, continue, and live local variables inspector.
 - **Code Formatter on Save (Black)** — automatic formatting of mathematical equations, arguments, and operators upon saving without line-length constraints (`format_on_save`, manual trigger `⇧⌥F`).
@@ -84,7 +89,8 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 ├── transpiler/                 # Python package `physpy`
 │   ├── src/physpy/
 │   │   ├── symbols.json        # Shared symbol table (used by both frontend and Python transpiler)
-│   │   ├── symbols.py          # \rho_0 → ρ_0 (including inside f-string interpolations)
+│   │   ├── physical_constants.json # Built-in CODATA/SI physical constants with Pint units
+│   │   ├── symbols.py          # \rho_0 → ρ_0, LaTeX accents/primes, \const{...} (including inside f-strings)
 │   │   ├── consts.py           # `const` keyword rewrite + AST immutability enforcement
 │   │   ├── exports.py          # `export` keyword rewrite across notebook cells
 │   │   ├── units.py            # Physical unit literals `1000.0 [kg/m^3]` (powered by `pint`)

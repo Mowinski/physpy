@@ -57,3 +57,18 @@ def test_format_batch():
     res = format_cells_batch(cells)
     assert res[0].strip() == "x = 1 + 2"
     assert res[1].strip() == "export y = x * 3"
+
+
+def test_format_accented_symbols():
+    code = "export \\bar{u}_a=1+2\n\\overline{czas} = \\hat{\\theta}+\\vec{v}\n\\u_\\bar{t}=3+4\n\\prime{t}=p_1->[hPa]\n"
+    formatted = format_physpy_code(code)
+    assert "\\bar{u}_a = 1 + 2" in formatted
+    assert "\\overline{czas} = \\hat{\\theta} + \\vec{v}" in formatted
+    assert "\\u_\\bar{t} = 3 + 4" in formatted
+    assert "\\prime{t} = p_1 -> [hPa]" in formatted
+
+
+def test_format_physical_constants():
+    code = "v=2*\\const{g}*h\n"
+    formatted = format_physpy_code(code)
+    assert formatted.strip() == "v = 2 * \\const{g} * h"

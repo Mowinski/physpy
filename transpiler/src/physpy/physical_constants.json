@@ -1,0 +1,122 @@
+{
+  "g": {
+    "value": 9.80665,
+    "unit": "m/s^2",
+    "latex": "g",
+    "label": "przyspieszenie ziemskie"
+  },
+  "c": {
+    "value": 299792458.0,
+    "unit": "m/s",
+    "latex": "c",
+    "label": "prędkość światła w próżni"
+  },
+  "h": {
+    "value": 6.62607015e-34,
+    "unit": "J*s",
+    "latex": "h",
+    "label": "stała Plancka"
+  },
+  "hbar": {
+    "value": 1.0545718176461565e-34,
+    "unit": "J*s",
+    "latex": "\\hbar",
+    "label": "zredukowana stała Plancka"
+  },
+  "k_B": {
+    "value": 1.380649e-23,
+    "unit": "J/K",
+    "latex": "k_{\\mathrm{B}}",
+    "label": "stała Boltzmanna"
+  },
+  "N_A": {
+    "value": 6.02214076e23,
+    "unit": "1/mol",
+    "latex": "N_{\\mathrm{A}}",
+    "label": "stała Avogadra"
+  },
+  "R": {
+    "value": 8.31446261815324,
+    "unit": "J/(mol*K)",
+    "latex": "R",
+    "label": "uniwersalna stała gazowa"
+  },
+  "e": {
+    "value": 1.602176634e-19,
+    "unit": "C",
+    "latex": "e",
+    "label": "ładunek elementarny"
+  },
+  "m_e": {
+    "value": 9.1093837015e-31,
+    "unit": "kg",
+    "latex": "m_{\\mathrm{e}}",
+    "label": "masa elektronu"
+  },
+  "m_p": {
+    "value": 1.67262192369e-27,
+    "unit": "kg",
+    "latex": "m_{\\mathrm{p}}",
+    "label": "masa protonu"
+  },
+  "m_n": {
+    "value": 1.67492749804e-27,
+    "unit": "kg",
+    "latex": "m_{\\mathrm{n}}",
+    "label": "masa neutronu"
+  },
+  "u": {
+    "value": 1.6605390666e-27,
+    "unit": "kg",
+    "latex": "u",
+    "label": "atomowa jednostka masy"
+  },
+  "G": {
+    "value": 6.6743e-11,
+    "unit": "m^3/(kg*s^2)",
+    "latex": "G",
+    "label": "stała grawitacji"
+  },
+  "eps_0": {
+    "value": 8.8541878128e-12,
+    "unit": "F/m",
+    "latex": "\\varepsilon_{0}",
+    "label": "przenikalność elektryczna próżni"
+  },
+  "mu_0": {
+    "value": 1.25663706212e-6,
+    "unit": "N/A^2",
+    "latex": "\\mu_{0}",
+    "label": "przenikalność magnetyczna próżni"
+  },
+  "sigma": {
+    "value": 5.670374419e-8,
+    "unit": "W/(m^2*K^4)",
+    "latex": "\\sigma",
+    "label": "stała Stefana-Boltzmanna"
+  },
+  "F": {
+    "value": 96485.33212331002,
+    "unit": "C/mol",
+    "latex": "F",
+    "label": "stała Faradaya"
+  },
+  "R_inf": {
+    "value": 10973731.56816,
+    "unit": "1/m",
+    "latex": "R_{\\infty}",
+    "label": "stała Rydberga"
+  },
+  "a_0": {
+    "value": 5.29177210903e-11,
+    "unit": "m",
+    "latex": "a_{0}",
+    "label": "promień Bohra"
+  },
+  "atm": {
+    "value": 101325.0,
+    "unit": "Pa",
+    "latex": "p_{\\mathrm{atm}}",
+    "label": "ciśnienie normalne"
+  }
+}

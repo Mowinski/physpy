@@ -17,10 +17,14 @@ except ImportError:
     black = None  # type: ignore[assignment]
     _HAS_BLACK = False
 
+from .symbols import _CONST_CALL_RE, SYMBOL_RE as _SYMBOL_RE
+
 _EXPORT_MARKER = "<__PPY_EXP_MARKER__>"
 _SYM_PREFIX = "__physpy_sym_"
 _SYM_SUFFIX = "__"
-_SYMBOL_RE = re.compile(r"\\([A-Za-z]+)(\w*)")
+_ACC_PREFIX = "__physpy_acc_"
+_TO_UNIT_PREFIX = ".__physpy_to_unit_"
+_UNIT_ARROW_RE = re.compile(r"[ \t]*->[ \t]*(\[[^\[\]\n]+\])")
 _STRING_START_RE = re.compile(r"(?i)([rbuft]{0,2})('''|\"\"\"|'|\")")
 
 
@@ -60,12 +64,31 @@ def _mask_symbols(src: str) -> str:
                 i += 1
             continue
 
-        # Check for LaTeX symbol: \name
+        # Mask unit conversion `-> [unit]` as attribute access so Black can parse it
+        if c == "-" or c in (" ", "\t"):
+            m_arrow = _UNIT_ARROW_RE.match(src, i)
+            if m_arrow and (out and not out[-1].endswith("\n")):
+                unit_hex = m_arrow.group(1).strip().encode("utf-8").hex()
+                out.append(f"{_TO_UNIT_PREFIX}{unit_hex}{_SYM_SUFFIX}")
+                i = m_arrow.end()
+                continue
+
+        # Check for LaTeX symbol: \const{name}, \name, \accent{inner}tail, or \name_\accent{inner}
         if c == "\\":
+            m_const = _CONST_CALL_RE.match(src, i)
+            if m_const:
+                hex_raw = m_const.group(0).encode("utf-8").hex()
+                out.append(f"{_ACC_PREFIX}{hex_raw}{_SYM_SUFFIX}")
+                i = m_const.end()
+                continue
             m_sym = _SYMBOL_RE.match(src, i)
             if m_sym:
-                name, tail = m_sym.groups()
-                out.append(f"{_SYM_PREFIX}{name}{tail}{_SYM_SUFFIX}")
+                accent, _inner, name, tail = m_sym.groups()
+                if accent is not None or "\\" in tail:
+                    hex_raw = m_sym.group(0).encode("utf-8").hex()
+                    out.append(f"{_ACC_PREFIX}{hex_raw}{_SYM_SUFFIX}")
+                else:
+                    out.append(f"{_SYM_PREFIX}{name}{tail}{_SYM_SUFFIX}")
                 i = m_sym.end()
                 continue
 
@@ -76,7 +99,17 @@ def _mask_symbols(src: str) -> str:
 
 
 def _unmask_symbols(src: str) -> str:
-    """Restore __physpy_sym_name__ back to \\name."""
+    """Restore __physpy_sym_*__, __physpy_acc_*__, and -> [unit] back to PhysPy syntax."""
+    unit_pattern = re.compile(rf"[ \t]*\.__physpy_to_unit_([0-9a-f]+){_SYM_SUFFIX}")
+    src = unit_pattern.sub(
+        lambda m: f" -> {bytes.fromhex(m.group(1)).decode('utf-8')}",
+        src,
+    )
+    acc_pattern = re.compile(rf"{_ACC_PREFIX}([0-9a-f]+){_SYM_SUFFIX}")
+    src = acc_pattern.sub(
+        lambda m: bytes.fromhex(m.group(1)).decode("utf-8"),
+        src,
+    )
     pattern = re.compile(rf"{_SYM_PREFIX}([A-Za-z]+)(\w*){_SYM_SUFFIX}")
     return pattern.sub(r"\\\1\2", src)
 

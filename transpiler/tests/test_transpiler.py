@@ -70,3 +70,46 @@ def test_pipe_operator():
 
 def test_symbols_and_pipe_together():
     assert transpile("\\rho_0 |> print") == "print(ρ_0)"
+
+
+def test_accented_symbols():
+    code = "\\bar{u} = 5\n\\bar{u}_a = 1\n\\overline{czas} = 2\n\\hat{\\theta} = 3\n\\vec{v} = 4\n\\dot{x} = 6\n\\ddot{x} = 7\n\\tilde{p} = 8\n"
+    compiled = transpile(code)
+    ns: dict = {}
+    exec(compile(compiled, "<test>", "exec"), ns)
+    assert ns[unicodedata.normalize("NFKC", "u\u0304")] == 5
+    assert ns[unicodedata.normalize("NFKC", "u\u0304_a")] == 1
+    assert ns[unicodedata.normalize("NFKC", "czas\u0304")] == 2
+    assert ns[unicodedata.normalize("NFKC", "θ\u0302")] == 3
+    assert ns[unicodedata.normalize("NFKC", "v\u20d7")] == 4
+    assert ns[unicodedata.normalize("NFKC", "x\u0307")] == 6
+    assert ns[unicodedata.normalize("NFKC", "x\u0308")] == 7
+    assert ns[unicodedata.normalize("NFKC", "p\u0303")] == 8
+
+
+def test_accented_subscript_symbols():
+    code = "\\u_\\bar{t} = 11\n\\sigma_\\hat{x} = 12\n\\bar{u}_\\bar{t} = 13\n"
+    compiled = transpile(code)
+    ns: dict = {}
+    exec(compile(compiled, "<test>", "exec"), ns)
+    assert ns[unicodedata.normalize("NFKC", "u_t\u0304")] == 11
+    assert ns[unicodedata.normalize("NFKC", "σ_x\u0302")] == 12
+    assert ns[unicodedata.normalize("NFKC", "u\u0304_t\u0304")] == 13
+
+
+def test_prime_and_dprime_symbols():
+    code = "\\prime{t} = 21\n\\dprime{t} = 22\n\\prime{\\theta}_0 = 23\n\\u_\\prime{t} = 24\n"
+    compiled = transpile(code)
+    ns: dict = {}
+    exec(compile(compiled, "<test>", "exec"), ns)
+    assert ns[unicodedata.normalize("NFKC", "t\u02b9")] == 21
+    assert ns[unicodedata.normalize("NFKC", "t\u02ba")] == 22
+    assert ns[unicodedata.normalize("NFKC", "θ\u02b9_0")] == 23
+    assert ns[unicodedata.normalize("NFKC", "u_t\u02b9")] == 24
+
+
+def test_accented_symbol_errors():
+    with pytest.raises(TranspileError):
+        to_source("x = \\bar{\\unknown}\n")
+    with pytest.raises(TranspileError):
+        to_source("x = \\bar{\\i}\n")

@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import builtins
 import io
+import json
 import re
 import sys
 import tokenize
+from importlib import resources
 from typing import Any
 
 UNIT_FN = "__physpy_unit__"
 CONVERT_FN = "__physpy_convert__"
+CONST_FN = "__physpy_const__"
+
+PHYSICAL_CONSTANTS: dict[str, dict[str, Any]] = json.loads(
+    resources.files(__package__).joinpath("physical_constants.json").read_text(encoding="utf-8")
+)
 
 _UREG: Any = None
 _MICRO_SPACE_RE = re.compile(r"μ\s+([A-Za-zΩ]+)")
@@ -111,9 +118,18 @@ def convert_quantity(value: Any, unit_str: str) -> Any:
     return get_ureg().Quantity(value, normalized)
 
 
-# Make `__physpy_unit__` and `__physpy_convert__` available in builtins.
+def get_physical_constant(name: str) -> Any:
+    """Return a ``pint.Quantity`` for a built-in physical constant from ``physical_constants.json``."""
+    entry = PHYSICAL_CONSTANTS.get(name)
+    if entry is None:
+        raise KeyError(f"unknown physical constant: {name}")
+    return make_quantity(entry["value"], entry["unit"])
+
+
+# Make `__physpy_unit__`, `__physpy_convert__`, and `__physpy_const__` available in builtins.
 setattr(builtins, UNIT_FN, make_quantity)
 setattr(builtins, CONVERT_FN, convert_quantity)
+setattr(builtins, CONST_FN, get_physical_constant)
 
 
 def _find_value_start(toks: list[tokenize.TokenInfo], num_idx: int) -> tuple[int, int]:

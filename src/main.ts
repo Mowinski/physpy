@@ -3232,8 +3232,8 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   const btnAdd = document.createElement("button");
   btnAdd.type = "button";
   btnAdd.className = "cell-btn";
-  btnAdd.textContent = "+ Below";
-  btnAdd.title = "Insert a cell below";
+  btnAdd.textContent = "+";
+  btnAdd.title = "Insert cell above or below";
 
   const btnUp = document.createElement("button");
   btnUp.type = "button";
@@ -4010,11 +4010,28 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     setCellCollapseMode(state, nextCellCollapseMode(state, e.altKey));
   });
 
-  btnAdd.addEventListener("click", () => {
+  btnAdd.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const rect = btnAdd.getBoundingClientRect();
     const idx = cells.indexOf(state);
-    const created = createCellCard({ kind: "code", title: "", source: "" }, idx + 1);
-    markDirty();
-    created.view.focus();
+    openContextMenu(rect.left, rect.bottom + 4, [
+      {
+        label: "↑ Insert Cell Above",
+        run: () => {
+          const created = createCellCard({ kind: "code", title: "", source: "" }, idx);
+          markDirty();
+          created.view.focus();
+        },
+      },
+      {
+        label: "↓ Insert Cell Below",
+        run: () => {
+          const created = createCellCard({ kind: "code", title: "", source: "" }, idx + 1);
+          markDirty();
+          created.view.focus();
+        },
+      },
+    ]);
   });
   btnUp.addEventListener("click", () => moveCell(state, -1));
   btnDown.addEventListener("click", () => moveCell(state, 1));
@@ -6057,52 +6074,218 @@ function pinPlotItem(b64: string, meta: backend.PlotMeta | undefined, title: str
   setStatus(`Pinned plot from "${title}"`);
 }
 
+let dragPinnedIdx: number | null = null;
+
+function movePinnedPlot(fromIdx: number, toIdx: number): void {
+  if (
+    fromIdx < 0 ||
+    toIdx < 0 ||
+    fromIdx >= pinnedPlots.length ||
+    toIdx >= pinnedPlots.length ||
+    fromIdx === toIdx
+  ) {
+    return;
+  }
+  const [moved] = pinnedPlots.splice(fromIdx, 1);
+  pinnedPlots.splice(toIdx, 0, moved);
+  renderPinnedPlots();
+  const compareDialog = $<HTMLDialogElement>("pinned-compare-dialog");
+  if (compareDialog.open) {
+    renderPinnedCompareStrip();
+  }
+}
+
+function createPinnedTitleInput(item: PinnedPlotItem): HTMLInputElement {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "pinned-title-input";
+  input.value = item.title;
+  input.title = "Click to rename plot";
+  input.addEventListener("input", () => {
+    item.title = input.value;
+  });
+  input.addEventListener("change", () => {
+    item.title = input.value.trim() || "Plot";
+    renderPinnedPlots();
+    const compareDialog = $<HTMLDialogElement>("pinned-compare-dialog");
+    if (compareDialog.open) renderPinnedCompareStrip();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+  });
+  return input;
+}
+
 function renderPinnedPlots(): void {
   const bar = $("pinned-plots-bar");
   const grid = $("pinned-plots-grid");
   const countEl = $("pinned-plots-count");
+  const btnCompare = $<HTMLButtonElement>("btn-compare-pinned-plots");
   countEl.textContent = String(pinnedPlots.length);
   bar.hidden = pinnedPlots.length === 0;
+  btnCompare.disabled = pinnedPlots.length < 2;
   grid.innerHTML = "";
 
-  for (const item of pinnedPlots) {
+  pinnedPlots.forEach((item, idx) => {
     const card = document.createElement("div");
     card.className = "pinned-plot-card";
+    card.draggable = true;
+
+    card.addEventListener("dragstart", (e) => {
+      if (document.activeElement?.classList.contains("pinned-title-input")) {
+        e.preventDefault();
+        return;
+      }
+      dragPinnedIdx = idx;
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    });
+    card.addEventListener("dragover", (e) => {
+      if (dragPinnedIdx === null || dragPinnedIdx === idx) return;
+      e.preventDefault();
+      card.classList.add("drag-over");
+    });
+    card.addEventListener("dragleave", () => {
+      card.classList.remove("drag-over");
+    });
+    card.addEventListener("drop", (e) => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      if (dragPinnedIdx !== null && dragPinnedIdx !== idx) {
+        const from = dragPinnedIdx;
+        dragPinnedIdx = null;
+        movePinnedPlot(from, idx);
+      }
+    });
+    card.addEventListener("dragend", () => {
+      dragPinnedIdx = null;
+      card.classList.remove("drag-over");
+    });
 
     const hdr = document.createElement("div");
     hdr.className = "pinned-plot-card-header";
-    const lbl = document.createElement("span");
-    lbl.textContent = `${item.title} · ${item.timeLabel}`;
+    const titleInput = createPinnedTitleInput(item);
+
+    const controls = document.createElement("div");
+    controls.className = "pinned-card-controls";
+
+    const btnLeft = document.createElement("button");
+    btnLeft.type = "button";
+    btnLeft.className = "pinned-move-btn";
+    btnLeft.textContent = "◀";
+    btnLeft.title = "Move left";
+    btnLeft.disabled = idx === 0;
+    btnLeft.addEventListener("click", () => movePinnedPlot(idx, idx - 1));
+
+    const btnRight = document.createElement("button");
+    btnRight.type = "button";
+    btnRight.className = "pinned-move-btn";
+    btnRight.textContent = "▶";
+    btnRight.title = "Move right";
+    btnRight.disabled = idx === pinnedPlots.length - 1;
+    btnRight.addEventListener("click", () => movePinnedPlot(idx, idx + 1));
+
     const btnUnpin = document.createElement("button");
     btnUnpin.type = "button";
     btnUnpin.className = "pinned-unpin-btn";
     btnUnpin.textContent = "✕";
     btnUnpin.title = "Unpin plot";
     btnUnpin.addEventListener("click", () => {
-      const idx = pinnedPlots.findIndex((p) => p.id === item.id);
-      if (idx !== -1) {
-        pinnedPlots.splice(idx, 1);
+      const curIdx = pinnedPlots.findIndex((p) => p.id === item.id);
+      if (curIdx !== -1) {
+        pinnedPlots.splice(curIdx, 1);
         renderPinnedPlots();
+        const compareDialog = $<HTMLDialogElement>("pinned-compare-dialog");
+        if (compareDialog.open) {
+          if (pinnedPlots.length === 0) compareDialog.close();
+          else renderPinnedCompareStrip();
+        }
       }
     });
-    hdr.append(lbl, btnUnpin);
+
+    controls.append(btnLeft, btnRight, btnUnpin);
+    hdr.append(titleInput, controls);
 
     const img = document.createElement("img");
     img.src = `data:image/png;base64,${item.b64}`;
     img.alt = item.title;
-    img.title = "Click to inspect/zoom";
+    img.title = `Click to inspect/zoom (${item.timeLabel}) · Drag card to reorder`;
     img.addEventListener("click", () => {
       openPlotLightbox(item.b64, item.meta, `${item.title} (${item.timeLabel})`);
     });
 
     card.append(hdr, img);
     grid.append(card);
-  }
+  });
 }
+
+function renderPinnedCompareStrip(): void {
+  const strip = $("pinned-compare-strip");
+  strip.innerHTML = "";
+
+  pinnedPlots.forEach((item, idx) => {
+    const card = document.createElement("div");
+    card.className = "pinned-compare-card";
+
+    const hdr = document.createElement("div");
+    hdr.className = "pinned-compare-card-header";
+    const titleInput = createPinnedTitleInput(item);
+    const timeEl = document.createElement("span");
+    timeEl.className = "pinned-compare-time";
+    timeEl.textContent = item.timeLabel;
+
+    const btnLeft = document.createElement("button");
+    btnLeft.type = "button";
+    btnLeft.className = "pinned-move-btn";
+    btnLeft.textContent = "◀";
+    btnLeft.title = "Move left";
+    btnLeft.disabled = idx === 0;
+    btnLeft.addEventListener("click", () => movePinnedPlot(idx, idx - 1));
+
+    const btnRight = document.createElement("button");
+    btnRight.type = "button";
+    btnRight.className = "pinned-move-btn";
+    btnRight.textContent = "▶";
+    btnRight.title = "Move right";
+    btnRight.disabled = idx === pinnedPlots.length - 1;
+    btnRight.addEventListener("click", () => movePinnedPlot(idx, idx + 1));
+
+    hdr.append(titleInput, timeEl, btnLeft, btnRight);
+
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "pinned-compare-img-wrap";
+    const img = document.createElement("img");
+    img.src = item.meta?.svg
+      ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(item.meta.svg)}`
+      : `data:image/png;base64,${item.b64}`;
+    img.alt = item.title;
+    img.title = "Click to inspect/zoom";
+    img.addEventListener("click", () => {
+      openPlotLightbox(item.b64, item.meta, `${item.title} (${item.timeLabel})`);
+    });
+    imgWrap.append(img);
+
+    card.append(hdr, imgWrap);
+    strip.append(card);
+  });
+}
+
+$("btn-compare-pinned-plots").addEventListener("click", () => {
+  if (pinnedPlots.length < 1) return;
+  renderPinnedCompareStrip();
+  const dialog = $<HTMLDialogElement>("pinned-compare-dialog");
+  if (!dialog.open) dialog.showModal();
+});
+
+$("btn-compare-close").addEventListener("click", () => {
+  const dialog = $<HTMLDialogElement>("pinned-compare-dialog");
+  if (dialog.open) dialog.close();
+});
 
 $("btn-clear-pinned-plots").addEventListener("click", () => {
   pinnedPlots.length = 0;
   renderPinnedPlots();
+  const dialog = $<HTMLDialogElement>("pinned-compare-dialog");
+  if (dialog.open) dialog.close();
 });
 
 function formatCoordVal(v: number): string {

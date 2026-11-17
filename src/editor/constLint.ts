@@ -14,7 +14,8 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
-import { replaceSymbolsInIdent } from "./symbols";
+import { ACCENT_ALT, replaceSymbolsInIdent } from "./symbols";
+import { scanIdentifiers } from "../refactor";
 
 export interface ConstLocation {
   cellIndex: number;
@@ -64,13 +65,15 @@ interface DecoEntry {
 }
 
 const KW_RE = /^(\s*)((?:export\s+const|const\s+export|export|const))\b/;
-const IDENT_PATTERN = `(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)`;
+const ACCENT_CALL_PAT = `\\\\(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}`;
+const TAIL_PAT = `(?:_${ACCENT_CALL_PAT}|[A-Za-z0-9]|_(?!\\\\))*`;
+const IDENT_PATTERN = `(?:\\\\(?:(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}|[A-Za-z]+)${TAIL_PAT}|[A-Za-z_]\\w*)`;
 const ASSIGN_LINE_RE = new RegExp(
   `^(\\s*)(?:(export\\s+const|const\\s+export|export|const)\\s+)?(${IDENT_PATTERN}(?:\\s*,\\s*${IDENT_PATTERN})*)\\s*(\\+=|-=|\\*=|\\/=|%=|\\*\\*=|//=|=(?!=))`,
 );
 const BARE_CONST_RE = /^\s*(?:export\s+const|const\s+export|const)\b([^=]*)$/;
 const DEL_OR_FOR_RE = new RegExp(`^\\s*(?:del|for)\\s+(${IDENT_PATTERN})\\b`);
-const UNIT_LITERAL_RE = /(?<=\d)\s*(\[[^[\]\n]+\])/g;
+const UNIT_LITERAL_RE = /(?:(?<=\d)|(?<=->))\s*(\[[^[\]\n]+\])/g;
 
 function buildConstDecorations(view: EditorView): DecorationSet {
   const entries: DecoEntry[] = [];
@@ -204,6 +207,25 @@ function buildConstDecorations(view: EditorView): DecorationSet {
           from: line.to,
           to: line.to,
           deco: Decoration.widget({ widget: new InlineErrorWidget(msg), side: 1 }),
+        });
+      }
+    }
+  }
+
+  // 5. Color all `const` variable declarations and references in the same gold color as LaTeX symbols
+  if (localConsts.size > 0 || notebookExportedConsts.size > 0) {
+    const idents = scanIdentifiers(doc.toString());
+    for (const tok of idents) {
+      if (tok.isAttr || tok.isKwarg || tok.inUnit) continue;
+      if (tok.name.startsWith("\\")) continue; // LaTeX symbols already render with .cm-math-symbol (#e5c07b)
+      const norm = normalizeIdent(tok.name);
+      const localLine = localConsts.get(norm);
+      const isGlobal = notebookExportedConsts.has(norm);
+      if (isGlobal || (localLine !== undefined && doc.lineAt(tok.start).number >= localLine)) {
+        entries.push({
+          from: tok.start,
+          to: tok.end,
+          deco: Decoration.mark({ class: "cm-const-var" }),
         });
       }
     }

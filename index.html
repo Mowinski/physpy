@@ -70,7 +70,10 @@
           <div id="pinned-plots-bar" class="pinned-plots-bar" hidden>
             <div class="pinned-plots-header">
               <span>📌 Pinned Plots (<span id="pinned-plots-count">0</span>)</span>
-              <button id="btn-clear-pinned-plots" type="button" class="pinned-clear-btn">Clear All</button>
+              <div class="pinned-plots-header-actions">
+                <button id="btn-compare-pinned-plots" type="button" class="pinned-clear-btn primary">⚖ Compare</button>
+                <button id="btn-clear-pinned-plots" type="button" class="pinned-clear-btn">Clear All</button>
+              </div>
             </div>
             <div id="pinned-plots-grid" class="pinned-plots-grid"></div>
           </div>
@@ -561,6 +564,17 @@
           <div id="plot-lb-measure-box" class="plot-lb-measure-box" hidden></div>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="pinned-compare-dialog" class="pinned-compare-modal">
+      <div class="plot-lightbox-toolbar">
+        <span class="plot-lightbox-title">⚖ Compare Pinned Plots</span>
+        <span class="plot-lightbox-coords">2 plots visible side-by-side · Scroll horizontally to compare · Click name to rename</span>
+        <div class="plot-lightbox-actions">
+          <button type="button" id="btn-compare-close">✕</button>
+        </div>
+      </div>
+      <div id="pinned-compare-strip" class="pinned-compare-strip"></div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

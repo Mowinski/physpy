@@ -136,3 +136,29 @@ def test_unit_conversion_arrow():
     )
     assert res.code == 0, res.stderr
     assert res.stdout.strip() == "1500 mV 5 mV 1.5 V"
+
+
+def test_builtin_physical_constants():
+    from physpy.units import PHYSICAL_CONSTANTS, get_physical_constant
+
+    # Every constant in physical_constants.json must resolve to a valid pint Quantity.
+    for name in PHYSICAL_CONSTANTS:
+        q = get_physical_constant(name)
+        assert hasattr(q, "units")
+
+    session = NotebookSession()
+    res = session.run_cell(
+        "g = 10\n"
+        "h = 2 [m]\n"
+        "v = (2 * \\const{g} * h)**0.5\n"
+        "p = \\const{atm} -> [hPa]\n"
+        "print(f'{v:.2f}', '|', f'{p:.2f}', '|', g)\n"
+    )
+    assert res.code == 0, res.stderr
+    assert "6.26 m/s | 1013.25 hPa | 10" in res.stdout
+
+
+def test_unknown_physical_constant_raises():
+    res = NotebookSession().run_cell("x = \\const{nope}\n")
+    assert res.code == 2
+    assert "unknown physical constant" in res.stderr

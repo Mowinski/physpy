@@ -1,3 +1,5 @@
+import { ACCENT_ALT } from "./editor/symbols";
+
 export interface IdentOccurrence {
   start: number;
   end: number;
@@ -50,7 +52,10 @@ const KEYWORDS = new Set([
 ]);
 
 const STRING_PREFIX_RE = /^([rbuft]{0,2})('''|"""|'|")/i;
-const LATEX_IDENT_RE = /^\\[A-Za-z]+\w*/;
+const ACCENT_CALL_SOURCE = `\\\\(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}`;
+const TAIL_SOURCE = `(?:_${ACCENT_CALL_SOURCE}|[A-Za-z0-9]|_(?!\\\\))*`;
+const LATEX_IDENT_SOURCE = `\\\\(?:(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}|[A-Za-z]+)${TAIL_SOURCE}`;
+const LATEX_IDENT_RE = new RegExp(`^${LATEX_IDENT_SOURCE}`);
 const PLAIN_IDENT_RE = /^[A-Za-z_]\w*/;
 const NUMBER_RE = /^(?:\d+(?:_\d+)*(?:\.\d*(?:_\d+)*)?|\.\d+(?:_\d+)*)(?:[eE][+-]?\d+(?:_\d+)*)?/;
 
@@ -190,8 +195,14 @@ function scanCodeSlice(
       }
     }
 
-    // LaTeX symbol identifier: \alpha, \V_0, \alpha_AB_o
+    // Built-in physical constant: \const{g}, \const{k_B}, ...
     if (c === "\\") {
+      const mConst = /^\\const\{[A-Za-z0-9_]+\}/.exec(src.slice(i, endOffset));
+      if (mConst) {
+        i += mConst[0].length;
+        lastWasNumber = false;
+        continue;
+      }
       const mLatex = LATEX_IDENT_RE.exec(src.slice(i, endOffset));
       if (mLatex) {
         const name = mLatex[0];
@@ -296,7 +307,7 @@ export function validateVariableName(name: string): { ok: true; name: string } |
   if (!trimmed) {
     return { ok: false, reason: "Nazwa zmiennej nie może być pusta." };
   }
-  if (!/^(?:\\[A-Za-z]+\w*|[A-Za-z_]\w*)$/.test(trimmed)) {
+  if (!new RegExp(`^(?:${LATEX_IDENT_SOURCE}|[A-Za-z_]\\w*)$`).test(trimmed)) {
     return {
       ok: false,
       reason: "Niepoprawna nazwa zmiennej (dozwolone litery, cyfry, _, lub symbol \\nazwa).",
