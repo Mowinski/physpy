@@ -64,7 +64,7 @@ interface DecoEntry {
   deco: Decoration;
 }
 
-const KW_RE = /^(\s*)((?:export\s+const|const\s+export|export|const))\b/;
+const KW_RE = /^(\s*)((?:export\s+const|const\s+export|export\s+struct|export|const|struct))\b/;
 const ACCENT_CALL_PAT = `\\\\(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}`;
 const TAIL_PAT = `(?:_${ACCENT_CALL_PAT}|[A-Za-z0-9]|_(?!\\\\))*`;
 const IDENT_PATTERN = `(?:\\\\(?:(?:${ACCENT_ALT})\\{(?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*)\\}|[A-Za-z]+)${TAIL_PAT}|[A-Za-z_]\\w*)`;

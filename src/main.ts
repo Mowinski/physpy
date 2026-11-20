@@ -8,6 +8,7 @@ import * as backend from "./backend";
 import {
   createEditor,
   createViewer,
+  reconfigureEditorCodeMode,
   reconfigureEditorIndent,
   setDebugLine,
   setDoc,
@@ -17,7 +18,7 @@ import {
 import { replaceSymbolsInIdent } from "./editor/symbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
-import { renderMarkdownWithLatex } from "./markdownLatex";
+import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
 import {
   generateStaticNotebookHtml,
@@ -227,6 +228,14 @@ const status = $<HTMLSpanElement>("status");
 const pythonPane = $<HTMLDivElement>("python-pane");
 const variablesDrawerEl = $<HTMLElement>("variables-drawer");
 const variablesTbodyEl = $<HTMLTableSectionElement>("variables-tbody");
+const varsSortNameEl = $<HTMLTableCellElement>("vars-sort-name");
+const varsSortDefinedEl = $<HTMLTableCellElement>("vars-sort-defined");
+const varInspectDialog = $<HTMLDialogElement>("var-inspect-dialog");
+const varInspectNameEl = $<HTMLSpanElement>("var-inspect-name");
+const varInspectTypeEl = $<HTMLSpanElement>("var-inspect-type");
+const varInspectPreEl = $<HTMLPreElement>("var-inspect-pre");
+const btnVarInspectCopy = $<HTMLButtonElement>("btn-var-inspect-copy");
+const btnVarInspectClose = $<HTMLButtonElement>("btn-var-inspect-close");
 const variablesCountEl = $<HTMLSpanElement>("variables-count");
 const btnVariablesEl = $<HTMLButtonElement>("btn-variables");
 const btnWarningsEl = $<HTMLButtonElement>("btn-warnings");
@@ -2610,6 +2619,94 @@ function renderNotebookWarnings(warnings: NotebookWarning[]) {
   }
 }
 
+type VariablesSortKey = "name" | "defined";
+let variablesSortKey: VariablesSortKey = "name";
+let variablesSortDir: "asc" | "desc" = "asc";
+const PINNED_VARS_STORAGE_KEY = "physpy.pinnedVars";
+const pinnedVariables = new Set<string>(
+  (() => {
+    try {
+      const raw = localStorage.getItem(PINNED_VARS_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  })(),
+);
+
+function savePinnedVariables(): void {
+  try {
+    localStorage.setItem(PINNED_VARS_STORAGE_KEY, JSON.stringify([...pinnedVariables]));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+async function openVarInspectModal(name: string, fallbackVal: string): Promise<void> {
+  varInspectNameEl.textContent = name;
+  varInspectTypeEl.hidden = true;
+  varInspectTypeEl.textContent = "";
+  varInspectPreEl.textContent = fallbackVal;
+  if (!varInspectDialog.open) {
+    varInspectDialog.showModal();
+  }
+  try {
+    const info = await backend.inspectVariable(name);
+    if (info && varInspectNameEl.textContent === name) {
+      varInspectPreEl.textContent = info.value;
+      if (info.type) {
+        varInspectTypeEl.textContent = info.type;
+        varInspectTypeEl.hidden = false;
+      }
+    }
+  } catch {
+    // Keep fallback value if worker is not running
+  }
+}
+
+btnVarInspectClose.addEventListener("click", () => varInspectDialog.close());
+varInspectDialog.addEventListener("click", (e) => {
+  if (e.target === varInspectDialog) varInspectDialog.close();
+});
+btnVarInspectCopy.addEventListener("click", async () => {
+  const txt = varInspectPreEl.textContent ?? "";
+  if (!txt) return;
+  try {
+    await navigator.clipboard.writeText(txt);
+    btnVarInspectCopy.textContent = "✓ Copied";
+    window.setTimeout(() => {
+      btnVarInspectCopy.textContent = "📋 Copy";
+    }, 1200);
+  } catch {
+    // ignore clipboard error
+  }
+});
+
+function updateVariablesSortHeaders(): void {
+  const arrow = variablesSortDir === "asc" ? "▲" : "▼";
+  const setCol = (el: HTMLTableCellElement, active: boolean) => {
+    el.classList.toggle("is-sorted", active);
+    const ind = el.querySelector<HTMLSpanElement>(".sort-indicator");
+    if (ind) ind.textContent = active ? arrow : "";
+  };
+  setCol(varsSortNameEl, variablesSortKey === "name");
+  setCol(varsSortDefinedEl, variablesSortKey === "defined");
+}
+
+function toggleVariablesSort(key: VariablesSortKey): void {
+  if (variablesSortKey === key) {
+    variablesSortDir = variablesSortDir === "asc" ? "desc" : "asc";
+  } else {
+    variablesSortKey = key;
+    variablesSortDir = "asc";
+  }
+  updateVariablesSortHeaders();
+  renderSessionExports();
+}
+
+varsSortNameEl.addEventListener("click", () => toggleVariablesSort("name"));
+varsSortDefinedEl.addEventListener("click", () => toggleVariablesSort("defined"));
+
 function renderSessionExports(allExports?: Record<string, string>) {
   if (allExports !== undefined) {
     sessionRuntimeExports = allExports;
@@ -2623,7 +2720,24 @@ function renderSessionExports(allExports?: Record<string, string>) {
   }
 
   variablesTbodyEl.innerHTML = "";
-  const items = [...scanned.values()];
+  const dir = variablesSortDir === "asc" ? 1 : -1;
+  const items = [...scanned.values()].sort((a, b) => {
+    const aPinned = pinnedVariables.has(a.name) ? 0 : 1;
+    const bPinned = pinnedVariables.has(b.name) ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    if (variablesSortKey === "defined") {
+      const aOcc = a.occurrences[0];
+      const bOcc = b.occurrences[0];
+      const aCell = aOcc ? aOcc.cellIndex : Number.MAX_SAFE_INTEGER;
+      const bCell = bOcc ? bOcc.cellIndex : Number.MAX_SAFE_INTEGER;
+      if (aCell !== bCell) return (aCell - bCell) * dir;
+      const aLine = aOcc ? aOcc.line : Number.MAX_SAFE_INTEGER;
+      const bLine = bOcc ? bOcc.line : Number.MAX_SAFE_INTEGER;
+      if (aLine !== bLine) return (aLine - bLine) * dir;
+    }
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }) * dir;
+  });
+  updateVariablesSortHeaders();
 
   variablesCountEl.textContent = String(items.length);
   variablesCountEl.hidden = items.length === 0;
@@ -2643,13 +2757,32 @@ function renderSessionExports(allExports?: Record<string, string>) {
       const val = sessionRuntimeExports[item.name];
 
       const tr = document.createElement("tr");
+      const isPinned = pinnedVariables.has(item.name);
+      if (isPinned) tr.classList.add("row-pinned");
 
       const th = document.createElement("th");
       th.scope = "row";
       th.className = "var-name";
+
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.className = isPinned ? "var-pin-btn is-pinned" : "var-pin-btn";
+      pinBtn.textContent = "📌";
+      pinBtn.title = isPinned ? "Odepnij zmienną" : "Przypnij zmienną na górze";
+      pinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (pinnedVariables.has(item.name)) {
+          pinnedVariables.delete(item.name);
+        } else {
+          pinnedVariables.add(item.name);
+        }
+        savePinnedVariables();
+        renderSessionExports();
+      });
+
       const nameSpan = document.createElement("span");
       nameSpan.textContent = item.name;
-      th.append(nameSpan);
+      th.append(pinBtn, nameSpan);
       if (item.isConst) {
         const cBadge = document.createElement("span");
         cBadge.className = "const-badge";
@@ -2667,7 +2800,22 @@ function renderSessionExports(allExports?: Record<string, string>) {
       const tdVal = document.createElement("td");
       tdVal.className = "var-value";
       if (hasValue) {
-        tdVal.textContent = val;
+        const valWrap = document.createElement("div");
+        valWrap.className = "var-value-wrap";
+        const valText = document.createElement("span");
+        valText.className = "var-value-text";
+        valText.textContent = val;
+        const inspectBtn = document.createElement("button");
+        inspectBtn.type = "button";
+        inspectBtn.className = "var-inspect-btn";
+        inspectBtn.textContent = "⤢";
+        inspectBtn.title = "Pokaż pełną wartość w oknie";
+        inspectBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          void openVarInspectModal(item.name, val);
+        });
+        valWrap.append(valText, inspectBtn);
+        tdVal.append(valWrap);
       } else {
         const pending = document.createElement("span");
         pending.className = "var-pending";
@@ -3098,6 +3246,7 @@ function applyCellKindUI(cell: CellState) {
   cell.el.classList.remove("kind-code", "kind-markdown", "kind-media", "kind-deps");
   cell.el.classList.add(`kind-${cell.kind}`);
   cell.kindSelect.value = cell.kind;
+  reconfigureEditorCodeMode(cell.view, cell.kind === "code");
 
   if (cell.kind === "code") {
     cell.editorHost.hidden = false;
@@ -3351,6 +3500,9 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   aiContextSpan.textContent = "Context";
   aiContextLabel.append(aiContextCheck, aiContextSpan);
 
+  const aiTokenEstEl = document.createElement("span");
+  aiTokenEstEl.className = "cell-ai-token-est";
+
   const btnAiGenerate = document.createElement("button");
   btnAiGenerate.type = "button";
   btnAiGenerate.className = "cell-btn run cell-ai-generate";
@@ -3362,7 +3514,14 @@ function createCellCard(initial: ParsedCell, insertAt?: number): CellState {
   btnAiClose.textContent = "✕";
   btnAiClose.title = "Close AI prompt";
 
-  aiPromptRow.append(aiBadge, aiPromptInput, aiContextLabel, btnAiGenerate, btnAiClose);
+  aiPromptRow.append(
+    aiBadge,
+    aiPromptInput,
+    aiContextLabel,
+    aiTokenEstEl,
+    btnAiGenerate,
+    btnAiClose,
+  );
 
   const aiStatusBar = document.createElement("div");
   aiStatusBar.className = "cell-ai-status";
@@ -3701,9 +3860,11 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     const textToCopy =
       state.lastTables.length > 0 && state.tableViewMode === "table"
         ? tablesToTsv(state.lastTables)
-        : (!outputPre.hidden && outputPre.textContent) ||
+        : (!outputPre.hidden && (outputPre.dataset.rawOutput || outputPre.textContent)) ||
           (!latexWrap.hidden && latexWrap.dataset.latex) ||
-          (!exportedBar.hidden && exportedBar.textContent?.replace(/^↳ exported:\s*/, "")) ||
+          (!exportedBar.hidden &&
+            (exportedBar.dataset.rawExported ||
+              exportedBar.textContent?.replace(/^↳ exported:\s*/, ""))) ||
           (state.lastTables.length > 0
             ? state.lastTables.map((t) => t.raw_text).join("\n\n")
             : "") ||
@@ -3730,6 +3891,43 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
 
   let proposedAiCode = "";
 
+  const buildAiContext = () => {
+    const idx = cells.indexOf(state);
+    const contextBefore = aiContextCheck.checked
+      ? cells
+          .slice(0, Math.max(0, idx))
+          .filter((c) => c.kind === "code" && c.view.state.doc.toString().trim().length > 0)
+          .map(
+            (c, i) =>
+              `# --- Cell ${i + 1}${c.title ? `: ${c.title}` : ""} ---\n${c.view.state.doc.toString()}`,
+          )
+          .join("\n\n")
+      : "";
+    const exportsCtx = aiContextCheck.checked ? { ...sessionRuntimeExports } : {};
+    return { contextBefore, exportsCtx };
+  };
+
+  const formatTokCount = (n: number): string =>
+    n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+  const updateAiTokenEstimate = () => {
+    const { contextBefore, exportsCtx } = buildAiContext();
+    const baseChars =
+      420 + // system prompt overhead
+      aiPromptInput.value.length +
+      state.view.state.doc.length;
+    const ctxChars =
+      contextBefore.length +
+      Object.entries(exportsCtx).reduce((acc, [k, v]) => acc + k.length + v.length + 6, 0);
+    const estTokens = Math.max(1, Math.round((baseChars + ctxChars) / 3.8));
+    const estNoCtx = Math.max(1, Math.round(baseChars / 3.8));
+    aiTokenEstEl.textContent = `~${formatTokCount(estTokens)} tok`;
+    aiTokenEstEl.title = aiContextCheck.checked
+      ? `Szacowana liczba wysyłanych tokenów: ~${estTokens} (bez Context: ~${estNoCtx})`
+      : `Szacowana liczba wysyłanych tokenów: ~${estTokens} (Context wyłączony)`;
+    aiTokenEstEl.classList.toggle("is-heavy", estTokens >= 4000);
+  };
+
   const openAiPanel = (open?: boolean) => {
     if (state.kind !== "code") return;
     state.aiOpen = open !== undefined ? open : !state.aiOpen;
@@ -3738,6 +3936,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     }
     state.aiWrap.hidden = !state.aiOpen;
     if (state.aiOpen) {
+      updateAiTokenEstimate();
       state.aiPromptInput.focus();
     } else {
       state.view.focus();
@@ -3755,21 +3954,14 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       return;
     }
 
-    const idx = cells.indexOf(state);
-    const contextBefore = aiContextCheck.checked
-      ? cells
-          .slice(0, Math.max(0, idx))
-          .filter((c) => c.kind === "code" && c.view.state.doc.toString().trim().length > 0)
-          .map((c, i) => `# --- Cell ${i + 1}${c.title ? `: ${c.title}` : ""} ---\n${c.view.state.doc.toString()}`)
-          .join("\n\n")
-      : "";
-    const exportsCtx = aiContextCheck.checked ? { ...sessionRuntimeExports } : {};
+    const { contextBefore, exportsCtx } = buildAiContext();
+    updateAiTokenEstimate();
 
     btnAiGenerate.disabled = true;
     btnAiGenerate.textContent = "Thinking…";
     aiStatusBar.hidden = false;
     aiStatusBar.className = "cell-ai-status loading";
-    aiStatusBar.textContent = "Asking Gemini…";
+    aiStatusBar.textContent = `Asking Gemini (${aiTokenEstEl.textContent})…`;
     aiProposal.hidden = true;
 
     try {
@@ -3782,8 +3974,12 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       });
       proposedAiCode = res.code;
       aiStatusBar.hidden = true;
+      const tokParts: string[] = [];
+      if (typeof res.input_tokens === "number") tokParts.push(`↑ ${res.input_tokens} tok`);
+      if (typeof res.output_tokens === "number") tokParts.push(`↓ ${res.output_tokens} tok`);
+      const tokSuffix = tokParts.length > 0 ? ` [${tokParts.join(" · ")}]` : "";
       aiExplanation.textContent =
-        res.explanation || `Suggested code${res.model ? ` (${res.model})` : ""}`;
+        (res.explanation || `Suggested code${res.model ? ` (${res.model})` : ""}`) + tokSuffix;
       aiPreviewPre.textContent = proposedAiCode;
       aiProposal.hidden = false;
     } catch (err) {
@@ -3808,9 +4004,11 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
   btnAi.addEventListener("click", () => openAiPanel());
   btnAiClose.addEventListener("click", () => openAiPanel(false));
   btnAiGenerate.addEventListener("click", () => void runAiRequest());
+  aiContextCheck.addEventListener("change", () => updateAiTokenEstimate());
   aiPromptInput.addEventListener("input", () => {
     aiPromptInput.style.height = "auto";
     aiPromptInput.style.height = `${Math.min(120, Math.max(30, aiPromptInput.scrollHeight))}px`;
+    updateAiTokenEstimate();
   });
   aiPromptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -4228,6 +4426,8 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
           state.plotsWrap.innerHTML = "";
           state.latexWrap.innerHTML = "";
           state.exportedBar.hidden = true;
+          state.exportedBar.classList.remove("is-expanded");
+          delete state.exportedBar.dataset.rawExported;
           renumberCells();
           if (state.collapseMode === "output-only") {
             setCellCollapseMode(state, "collapsed");
@@ -4377,6 +4577,81 @@ function snapshotNotebookOutputs(): NotebookOutputsFile {
   };
 }
 
+function formatExportedNumberPreview(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith("<")) return raw;
+  return raw.replace(
+    /(?<![A-Za-z0-9_.])(-?\d+\.\d+(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_])/g,
+    (full) => {
+      const n = Number(full);
+      if (!Number.isFinite(n)) return full;
+      const clean = Number(n.toPrecision(12));
+      if (clean === 0) return "0";
+      if (Math.abs(clean) >= 1e6 || Math.abs(clean) < 1e-4) {
+        return Number(clean.toPrecision(5)).toExponential();
+      }
+      return String(Number(clean.toPrecision(6)));
+    },
+  );
+}
+
+function renderExportedBar(bar: HTMLDivElement, exported: Record<string, string>): void {
+  const entries = Object.entries(exported).sort(([a], [b]) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+  );
+  bar.innerHTML = "";
+  if (entries.length === 0) {
+    bar.hidden = true;
+    bar.classList.remove("is-expanded");
+    delete bar.dataset.rawExported;
+    return;
+  }
+
+  bar.hidden = false;
+  bar.dataset.rawExported = entries.map(([k, v]) => `${k} = ${v}`).join(", ");
+
+  const summary = document.createElement("button");
+  summary.type = "button";
+  summary.className = "cell-exported-summary";
+  const updateArrow = () => {
+    const expanded = bar.classList.contains("is-expanded");
+    summary.textContent = `${expanded ? "▾" : "▸"} ↳ exported (${entries.length})`;
+  };
+  updateArrow();
+  summary.addEventListener("click", () => {
+    bar.classList.toggle("is-expanded");
+    updateArrow();
+  });
+
+  const tableWrap = document.createElement("div");
+  tableWrap.className = "cell-exported-table-wrap";
+
+  const table = document.createElement("table");
+  table.className = "cell-exported-table";
+  const tbody = document.createElement("tbody");
+
+  for (const [name, rawVal] of entries) {
+    const tr = document.createElement("tr");
+    const tdName = document.createElement("td");
+    tdName.className = "cell-exported-name";
+    tdName.textContent = name;
+
+    const tdVal = document.createElement("td");
+    tdVal.className = "cell-exported-val";
+    tdVal.textContent = formatExportedNumberPreview(rawVal);
+    if (tdVal.textContent !== rawVal) {
+      tdVal.title = rawVal;
+    }
+
+    tr.append(tdName, tdVal);
+    tbody.append(tr);
+  }
+
+  table.append(tbody);
+  tableWrap.append(table);
+  bar.append(summary, tableWrap);
+}
+
 function applySavedCellOutput(
   cell: CellState,
   out: SavedCellOutput,
@@ -4386,15 +4661,7 @@ function applySavedCellOutput(
   cell.runCount = out.runCount;
   cell.outputStale = fromDisk ? true : Boolean(out.outputStale);
   cell.lastExported = { ...(out.exported ?? {}) };
-  const exportedEntries = Object.entries(cell.lastExported);
-  if (exportedEntries.length > 0) {
-    cell.exportedBar.hidden = false;
-    cell.exportedBar.textContent =
-      "↳ exported: " + exportedEntries.map(([k, v]) => `${k} = ${v}`).join(", ");
-  } else {
-    cell.exportedBar.hidden = true;
-    cell.exportedBar.textContent = "";
-  }
+  renderExportedBar(cell.exportedBar, cell.lastExported);
 
   cell.lastTables = out.tables ?? [];
   cell.lastFullStdout = out.stdout ?? "";
@@ -4534,7 +4801,7 @@ function applySavedCellOutput(
     cell.lastFullStdout ||
       cell.lastStderr ||
       cell.lastLatex ||
-      exportedEntries.length > 0 ||
+      Object.keys(cell.lastExported).length > 0 ||
       cell.lastTables.length > 0,
   );
   const hasOut = Boolean(hasCopyableText || plots.length > 0);
@@ -4864,13 +5131,23 @@ function renderCellTables(container: HTMLDivElement, tables: backend.TableOutput
 
 function setOutputPreContent(pre: HTMLPreElement, stdout: string, stderr: string): void {
   pre.innerHTML = "";
-  if (stdout) pre.append(stdout);
+  const rawParts: string[] = [];
+  if (stdout) {
+    rawParts.push(stdout);
+    if (stdout.includes("$")) {
+      pre.innerHTML = renderStdoutWithLatexHtml(stdout);
+    } else {
+      pre.append(stdout);
+    }
+  }
   if (stderr) {
+    rawParts.push(stderr);
     const err = document.createElement("span");
     err.className = "stderr";
     err.textContent = stderr;
     pre.append(err);
   }
+  pre.dataset.rawOutput = rawParts.join(stdout && stderr && !stdout.endsWith("\n") ? "\n" : "");
 }
 
 function applyCellOutputView(cell: CellState): void {
@@ -5243,6 +5520,9 @@ async function resetSession(quiet = false): Promise<boolean> {
     c.plotsWrap.innerHTML = "";
     c.plotsWrap.hidden = true;
     c.exportedBar.hidden = true;
+    c.exportedBar.classList.remove("is-expanded");
+    delete c.exportedBar.dataset.rawExported;
+    c.exportedBar.innerHTML = "";
     c.latexWrap.hidden = true;
     delete c.latexWrap.dataset.latex;
     c.latexWrap.innerHTML = "";

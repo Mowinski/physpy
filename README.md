@@ -22,6 +22,10 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 | `1000.0 [kg/m^3]`, `p -> [kPa]` | `__physpy_unit__(1000.0, 'kg/m^3')`, `__physpy_convert__(p, 'kPa')` | Physical units powered by `pint` (`pint.Quantity`) with automatic dimensional analysis and `-> [unit]` conversion |
 | `sqrt(x^2 + y^2)`, `np.sqrt(...)` | `sqrt(x**2 + y**2)` | Rendered live in the editor as $\sqrt{x^2 + y^2}$ via KaTeX |
 | `const g = 9.81 [m/s^2]` | immutable constant | Blocks reassignment at the AST level, highlights `const` variables in gold, and **immediately underlines reassignment attempts in red in the editor** |
+| `struct Pret:` with `a: [mm]` | auto `@dataclass` | Zero-boilerplate data structures with automatic `= None` defaults and unit conversion on field assignment |
+| `Pomiar(9.885 [mm], 0.033 [mm])` | `Pomiar` | Measurement value + uncertainty with `-> [unit]` conversion, Gaussian error propagation, and `.rel` (%) |
+| `table df`, `table [Pret(...), ...]` | `__physpy_table__(...)` | Interactive tables from `pandas` DataFrames/Series or lists of `struct` / `@dataclass` / `dict` objects |
+| `print(f'$m_{i}$: ...')` | KaTeX in cell stdout | Inline (`$...$`) and display (`$$...$$`) LaTeX math rendered directly inside cell output and HTML export |
 | `export x = ...`, `export const ...`, `export import ...` | stored in `__exports__` | Explicit sharing of variables, constants, functions, classes, and imports across `# %%` cells |
 | `2(\rho_0 + g)` | `2*(ρ_0 + g)` | Implicit multiplication after numeric literals before `(` |
 | `x^2`, `x^(n+1)` | `x**2`, `x**(n+1)` | Exponentiation with `^` rendered as superscripts ($x^2$, $x^{n+1}$) in the editor |
@@ -66,7 +70,8 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 - **Single-File Static HTML Export (`⇧⌘E`)** — export notebooks to standalone, shareable HTML files with KaTeX math rendering, interactive collapsible code blocks, and embedded plots.
 - **Collapsible File Explorer (`⌘B`)** — browse workspace folders and create, rename, or delete files and directories via the context menu.
 - **VS Code-Style Editor Tabs** — open multiple files in tabs (`⌘N`, `⌘W`, middle-click to close, right-click tab context menu).
-- **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, showing current runtime values (including `pint` units and NumPy arrays), pending unexecuted exports, and duplicate export warnings.
+- **Variables Drawer (`⌘J`)** — live static + runtime scanner for all `export` and `export const` declarations in the file, sortable by **Variable** name or **Defined in** location, showing current runtime values, pending unexecuted exports, and duplicate export warnings.
+- **Compact `exported (N)` Output Bar** — collapsed by default to a single line and expands on click into an alphabetically sorted, cleanly formatted table of cell exports.
 - **Python Interpreter Selector** — modal dialog to switch the active Python environment (`.venv`, Conda, Homebrew, system Python, or custom binary path).
 - **Transpiled Python Preview (`⌘P`)** — live side panel displaying the generated plain Python code.
 
@@ -94,6 +99,7 @@ Write clean mathematical and physical expressions in plain ASCII (`\rho_0`, `x^2
 │   │   ├── consts.py           # `const` keyword rewrite + AST immutability enforcement
 │   │   ├── exports.py          # `export` keyword rewrite across notebook cells
 │   │   ├── units.py            # Physical unit literals `1000.0 [kg/m^3]` (powered by `pint`)
+│   │   ├── structs.py          # `struct` syntax (auto `@dataclass` + unit fields) and `Pomiar` type
 │   │   ├── plotting.py         # `plot plt` / `plot fig` command (matplotlib → base64 PNG)
 │   │   ├── implicit_mul.py     # Implicit multiplication `2(a + b)` → `2*(a + b)`
 │   │   ├── power.py            # Exponentiation `x^2` → `x**2`

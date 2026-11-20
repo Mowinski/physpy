@@ -8,6 +8,7 @@ Supports:
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 from typing import Any
@@ -24,8 +25,16 @@ def rewrite_tables(src: str) -> str:
     return rewrite_stmt_command(src, TABLE_KW, TABLE_FN)
 
 
+def _is_dataclass_instance(val: Any) -> bool:
+    return dataclasses.is_dataclass(val) and not isinstance(val, type)
+
+
 def is_tabular_object(val: Any) -> bool:
-    """Return True when ``val`` is a loaded ``pandas.DataFrame`` or ``pandas.Series``."""
+    """Return True when ``val`` is a DataFrame/Series or a non-empty list of structs/dicts."""
+    if isinstance(val, (list, tuple)) and len(val) > 0:
+        first = val[0]
+        if _is_dataclass_instance(first) or isinstance(first, dict):
+            return True
     pd = sys.modules.get("pandas")
     if pd is None:
         return False
@@ -111,8 +120,104 @@ def _col_is_numeric(ser: Any, pd: Any, has_unit: bool) -> bool:
     return False
 
 
+def _is_pomiar(val: Any) -> bool:
+    return type(val).__name__ == "Pomiar" and hasattr(val, "val") and hasattr(val, "u")
+
+
+def _extract_records_table(records: list[Any] | tuple[Any, ...], max_rows: int) -> dict[str, Any]:
+    total_rows = len(records)
+    truncated = total_rows > max_rows
+    view = list(records[:max_rows]) if truncated else list(records)
+
+    dict_rows: list[dict[str, Any]] = []
+    col_names: list[str] = []
+    seen_cols: set[str] = set()
+    for item in view:
+        if _is_dataclass_instance(item):
+            row = {f.name: getattr(item, f.name) for f in dataclasses.fields(item)}
+        elif isinstance(item, dict):
+            row = item
+        else:
+            row = {"value": item}
+        dict_rows.append(row)
+        for k in row.keys():
+            ks = str(k)
+            if ks not in seen_cols:
+                seen_cols.add(ks)
+                col_names.append(ks)
+
+    columns_meta: list[dict[str, Any]] = []
+    col_cells: list[list[str]] = []
+
+    for col in col_names:
+        raw_vals = [r.get(col) for r in dict_rows]
+        # Infer shared unit across Quantity or Pomiar items
+        shared_unit = None
+        has_non_null = False
+        uniform_unit = True
+        for v in raw_vals:
+            if v is None:
+                continue
+            has_non_null = True
+            u_obj = v.units if _is_quantity(v) else (v.units if _is_pomiar(v) else None)
+            if u_obj is None:
+                uniform_unit = False
+                break
+            if shared_unit is None:
+                shared_unit = u_obj
+            elif u_obj != shared_unit:
+                uniform_unit = False
+                break
+        if not has_non_null or not uniform_unit:
+            shared_unit = None
+
+        unit_str = _format_unit(shared_unit)
+        is_numeric = has_non_null and all(
+            v is None or _is_quantity(v) or _is_pomiar(v) or isinstance(v, (int, float))
+            for v in raw_vals
+        )
+
+        formatted_col: list[str] = []
+        for v in raw_vals:
+            if v is None:
+                formatted_col.append("")
+            elif shared_unit is not None and _is_quantity(v):
+                formatted_col.append(_format_scalar(v.magnitude, None))
+            elif shared_unit is not None and _is_pomiar(v):
+                v_mag, u_mag, _ = v._parts()
+                formatted_col.append(f"{v_mag:.6g} ± {u_mag:.6g}")
+            else:
+                formatted_col.append(_format_scalar(v, None))
+
+        columns_meta.append({"name": col, "unit": unit_str, "is_numeric": is_numeric})
+        col_cells.append(formatted_col)
+
+    rows_out: list[dict[str, Any]] = []
+    for row_pos in range(len(dict_rows)):
+        rows_out.append(
+            {
+                "index": str(row_pos),
+                "cells": [col_cells[c][row_pos] for c in range(len(columns_meta))],
+            }
+        )
+
+    return {
+        "index_name": "",
+        "columns": columns_meta,
+        "rows": rows_out,
+        "total_rows": total_rows,
+        "truncated": truncated,
+        "raw_text": "\n".join(str(r) for r in view),
+    }
+
+
 def extract_table_data(val: Any, max_rows: int = MAX_TABLE_ROWS) -> dict[str, Any]:
-    """Serialize a ``pandas.DataFrame`` / ``pandas.Series`` (or list of dicts) into table JSON."""
+    """Serialize a ``pandas.DataFrame`` / ``pandas.Series`` or list of structs/dicts into table JSON."""
+    if isinstance(val, (list, tuple)) and (
+        len(val) == 0 or _is_dataclass_instance(val[0]) or isinstance(val[0], dict)
+    ):
+        return _extract_records_table(val, max_rows)
+
     pd = sys.modules.get("pandas")
     if pd is None:
         try:
@@ -127,9 +232,6 @@ def extract_table_data(val: Any, max_rows: int = MAX_TABLE_ROWS) -> dict[str, An
     elif isinstance(val, pd.DataFrame):
         df = val
         raw_text = str(val)
-    elif isinstance(val, (list, tuple)) and (len(val) == 0 or isinstance(val[0], dict)):
-        df = pd.DataFrame(val)
-        raw_text = str(df)
     else:
         raise TypeError(f"table expected a pandas DataFrame or Series, got {type(val).__name__}")
 

@@ -108,7 +108,33 @@ def _short_repr(val: Any) -> str:
             r = f"<{type(val).__name__}>"
         except BaseException:
             r = "<unknown>"
-    return r if len(r) <= 48 else r[:45] + "..."
+    r = " ".join(r.split())
+    return r if len(r) <= 240 else r[:237] + "..."
+
+
+def _full_repr(val: Any) -> str:
+    """Return an untruncated human-readable string representation of ``val``."""
+    import pprint
+
+    try:
+        np = sys.modules.get("numpy")
+        if hasattr(val, "_REGISTRY") and hasattr(val, "magnitude") and hasattr(val, "units"):
+            mag = val.magnitude
+            if np is not None and isinstance(mag, np.ndarray):
+                arr_str = np.array2string(mag, threshold=sys.maxsize, max_line_width=100)
+                unit_str = f"{val.units:~P}".strip()
+                return f"{arr_str} {unit_str}" if unit_str and unit_str != "dimensionless" else arr_str
+            return f"{val:~P}"
+        if np is not None and isinstance(val, np.ndarray):
+            return np.array2string(val, threshold=sys.maxsize, max_line_width=100)
+        if isinstance(val, (dict, list, tuple)):
+            return pprint.pformat(val, width=100, sort_dicts=False)
+        return repr(val)
+    except BaseException:
+        try:
+            return repr(val)
+        except BaseException:
+            return f"<{type(val).__name__}>"
 
 
 class NotebookSession:
@@ -123,11 +149,15 @@ class NotebookSession:
         except Exception:
             pass
         self.exports: dict[str, Any] = {}
-        self.consts: set[str] = set()
+        self.const_owners: dict[str, str] = {}
+
+    @property
+    def consts(self) -> set[str]:
+        return set(self.const_owners)
 
     def reset(self) -> None:
         self.exports.clear()
-        self.consts.clear()
+        self.const_owners.clear()
         linecache.clearcache()
         reset_ureg()
         try:
@@ -143,7 +173,18 @@ class NotebookSession:
         err_buf = io.StringIO()
 
         try:
-            tree = to_ast(source, filename, predeclared_consts=self.consts)
+            if filename == "<cell>":
+                other_consts = set(self.const_owners)
+                redeclarable = {name for name, owner in self.const_owners.items() if owner == filename}
+            else:
+                other_consts = {name for name, owner in self.const_owners.items() if owner != filename}
+                redeclarable = set()
+            tree = to_ast(
+                source,
+                filename,
+                predeclared_consts=other_consts,
+                redeclarable_consts=redeclarable,
+            )
             has_last_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
             if has_last_expr:
                 main_body = tree.body[:-1]
@@ -304,7 +345,11 @@ class NotebookSession:
 
         # Commit exports and consts from this cell into the session
         self.exports.update(cell_exports)
-        self.consts.update(cell_consts)
+        if exit_code == 0:
+            for stale in [k for k, owner in self.const_owners.items() if owner == filename and k not in cell_consts]:
+                del self.const_owners[stale]
+        for cname in cell_consts:
+            self.const_owners[cname] = filename
         return CellResult(
             stdout=out_buf.getvalue(),
             stderr=err_buf.getvalue(),
@@ -446,6 +491,20 @@ def run_worker() -> int:
                 [str(c) for c in raw_cells], line_length=line_length
             )
             resp = {"ok": True, "cells": formatted_cells}
+        elif cmd == "inspect_var":
+            var_name = str(req.get("name", ""))
+            if var_name in session.exports:
+                val = session.exports[var_name]
+                resp = {
+                    "ok": True,
+                    "info": {
+                        "name": var_name,
+                        "type": type(val).__name__,
+                        "value": _full_repr(val),
+                    },
+                }
+            else:
+                resp = {"ok": True, "info": None}
         elif cmd == "debug_start":
             from .debugger import debug_cell
 

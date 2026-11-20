@@ -147,9 +147,14 @@ def _const_set_update(names: list[str], loc_node: ast.AST) -> ast.Expr:
 class ConstTransformer(ast.NodeTransformer):
     """Enforce ``const`` immutability and strip ``__physpy_const__`` markers."""
 
-    def __init__(self, predeclared_consts: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        predeclared_consts: set[str] | None = None,
+        redeclarable_consts: set[str] | None = None,
+    ) -> None:
         super().__init__()
         self.consts: set[str] = set(predeclared_consts or ())
+        self.redeclarable_consts: set[str] = set(redeclarable_consts or ())
 
     def _guard_name(self, name: str, node: ast.AST) -> None:
         if name in self.consts:
@@ -172,6 +177,9 @@ class ConstTransformer(ast.NodeTransformer):
                 elts = slc.elts if isinstance(slc, ast.Tuple) else [slc]
                 names = [e.id for e in elts if isinstance(e, ast.Name)]
                 for name in names:
+                    if name in self.redeclarable_consts:
+                        self.redeclarable_consts.discard(name)
+                        continue
                     self._guard_name(name, raw_stmt)
                 raw_stmt.targets = raw_stmt.targets[1:]
                 # Visit value expressions before registering consts

@@ -101,6 +101,9 @@ export interface AiAssistResult {
   code: string;
   explanation?: string;
   model?: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
 }
 
 export interface GeminiModelInfo {
@@ -243,6 +246,15 @@ export const signaturePython = (params: {
     cellSource: params.cellSource,
     docSource: params.docSource,
   });
+
+export interface VariableInspectInfo {
+  name: string;
+  type: string;
+  value: string;
+}
+
+export const inspectVariable = (name: string) =>
+  invoke<VariableInspectInfo | null>("inspect_variable", { name });
 
 export const runCode = (source: string, path: string | null) =>
   invoke<RunOutput>("run_code", { source, path });

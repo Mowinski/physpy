@@ -15,6 +15,7 @@ from .percentages import rewrite_percentages
 from .pipe import PipeTransformer, rewrite_pipe_tokens
 from .plotting import rewrite_plots
 from .power import rewrite_powers
+from .structs import rewrite_structs
 from .symbols import rewrite_symbols
 from .tables import rewrite_tables
 from .units import rewrite_units
@@ -23,6 +24,7 @@ from .units import rewrite_units
 # rewrite_symbols must run first, because tokenize cannot handle `\rho`.
 SOURCE_PASSES: list[Callable[[str], str]] = [
     rewrite_symbols,
+    rewrite_structs,
     rewrite_number_spaces,
     rewrite_consts,
     rewrite_exports,
@@ -55,11 +57,12 @@ def to_ast(
     src: str,
     filename: str = "<input>",
     predeclared_consts: set[str] | None = None,
+    redeclarable_consts: set[str] | None = None,
 ) -> ast.Module:
     tree = ast.parse(to_source(src), filename=filename)
     for transformer_cls in AST_PASSES:
         if transformer_cls is ConstTransformer:
-            tree = ConstTransformer(predeclared_consts).visit(tree)
+            tree = ConstTransformer(predeclared_consts, redeclarable_consts).visit(tree)
         else:
             tree = transformer_cls().visit(tree)
     return ast.fix_missing_locations(tree)

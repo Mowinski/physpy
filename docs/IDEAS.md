@@ -16,4 +16,4 @@ Lista pomysłów odłożonych do przyszłej rozbudowy PhysPy:
   - `\infty` ($\infty$) transpilowane do `float("inf")` / `np.inf`
   - `\deg` ($^\circ$, np. `30\deg` jako kąt w stopniach)
 - **Zapis pomiaru z niepewnością (`+-` / `\pm`):**
-  - Operator `+-` / `\pm` (renderowany w edytorze jako $\pm$), np. `R = (0.5 +- 0.003) [mm]` lub skrót dla niepewności typu B z rozkładu jednostajnego (dzielenie przez $\sqrt{3}$).
+  - *(Wbudowany typ `Pomiar(val, u)` jest już zaimplementowany w `structs.py`)* — pozostaje skrócony operator `+-` / `\pm` (renderowany w edytorze jako $\pm$), np. `R = (0.5 +- 0.003) [mm]` lub skrót dla niepewności typu B z rozkładu jednostajnego (dzielenie przez $\sqrt{3}$).

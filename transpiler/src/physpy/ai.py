@@ -175,7 +175,7 @@ def call_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=45, context=_build_ssl_context()) as resp:
+        with urllib.request.urlopen(req, timeout=180, context=_build_ssl_context()) as resp:
             raw_resp = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": _format_http_error(exc)}
@@ -205,11 +205,27 @@ def call_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     if not code:
         return {"ok": False, "error": "Gemini returned an empty code suggestion."}
 
+    usage = resp_json.get("usageMetadata")
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt_tokens = usage.get("promptTokenCount")
+    candidates_tokens = usage.get("candidatesTokenCount")
+    thoughts_tokens = usage.get("thoughtsTokenCount") or 0
+    total_tokens = usage.get("totalTokenCount")
+    output_tokens = (
+        (candidates_tokens + thoughts_tokens)
+        if isinstance(candidates_tokens, int)
+        else None
+    )
+
     return {
         "ok": True,
         "code": code,
         "explanation": explanation,
         "model": model,
+        "input_tokens": prompt_tokens if isinstance(prompt_tokens, int) else None,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens if isinstance(total_tokens, int) else None,
     }
 
 

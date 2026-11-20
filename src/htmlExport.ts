@@ -6,7 +6,7 @@
  */
 
 import type { CellState } from "./main";
-import { renderMarkdownWithLatex } from "./markdownLatex";
+import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
 import type { TableOutput } from "./backend";
 
 export type CodeExportVisibility = "folded" | "expanded" | "hidden";
@@ -199,7 +199,7 @@ export function generateStaticNotebookHtml(
     if (stdout || stderr) {
       outputParts.push('<pre class="nb-output-text">');
       if (stdout) {
-        outputParts.push(escapeHtml(stdout));
+        outputParts.push(renderStdoutWithLatexHtml(stdout));
       }
       if (stderr) {
         outputParts.push(`<span class="nb-stderr">${escapeHtml(stderr)}</span>`);

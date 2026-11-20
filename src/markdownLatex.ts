@@ -220,3 +220,62 @@ export function renderMarkdownWithLatex(markdown: string): string {
 
   return finalHtml;
 }
+
+const STDOUT_LATEX_RE = /\\\$|\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
+
+/** Render `$...$` and `$$...$$` math inside plain-text cell stdout into HTML with KaTeX. */
+export function renderStdoutWithLatexHtml(stdout: string): string {
+  if (!stdout.includes("$")) {
+    return escapeHtml(stdout);
+  }
+  let out = "";
+  let lastIndex = 0;
+  const re = new RegExp(STDOUT_LATEX_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stdout)) !== null) {
+    if (m.index > lastIndex) {
+      out += escapeHtml(stdout.slice(lastIndex, m.index));
+    }
+    const [full, displayTex, inlineTex] = m;
+    if (full === "\\$") {
+      out += "$";
+    } else if (displayTex !== undefined) {
+      const cleaned = displayTex.trim();
+      if (!cleaned) {
+        out += escapeHtml(full);
+      } else {
+        try {
+          const rendered = katex.renderToString(cleaned, {
+            displayMode: true,
+            throwOnError: false,
+            output: "html",
+          });
+          out += `<span class="output-math-block">${rendered}</span>`;
+        } catch {
+          out += escapeHtml(full);
+        }
+      }
+    } else if (inlineTex !== undefined) {
+      const cleaned = inlineTex.trim();
+      if (!cleaned) {
+        out += escapeHtml(full);
+      } else {
+        try {
+          const rendered = katex.renderToString(cleaned, {
+            displayMode: false,
+            throwOnError: false,
+            output: "html",
+          });
+          out += `<span class="output-math-inline">${rendered}</span>`;
+        } catch {
+          out += escapeHtml(full);
+        }
+      }
+    }
+    lastIndex = re.lastIndex;
+  }
+  if (lastIndex < stdout.length) {
+    out += escapeHtml(stdout.slice(lastIndex));
+  }
+  return out;
+}

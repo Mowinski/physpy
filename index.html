@@ -308,8 +308,8 @@
                 <table id="variables-table">
                   <thead>
                     <tr>
-                      <th scope="col">Variable</th>
-                      <th scope="col">Defined in</th>
+                      <th scope="col" id="vars-sort-name" class="sortable-th is-sorted" title="Sort by variable name">Variable <span class="sort-indicator">▲</span></th>
+                      <th scope="col" id="vars-sort-defined" class="sortable-th" title="Sort by cell and line">Defined in <span class="sort-indicator"></span></th>
                       <th scope="col">Value</th>
                     </tr>
                   </thead>
@@ -575,6 +575,20 @@
         </div>
       </div>
       <div id="pinned-compare-strip" class="pinned-compare-strip"></div>
+    </dialog>
+
+    <dialog id="var-inspect-dialog" class="var-inspect-modal">
+      <div class="var-inspect-header">
+        <div class="var-inspect-title-group">
+          <span id="var-inspect-name" class="var-inspect-name"></span>
+          <span id="var-inspect-type" class="var-inspect-type" hidden></span>
+        </div>
+        <div class="var-inspect-actions">
+          <button type="button" id="btn-var-inspect-copy">📋 Copy</button>
+          <button type="button" id="btn-var-inspect-close">✕</button>
+        </div>
+      </div>
+      <pre id="var-inspect-pre" class="var-inspect-pre"></pre>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

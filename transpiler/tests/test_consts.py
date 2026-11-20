@@ -47,3 +47,19 @@ def test_export_const_protected_across_cells():
     r2 = session.run_cell("g = 10.0\n")
     assert r2.code == 2
     assert "cannot reassign constant 'g'" in r2.stderr
+
+
+def test_rerun_cell_with_export_const_succeeds():
+    session = NotebookSession()
+    r1 = session.run_cell("const export u_m = 10\n", filename="nb.ppy#cell-3")
+    assert r1.code == 0, r1.stderr
+
+    # Re-running the exact same cell (e.g. after tweaking a value) must succeed
+    r2 = session.run_cell("const export u_m = 20\n", filename="nb.ppy#cell-3")
+    assert r2.code == 0, r2.stderr
+    assert session.exports["u_m"] == 20
+
+    # Other cells still cannot reassign it
+    r3 = session.run_cell("u_m = 30\n", filename="nb.ppy#cell-4")
+    assert r3.code == 2
+    assert "cannot reassign constant 'u_m'" in r3.stderr

@@ -20,8 +20,20 @@ import { debugLineField, setDebugLine } from "./debuggerExtension";
 export { setDebugLine, type CodeIntelligenceProvider, type VariableHoverInfo };
 
 const indentConfigCompartment = new Compartment();
+const codeModeCompartment = new Compartment();
 let defaultUseTabs = false;
 let defaultTabSize = 4;
+
+function buildCodeModeExtensions(isCode: boolean): Extension[] {
+  if (!isCode) return [];
+  return [python(), symbolCompletions, mathSymbols, matrixConcealField, constLinter];
+}
+
+export function reconfigureEditorCodeMode(view: EditorView, isCode: boolean): void {
+  view.dispatch({
+    effects: codeModeCompartment.reconfigure(buildCodeModeExtensions(isCode)),
+  });
+}
 
 function buildIndentExtensions(useTabs: boolean, tabSize: number): Extension[] {
   const safeSize = Math.max(1, Math.min(16, Math.round(tabSize || 4)));
@@ -48,6 +60,7 @@ export interface EditorOptions {
   keys?: { key: string; run: () => boolean }[];
   pythonAssist?: PythonAssistProvider;
   codeIntelligence?: CodeIntelligenceProvider;
+  isCode?: boolean;
 }
 
 export function createEditor({
@@ -58,19 +71,16 @@ export function createEditor({
   keys = [],
   pythonAssist,
   codeIntelligence,
+  isCode = true,
 }: EditorOptions): EditorView {
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
     keymap.of([indentWithTab]),
     indentConfigCompartment.of(buildIndentExtensions(defaultUseTabs, defaultTabSize)),
-    python(),
-    symbolCompletions,
+    codeModeCompartment.of(buildCodeModeExtensions(isCode)),
     ...(pythonAssist ? createPythonAssistExtension(pythonAssist) : []),
     ...createCodeIntelligenceExtension(codeIntelligence),
-    mathSymbols,
-    matrixConcealField,
-    constLinter,
     debugLineField,
     oneDark,
     EditorView.domEventHandlers({

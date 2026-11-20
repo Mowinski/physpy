@@ -44,6 +44,7 @@ const KEYWORDS = new Set([
   "plot",
   "raise",
   "return",
+  "struct",
   "table",
   "try",
   "while",

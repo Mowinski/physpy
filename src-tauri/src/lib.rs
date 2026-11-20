@@ -163,6 +163,12 @@ pub struct AiAssistResult {
     explanation: String,
     #[serde(default)]
     model: String,
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -603,6 +609,36 @@ async fn signature_python(
                 return Ok(None);
             }
             Ok(serde_json::from_value(sig).ok())
+        })?;
+        Ok(maybe.flatten())
+    })
+    .await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VariableInspectDto {
+    name: String,
+    #[serde(rename = "type")]
+    var_type: String,
+    value: String,
+}
+
+#[tauri::command]
+async fn inspect_variable(name: String) -> Result<Option<VariableInspectDto>, String> {
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "inspect_var",
+                "name": name,
+            }))?;
+            if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                return Ok(None);
+            }
+            let info = resp.get("info").cloned().unwrap_or(serde_json::Value::Null);
+            if info.is_null() {
+                return Ok(None);
+            }
+            Ok(serde_json::from_value(info).ok())
         })?;
         Ok(maybe.flatten())
     })
@@ -2183,6 +2219,7 @@ pub fn run() {
             reset_session,
             complete_python,
             signature_python,
+            inspect_variable,
             run_code,
             transpile,
             ai_assist,

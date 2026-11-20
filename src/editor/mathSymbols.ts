@@ -197,18 +197,14 @@ class MathWidget extends WidgetType {
       span.textContent = this.raw;
     }
 
-    // When the user clicks the widget, position the cursor cleanly in CodeMirror
-    // and reveal the raw source without letting browser selection enter KaTeX DOM.
+    // When the user clicks the widget, position the cursor cleanly at the end of the
+    // raw LaTeX token in CodeMirror and reveal the raw source for immediate editing.
     span.addEventListener("mousedown", (e) => {
       e.preventDefault();
       try {
         const pos = view.posAtDOM(span);
         if (pos != null && pos >= 0) {
-          const rect = span.getBoundingClientRect();
-          const isRight = e.clientX > rect.left + rect.width / 2;
-          const targetPos = isRight
-            ? Math.min(view.state.doc.length, pos + this.raw.length)
-            : pos;
+          const targetPos = Math.min(view.state.doc.length, pos + this.raw.length);
           view.dispatch({
             selection: { anchor: targetPos, head: targetPos },
             scrollIntoView: false,
@@ -223,16 +219,10 @@ class MathWidget extends WidgetType {
     return span;
   }
 
-  updateDOM(dom: HTMLElement): boolean {
-    if (dom.className !== this.cls) return false;
-    dom.title = this.titleText;
-    try {
-      katex.render(this.latex, dom, { throwOnError: true, output: "html" });
-      return true;
-    } catch {
-      dom.textContent = this.raw;
-      return true;
-    }
+  updateDOM(): boolean {
+    // Always recreate the widget DOM when `eq()` is false so CodeMirror re-measures
+    // the updated KaTeX box cleanly and `mousedown` uses the current `this.raw`.
+    return false;
   }
 
   // Prevent CodeMirror from treating internal KaTeX DOM nodes as editable document content,

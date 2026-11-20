@@ -20,6 +20,7 @@ except ImportError:
 from .symbols import _CONST_CALL_RE, SYMBOL_RE as _SYMBOL_RE
 
 _EXPORT_MARKER = "<__PPY_EXP_MARKER__>"
+_STRUCT_MARKER = "<__PPY_STRUCT_MARKER__>"
 _SYM_PREFIX = "__physpy_sym_"
 _SYM_SUFFIX = "__"
 _ACC_PREFIX = "__physpy_acc_"
@@ -125,20 +126,31 @@ def format_physpy_code(src: str, line_length: int = 999999) -> str:
     if not src or not src.strip():
         return src
 
-    # 1. Mask exports
+    # 1. Mask exports and structs
     lines = src.splitlines(keepends=True)
     masked_lines: list[str] = []
     export_flags: list[bool] = []
+    struct_flags: list[bool] = []
 
     for line in lines:
         m_exp = re.match(r"^([ \t]*)export[ \t]+(.*)$", line)
         if m_exp:
             indent, rest = m_exp.groups()
             export_flags.append(True)
+            if re.match(r"^struct\b", rest):
+                struct_flags.append(True)
+                rest = re.sub(r"^struct\b", "class", rest, count=1)
+            else:
+                struct_flags.append(False)
             masked_lines.append(f"{indent}{rest.rstrip()}\n")
         else:
             export_flags.append(False)
-            masked_lines.append(line)
+            if re.match(r"^[ \t]*struct\b", line):
+                struct_flags.append(True)
+                masked_lines.append(re.sub(r"^([ \t]*)struct\b", r"\1class", line, count=1))
+            else:
+                struct_flags.append(False)
+                masked_lines.append(line)
 
     masked_code = "".join(masked_lines)
 
@@ -149,13 +161,18 @@ def format_physpy_code(src: str, line_length: int = 999999) -> str:
     masked_code = re.sub(r"(?m)^([ \t]*)plot[ \t]+([^\n#]+)", r"\1__physpy_plot__(\2)", masked_code)
     masked_code = re.sub(r"(?m)^([ \t]*)table[ \t]+([^\n#]+)", r"\1__physpy_table__(\2)", masked_code)
 
-    # 4. Attach export marker comments to the exported statements
+    # 4. Attach export / struct marker comments
     pass1_lines = masked_code.splitlines(keepends=True)
     pass2_lines: list[str] = []
-    for exp, line in zip(export_flags, pass1_lines):
-        if exp and line.strip():
+    for exp, is_struct, line in zip(export_flags, struct_flags, pass1_lines):
+        markers: list[str] = []
+        if exp:
+            markers.append(_EXPORT_MARKER)
+        if is_struct:
+            markers.append(_STRUCT_MARKER)
+        if markers and line.strip():
             stripped = line.rstrip("\r\n")
-            pass2_lines.append(f"{stripped}  # {_EXPORT_MARKER}\n")
+            pass2_lines.append(f"{stripped}  # {' '.join(markers)}\n")
         else:
             pass2_lines.append(line)
 
@@ -173,22 +190,24 @@ def format_physpy_code(src: str, line_length: int = 999999) -> str:
     unmasked = re.sub(r"(?m)^([ \t]*)__physpy_plot__\((.*)\)$", r"\1plot \2", formatted)
     unmasked = re.sub(r"(?m)^([ \t]*)__physpy_table__\((.*)\)$", r"\1table \2", unmasked)
 
-    # 7. Unmask export markers
+    # 7. Unmask export & struct markers
     out_lines: list[str] = []
     for line in unmasked.splitlines(keepends=True):
-        if _EXPORT_MARKER in line:
-            cleaned = (
-                line.replace(f"  # {_EXPORT_MARKER}", "")
-                .replace(f" # {_EXPORT_MARKER}", "")
-                .replace(f"# {_EXPORT_MARKER}", "")
-                .replace(_EXPORT_MARKER, "")
-            )
-            m_ind = re.match(r"^([ \t]*)(.*)$", cleaned)
-            if m_ind:
-                ind, body = m_ind.groups()
-                out_lines.append(f"{ind}export {body.rstrip()}\n")
-            else:
-                out_lines.append(cleaned)
+        has_exp = _EXPORT_MARKER in line
+        has_struct = _STRUCT_MARKER in line
+        if has_exp or has_struct:
+            cleaned = line
+            for mk in (_EXPORT_MARKER, _STRUCT_MARKER):
+                cleaned = cleaned.replace(mk, "")
+            cleaned = re.sub(r"[ \t]*#[ \t]*$", "", cleaned.rstrip("\r\n")) + "\n"
+            if has_struct:
+                cleaned = re.sub(r"^([ \t]*)class\b", r"\1struct", cleaned, count=1)
+            if has_exp:
+                m_ind = re.match(r"^([ \t]*)(.*)$", cleaned)
+                if m_ind:
+                    ind, body = m_ind.groups()
+                    cleaned = f"{ind}export {body.rstrip()}\n"
+            out_lines.append(cleaned)
         else:
             out_lines.append(line)
 
