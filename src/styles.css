@@ -819,7 +819,8 @@ body {
 }
 
 /* Context Menu (Popover API + focusgroup menu) */
-#context-menu {
+#context-menu,
+.context-submenu {
   position: fixed;
   inset: auto;
   margin: 0;
@@ -833,13 +834,22 @@ body {
   z-index: 1000;
 }
 
-[focusgroup~="menu"] {
+.context-submenu {
+  display: flex;
+  flex-direction: column;
+  min-width: 145px;
+  z-index: 1001;
+}
+
+[focusgroup~="menu"],
+.context-submenu {
   --menu-icon-size: 0.5rem;
   display: flex;
   flex-direction: column;
 }
 
-[focusgroup~="menu"] > button {
+[focusgroup~="menu"] > button,
+.context-submenu > button {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -854,38 +864,46 @@ body {
   cursor: pointer;
 }
 
-[focusgroup~="menu"] button::before {
+[focusgroup~="menu"] button::before,
+.context-submenu button::before {
   content: "";
   flex: none;
   inline-size: var(--menu-icon-size);
 }
 
 [focusgroup~="menu"] > button:hover,
-[focusgroup~="menu"] > button:focus {
+[focusgroup~="menu"] > button:focus,
+.context-submenu > button:hover,
+.context-submenu > button:focus {
   background: #2c4866;
   color: #ffffff;
   outline: none;
 }
 
 [focusgroup~="menu"] > button.danger:hover,
-[focusgroup~="menu"] > button.danger:focus {
+[focusgroup~="menu"] > button.danger:focus,
+.context-submenu > button.danger:hover,
+.context-submenu > button.danger:focus {
   background: #5c262b;
   color: #ffb3b8;
 }
 
-[focusgroup~="menu"] > button:disabled {
+[focusgroup~="menu"] > button:disabled,
+.context-submenu > button:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-[focusgroup~="menu"] .hint {
+[focusgroup~="menu"] .hint,
+.context-submenu .hint {
   margin-inline-start: auto;
   padding-inline-start: 16px;
   font-size: 11px;
   opacity: 0.65;
 }
 
-[focusgroup~="menu"] > hr {
+[focusgroup~="menu"] > hr,
+.context-submenu > hr {
   border: none;
   border-top: 1px solid var(--border-subtle);
   margin: 4px 2px;
@@ -4746,6 +4764,125 @@ dialog.matrix-modal::backdrop {
   color: #e5c07b;
   background: #181a1f;
   border-bottom: 1px solid #2c313a;
+}
+
+.latex-log-title-group,
+.latex-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.latex-log-summary {
+  font-weight: 400;
+  font-size: 11px;
+  color: #7f848e;
+}
+
+.latex-log-summary.has-errors {
+  color: #e06c75;
+}
+
+.latex-log-summary.has-warnings {
+  color: #e5c07b;
+}
+
+.latex-log-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.latex-log-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: #7f848e;
+}
+
+.latex-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: #abb2bf;
+}
+
+.latex-log-table thead th {
+  position: sticky;
+  top: 0;
+  background: #1b1e24;
+  color: #9da5b4;
+  font-weight: 600;
+  font-size: 11px;
+  text-align: left;
+  padding: 5px 10px;
+  border-bottom: 1px solid #2c313a;
+}
+
+.latex-log-table tbody td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #21252b;
+  vertical-align: top;
+}
+
+.latex-log-table tbody tr.is-clickable {
+  cursor: pointer;
+}
+
+.latex-log-table tbody tr:hover {
+  background: #1f232b;
+}
+
+.latex-log-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.latex-log-badge.is-error {
+  background: rgba(224, 108, 117, 0.18);
+  color: #e06c75;
+}
+
+.latex-log-badge.is-warning {
+  background: rgba(229, 192, 123, 0.18);
+  color: #e5c07b;
+}
+
+.latex-log-badge.is-info {
+  background: rgba(97, 175, 239, 0.16);
+  color: #61afef;
+}
+
+.latex-log-line {
+  font-family: var(--editor-font-family, monospace);
+  color: #9da5b4;
+  white-space: nowrap;
+}
+
+.latex-log-file {
+  font-family: var(--editor-font-family, monospace);
+  color: #7f848e;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.latex-log-msg {
+  line-height: 1.4;
+}
+
+.latex-log-ctx {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--editor-font-family, monospace);
+  font-size: 11px;
+  color: #7f848e;
+  white-space: pre-wrap;
 }
 
 .latex-log-pre {
