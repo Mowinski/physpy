@@ -615,9 +615,78 @@
 
         <div class="dialog-footer">
           <button type="button" id="btn-cancel-export-html">Cancel</button>
+          <button type="button" id="btn-publish-html-cloud">Publish Online…</button>
           <button type="submit" id="btn-confirm-export-html" value="export" class="primary">Export HTML…</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="publish-cloud-dialog" class="export-html-modal" style="max-width: 560px;">
+      <div class="cloud-modal-wrap">
+        <div class="cloud-modal-header">
+          <h2>Publish Report Online</h2>
+          <span id="cloud-user-badge" class="cloud-user-badge" hidden></span>
+        </div>
+        <p class="dialog-hint">
+          Host your static HTML report on PhysPy Cloud and get a shareable link.
+        </p>
+
+        <!-- Auth View (shown when signed out) -->
+        <form id="cloud-auth-form" class="cloud-auth-box">
+          <div class="dialog-custom-row">
+            <label for="cloud-auth-email">Email:</label>
+            <div class="dialog-input-group">
+              <input id="cloud-auth-email" type="email" required placeholder="you@example.com" autocomplete="email" />
+            </div>
+          </div>
+          <div class="dialog-custom-row">
+            <label for="cloud-auth-password">Password:</label>
+            <div class="dialog-input-group">
+              <input id="cloud-auth-password" type="password" required minlength="6" placeholder="Min. 6 characters" autocomplete="current-password" />
+            </div>
+          </div>
+          <p id="cloud-auth-error" class="cloud-error-msg" hidden></p>
+          <div class="dialog-footer">
+            <button type="button" id="btn-cloud-close-auth">Close</button>
+            <button type="button" id="btn-cloud-signup">Create Account</button>
+            <button type="submit" id="btn-cloud-signin" class="primary">Sign In</button>
+          </div>
+        </form>
+
+        <!-- Publish & Manage View (shown when signed in) -->
+        <div id="cloud-publish-view" hidden>
+          <div class="cloud-account-bar">
+            <span id="cloud-quota-text" class="cloud-quota-text">Loading quota…</span>
+            <button type="button" id="btn-cloud-signout" class="export-link-btn">Sign Out</button>
+          </div>
+
+          <div id="cloud-result-box" class="cloud-result-box" hidden>
+            <div class="cloud-result-label">Published Link:</div>
+            <div class="cloud-result-row">
+              <input id="cloud-result-url" type="text" readonly />
+              <button type="button" id="btn-cloud-copy-url" class="primary">Copy</button>
+              <a id="cloud-result-open" href="#" target="_blank" rel="noopener noreferrer" class="cloud-open-link">Open ↗</a>
+            </div>
+          </div>
+
+          <p id="cloud-publish-error" class="cloud-error-msg" hidden></p>
+
+          <div class="cloud-reports-section">
+            <div class="cloud-reports-header">
+              <span>Your Published Reports</span>
+              <button type="button" id="btn-cloud-refresh" class="export-link-btn">Refresh</button>
+            </div>
+            <div id="cloud-reports-list" class="cloud-reports-list">
+              <div class="cloud-reports-empty">No published reports yet.</div>
+            </div>
+          </div>
+
+          <div class="dialog-footer">
+            <button type="button" id="btn-cloud-close">Close</button>
+            <button type="button" id="btn-cloud-publish-now" class="primary">Publish Current Report</button>
+          </div>
+        </div>
+      </div>
     </dialog>
 
     <dialog id="refactor-dialog" class="export-html-modal" style="max-width: 440px;">
