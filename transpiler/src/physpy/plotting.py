@@ -160,6 +160,25 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
                     fontsize = round(float(ax.xaxis.label.get_fontsize()), 1)
                 except Exception:
                     fontsize = 10.0
+                series_meta: list[dict[str, str]] = []
+                for idx, line in enumerate(getattr(ax, "lines", [])):
+                    raw_lbl = str(getattr(line, "get_label", lambda: "")() or "")
+                    series_meta.append(
+                        {
+                            "target": f"ax.lines[{idx}]",
+                            "name": f"Line {idx + 1}",
+                            "label": "" if raw_lbl.startswith("_") else raw_lbl,
+                        }
+                    )
+                for idx, col in enumerate(getattr(ax, "collections", [])):
+                    raw_lbl = str(getattr(col, "get_label", lambda: "")() or "")
+                    series_meta.append(
+                        {
+                            "target": f"ax.collections[{idx}]",
+                            "name": f"Series {idx + 1}",
+                            "label": "" if raw_lbl.startswith("_") else raw_lbl,
+                        }
+                    )
                 axes_meta.append(
                     {
                         "left": (float(ax_box.x0) - img_x0) / img_w,
@@ -176,6 +195,7 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
                         "grid": grid_on,
                         "legend": legend_on,
                         "fontsize": fontsize,
+                        "series": series_meta,
                     }
                 )
             except Exception:

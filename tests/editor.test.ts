@@ -1,0 +1,112 @@
+import { describe, expect, it } from "vitest";
+import {
+  ACCENTS,
+  PHYSICAL_CONSTANTS,
+  SYMBOLS,
+  accentToLatex,
+  isValidAccentSymbol,
+  isValidSymbol,
+  replaceSymbolsInIdent,
+  resolveAccentSymbolIdent,
+  resolveSymbolIdent,
+  toLatex,
+} from "../src/editor/symbols";
+import { findMatrixLiterals } from "../src/editor/matrixConceal";
+import { findActiveCallAt } from "../src/editor/pythonAssist";
+
+describe("editor symbols, matrices, and call site detection", () => {
+  describe("symbols.ts", () => {
+    it("loads shared symbol and physical constant tables", () => {
+      expect(SYMBOLS.rho).toBe("ρ");
+      expect(SYMBOLS.Omega).toBe("Ω");
+      expect(PHYSICAL_CONSTANTS.g.unit).toBe("m/s^2");
+      expect(PHYSICAL_CONSTANTS.c.value).toBe(299792458);
+      expect(Object.keys(ACCENTS)).toContain("bar");
+    });
+
+    it("validates plain and accented symbols", () => {
+      expect(isValidSymbol("rho", "_0")).toBe(true);
+      expect(isValidSymbol("i", "")).toBe(true);
+      expect(isValidSymbol("m", "_0")).toBe(true);
+      expect(isValidSymbol("unknownsym", "")).toBe(false);
+
+      expect(isValidAccentSymbol("bar", "u")).toBe(true);
+      expect(isValidAccentSymbol("hat", "\\theta")).toBe(true);
+      expect(isValidAccentSymbol("bar", "\\i")).toBe(false);
+      expect(isValidAccentSymbol("unknown_acc", "u")).toBe(false);
+    });
+
+    it("converts symbols and accents to KaTeX LaTeX strings", () => {
+      expect(toLatex("i", "")).toBe("i");
+      expect(toLatex("rho", "_0")).toBe("\\rho_{0}");
+      expect(toLatex("v", "_max")).toBe("v_{\\mathrm{max}}");
+
+      expect(accentToLatex("bar", "u", "_a")).toBe("\\bar{u}_{a}");
+      expect(accentToLatex("overline", "czas", "")).toBe("\\overline{\\text{czas}}");
+      expect(accentToLatex("prime", "t", "_0")).toBe("{t}'_{0}");
+      expect(accentToLatex("dprime", "\\theta", "")).toBe("{\\theta}''");
+    });
+
+    it("resolves symbols to normalized Python identifiers", () => {
+      expect(resolveSymbolIdent("i", "")).toBe("1j");
+      expect(resolveSymbolIdent("rho", "_0")).toBe("ρ_0");
+      expect(resolveSymbolIdent("m", "_0")).toBe("m_0");
+      expect(resolveAccentSymbolIdent("bar", "u", "_a")).toBe("u\u0304_a".normalize("NFKC"));
+      expect(replaceSymbolsInIdent("\\rho_0 + \\bar{u}_a")).toBe(
+        `ρ_0 + ${"u\u0304_a".normalize("NFKC")}`,
+      );
+    });
+  });
+
+  describe("matrixConceal (findMatrixLiterals)", () => {
+    it("detects 2D semicolon-separated matrix literals while ignoring normal lists, strings, and comments", () => {
+      const code = [
+        "# [1, 2; 3, 4] in comment",
+        's = "[1, 2; 3, 4]"',
+        "normal_list = [1, 2, 3]",
+        "M1 = [1, 2; 3, 4]",
+        "M2 = [\n  a[0], a[1];\n  b[0], b[1]\n]",
+      ].join("\n");
+
+      const found = findMatrixLiterals(code);
+      expect(found).toHaveLength(2);
+      expect(found[0].raw).toBe("[1, 2; 3, 4]");
+      expect(found[1].raw).toContain("a[0], a[1];");
+    });
+  });
+
+  describe("pythonAssist (findActiveCallAt)", () => {
+    it("identifies active function call, positional argument index, and keyword argument name", () => {
+      const code = "res = np.linspace(0.0, 10.0, num=50";
+      const pos0 = code.indexOf("0.0") + 1;
+      const pos1 = code.indexOf("10.0") + 1;
+      const pos2 = code.length;
+
+      expect(findActiveCallAt(code, pos0)).toEqual({
+        expr: "np.linspace",
+        parenPos: code.indexOf("("),
+        argIndex: 0,
+        kwargName: null,
+      });
+
+      expect(findActiveCallAt(code, pos1)).toEqual({
+        expr: "np.linspace",
+        parenPos: code.indexOf("("),
+        argIndex: 1,
+        kwargName: null,
+      });
+
+      expect(findActiveCallAt(code, pos2)).toEqual({
+        expr: "np.linspace",
+        parenPos: code.indexOf("("),
+        argIndex: 2,
+        kwargName: "num",
+      });
+    });
+
+    it("returns null outside calls or after control-flow keywords like if (...)", () => {
+      expect(findActiveCallAt("if (x > 0", 8)).toBeNull();
+      expect(findActiveCallAt("x = (1 + 2)", 11)).toBeNull();
+    });
+  });
+});

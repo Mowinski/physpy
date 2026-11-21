@@ -50,14 +50,22 @@ Dokument podsumowuje architekturę, zrealizowane funkcje oraz bieżący stan rep
   - Panel **Variables** (`⌘J`): sortowanie po `Variable` lub `Defined in`, przypinanie zmiennych `📌` na górze (zapis w `localStorage`), przycisk `⤢` otwierający modal z pełną, nieuciętą wartością (`inspect_variable` → `inspect_var`).
   - Sticky nagłówki komórek z menu `+` (Above / Below) oraz galeria przypiętych wykresów z kolejnością, zmianą nazw i trybem **Compare**.
   - Modal wykresu (`plot-lightbox-dialog`) z bocznym panelem **Figure REPL (copy)** i szybkimi przełącznikami (**Quick Controls**): każda komenda `plot ...` tworzy w `NotebookSession.plot_store` izolowaną kopię (`copy_figure` z `FigureCanvasAgg`) pod unikalnym `plot_id` (`base_fig` + `work_fig`). W modalu można wykonywać kod Pythona/PhysPy w trybie REPL na `fig`, `ax`, `axes`, `plt` (z autouzupełnianiem), wyklikać zmianę tytułu, etykiet osi, siatki, skali lin/log, legendy oraz rozmiaru czcionki, podejrzeć i skopiować skumulowany kod (`📋 Copy Code`, z deduplikacją powtarzających się setterów) oraz przywrócić stan początkowy (`↺ Reset`) bez modyfikowania wykresu w samej komórce.
-- **AI Assistant (`ai.py`, `lib.rs`, `backend.ts`, `main.ts`):**
+- **AI Assistant i boczny panel AI Chat (`ai.py`, `lib.rs`, `backend.ts`, `main.ts`):**
   - Timeout zapytań Gemini zwiększony do `180 s`.
   - Podgląd szacowanych tokenów (`~X tok`) przed wysłaniem oraz dokładne zużycie (`↑ input tok · ↓ output tok`) z `usageMetadata` po odpowiedzi.
+  - Prawy panel **✨ AI Chat** (`⇧⌘K` / przycisk na górnym pasku): wieloturowy czat z Gemini (`call_gemini_chat` / `ai_chat`) korzystający z zapisanego klucza `ai_api_key` i modelu z ustawień, z obsługą wielu sesji (`+ New Session`, przełączanie zakładek sesji, zamykanie/kasowanie sesji `✕` / `🗑 Delete`), opcjonalnym dołączaniem kontekstu notebooka i zmiennych `export`, renderowaniem Markdown + KaTeX oraz przyciskami `📋 Copy` i `+ Cell` przy blokach kodu.
+- **Edytor LaTeX (`.tex`, `.bib`, `.sty`, `.cls`) (`src/latexEditor.ts`, `lib.rs`, `main.ts`):**
+  - Kolorowanie składni LaTeX (`StreamLanguage`: komentarze `%`, tryby matematyczne `$...$`/`$$...$$`/`\[...\]`, środowiska `\begin{...}`/`\end{...}`, komendy strukturalne i makra) oraz autouzupełnianie środowisk, komend i symboli greckich po wpisaniu `\`.
+  - Konfigurowalny **`Target .tex`** z opcją **`Rebuild on Save`** (`📌 Pin Current` lub `📂 Browse…`) oraz wyborem silnika (`pdflatex`, `xelatex`, `lualatex`, `latexmk -pdf`) — zapisanie dowolnego pliku automatycznie przebudowuje wskazany plik `.tex` (lub aktualnie otwarty plik `.tex`, gdy pole docelowe jest puste), odświeża podgląd PDF na `<canvas>` (`pdfjs-dist`, z zachowaniem pozycji scrolla po przebudowaniu) i zapisuje log kompilacji (`📋 Log`).
+- **Podgląd plików graficznych (`#image-view`, `main.ts`):**
+  - Otwieranie plików `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, `.gif`, `.bmp`, `.ico` w dedykowanej zakładce z zoomem, przesuwaniem, przełącznikiem tła (`checker / white / dark`), odświeżaniem z dysku i przyciskiem `📋 \includegraphics`.
+- **Przypisanie interpretera Pythona / `.venv` per-plik poza plikiem `.ppy` (`~/.physpy/file_interpreters.json`, `lib.rs`, `main.ts`):**
+  - Wybór interpretera w modalu `🐍 Python` zapisuje powiązanie `{ "/ścieżka/do/pliku.ppy": "/ścieżka/do/venv/bin/python3" }` w katalogu użytkownika `~/.physpy/file_interpreters.json` (bez dopisywania metadanych do samego pliku `.ppy`). Otwarcie pliku, przełączenie karty lub uruchomienie komórki automatycznie przełącza workera Pythona na przypisany dla tego pliku `.venv` (oznaczony na pasku ikoną `📌`, z opcją `Unbind File`).
 
 ---
 
 ## 3. Komendy weryfikacji i buildu
-- Testy Pythona: `cd transpiler && .venv/bin/pytest -q` (ostatni wynik: `145 passed`).
+- Testy Pythona: `cd transpiler && .venv/bin/pytest -q` (ostatni wynik: `146 passed`).
 - TypeScript: `npx tsc --noEmit` (ostatni wynik: 0 błędów).
 - Build i instalacja macOS `.app`:
   `npm run tauri build -- --bundles app && rm -rf /Applications/PhysPy.app && cp -R src-tauri/target/release/bundle/macos/PhysPy.app /Applications/PhysPy.app`

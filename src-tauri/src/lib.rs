@@ -72,6 +72,16 @@ pub struct SignatureHelpDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlotSeriesMeta {
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlotAxesMeta {
     pub left: f64,
     pub right: f64,
@@ -95,6 +105,8 @@ pub struct PlotAxesMeta {
     pub legend: bool,
     #[serde(default)]
     pub fontsize: f64,
+    #[serde(default)]
+    pub series: Vec<PlotSeriesMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +212,25 @@ pub struct AiAssistResult {
     total_tokens: Option<u64>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AiChatMessageDto {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AiChatResult {
+    pub reply: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct GeminiModelInfo {
     id: String,
@@ -262,6 +293,15 @@ pub struct InstallResult {
     pub success: bool,
     pub log: String,
     pub requirements_file_written: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LatexBuildResult {
+    pub success: bool,
+    pub code: Option<i32>,
+    pub log: String,
+    pub pdf_path: Option<String>,
+    pub resolved_target: String,
 }
 
 struct WorkerProcess {
@@ -709,6 +749,24 @@ async fn reset_plot(plot_id: String) -> Result<PlotReplResult, String> {
 }
 
 #[tauri::command]
+async fn check_plot_available(plot_id: String) -> Result<bool, String> {
+    if plot_id.trim().is_empty() {
+        return Ok(false);
+    }
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "check_plot",
+                "plot_id": plot_id,
+            }))?;
+            Ok(resp.get("available").and_then(|v| v.as_bool()).unwrap_or(false))
+        })?;
+        Ok(maybe.unwrap_or(false))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn format_cells(cells: Vec<String>) -> Result<Vec<String>, String> {
     blocking(move || {
         let maybe = try_with_worker(|w| {
@@ -794,6 +852,43 @@ async fn ai_assist(
 }
 
 #[tauri::command]
+async fn ai_chat(
+    messages: Vec<AiChatMessageDto>,
+    notebook_source: String,
+    exports: HashMap<String, String>,
+    workspace_dir: Option<String>,
+) -> Result<AiChatResult, String> {
+    blocking(move || {
+        let cfg = resolve_hierarchical_config(workspace_dir);
+        let payload = serde_json::json!({
+            "action": "chat",
+            "provider": cfg.ai_provider,
+            "model": cfg.ai_model,
+            "api_key": cfg.ai_api_key,
+            "custom_system_prompt": cfg.ai_system_prompt,
+            "messages": messages,
+            "notebook_source": notebook_source,
+            "exports": exports,
+        });
+        let out = physpy(&["ai".into()], &payload.to_string(), None)?;
+        let raw = out.stdout.trim();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw) {
+            if val.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                return serde_json::from_value(val).map_err(|e| e.to_string());
+            }
+            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+        if !out.stderr.trim().is_empty() {
+            return Err(out.stderr.trim().to_string());
+        }
+        Err("AI chat request failed".to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn list_ai_models(
     api_key: Option<String>,
     workspace_dir: Option<String>,
@@ -866,17 +961,28 @@ fn create_dir(path: String) -> Result<(), String> {
 
 #[tauri::command]
 fn rename_path(from: String, to: String) -> Result<(), String> {
-    std::fs::rename(&from, &to).map_err(|e| format!("{from} -> {to}: {e}"))
+    std::fs::rename(&from, &to).map_err(|e| format!("{from} -> {to}: {e}"))?;
+    let mut map = load_file_interpreters_map();
+    if let Some(py) = map.remove(from.trim()) {
+        map.insert(to.trim().to_string(), py);
+        let _ = save_file_interpreters_map(&map);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn delete_path(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if p.is_dir() {
-        std::fs::remove_dir_all(p).map_err(|e| format!("{path}: {e}"))
+        std::fs::remove_dir_all(p).map_err(|e| format!("{path}: {e}"))?;
     } else {
-        std::fs::remove_file(p).map_err(|e| format!("{path}: {e}"))
+        std::fs::remove_file(p).map_err(|e| format!("{path}: {e}"))?;
     }
+    let mut map = load_file_interpreters_map();
+    if map.remove(path.trim()).is_some() {
+        let _ = save_file_interpreters_map(&map);
+    }
+    Ok(())
 }
 
 const DEFAULT_GLOBAL_CONFIG_YAML: &str = "\
@@ -1548,6 +1654,11 @@ async fn list_python_interpreters(
             }
         }
 
+        // Also include any virtual environments bound to specific `.ppy` files in `~/.physpy/file_interpreters.json`
+        for bound_py in load_file_interpreters_map().into_values() {
+            candidates.push(PathBuf::from(bound_py));
+        }
+
         let mut seen = std::collections::HashSet::new();
         let mut interpreters = Vec::new();
         for cand in candidates {
@@ -1587,28 +1698,102 @@ async fn list_python_interpreters(
     .await
 }
 
+fn activate_python_interpreter_path(trimmed: &str) -> Result<PythonInterpreterInfo, String> {
+    if trimmed.is_empty() {
+        return Err("Python path cannot be empty".into());
+    }
+    let info = probe_python(trimmed)?;
+    let mut changed = false;
+    {
+        let mut sel = selected_python_mutex().lock().map_err(|e| e.to_string())?;
+        if sel.as_deref() != Some(info.path.as_str()) {
+            *sel = Some(info.path.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        // Restart the persistent worker so it runs on the newly chosen interpreter
+        let mut guard = worker_mutex().lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    Ok(info)
+}
+
+fn file_interpreters_path() -> PathBuf {
+    home_dir_path()
+        .map(|h| h.join(".physpy").join("file_interpreters.json"))
+        .unwrap_or_else(|| PathBuf::from(".physpy/file_interpreters.json"))
+}
+
+fn load_file_interpreters_map() -> HashMap<String, String> {
+    let path = file_interpreters_path();
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str::<HashMap<String, String>>(&raw).unwrap_or_default()
+}
+
+fn save_file_interpreters_map(map: &HashMap<String, String>) -> Result<(), String> {
+    let path = file_interpreters_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("{json}\n")).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn set_python_interpreter(path: String) -> Result<PythonInterpreterInfo, String> {
+    blocking(move || activate_python_interpreter_path(path.trim())).await
+}
+
+#[tauri::command]
+async fn get_file_interpreter(
+    file_path: String,
+    activate: bool,
+) -> Result<Option<PythonInterpreterInfo>, String> {
     blocking(move || {
-        let trimmed = path.trim().to_string();
-        if trimmed.is_empty() {
-            return Err("Python path cannot be empty".into());
+        let key = file_path.trim();
+        if key.is_empty() {
+            return Ok(None);
         }
-        let info = probe_python(&trimmed)?;
-        let mut changed = false;
-        {
-            let mut sel = selected_python_mutex().lock().map_err(|e| e.to_string())?;
-            if sel.as_deref() != Some(info.path.as_str()) {
-                *sel = Some(info.path.clone());
-                changed = true;
+        let map = load_file_interpreters_map();
+        let Some(py_path) = map.get(key) else {
+            return Ok(None);
+        };
+        if activate {
+            match activate_python_interpreter_path(py_path.trim()) {
+                Ok(info) => Ok(Some(info)),
+                Err(_) => Ok(None),
             }
+        } else {
+            Ok(probe_python(py_path.trim()).ok())
         }
-        if changed {
-            // Restart the persistent worker so it runs on the newly chosen interpreter
-            let mut guard = worker_mutex().lock().map_err(|e| e.to_string())?;
-            *guard = None;
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_file_interpreter(
+    file_path: String,
+    python_path: Option<String>,
+) -> Result<Option<PythonInterpreterInfo>, String> {
+    blocking(move || {
+        let key = file_path.trim().to_string();
+        if key.is_empty() {
+            return Err("File path cannot be empty".into());
         }
-        Ok(info)
+        let mut map = load_file_interpreters_map();
+        let py_trimmed = python_path.as_deref().map(str::trim).unwrap_or("");
+        if py_trimmed.is_empty() {
+            map.remove(&key);
+            save_file_interpreters_map(&map)?;
+            return Ok(None);
+        }
+        let info = activate_python_interpreter_path(py_trimmed)?;
+        map.insert(key, info.path.clone());
+        save_file_interpreters_map(&map)?;
+        Ok(Some(info))
     })
     .await
 }
@@ -1866,6 +2051,125 @@ fn compute_relative_path(base_dir: String, target_path: String) -> Result<String
     let to = Path::new(&target_path);
     let rel = relative_path(from, to);
     Ok(rel.to_string_lossy().into_owned())
+}
+
+fn resolve_latex_binary(engine: &str) -> PathBuf {
+    let search_dirs = [
+        "/Library/TeX/texbin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+    ];
+    for dir in search_dirs {
+        let candidate = Path::new(dir).join(engine);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    PathBuf::from(engine)
+}
+
+#[tauri::command]
+async fn build_latex(
+    target_path: String,
+    base_dir: Option<String>,
+    engine: Option<String>,
+) -> Result<LatexBuildResult, String> {
+    blocking(move || {
+        let raw_target = Path::new(target_path.trim());
+        let resolved = if raw_target.is_absolute() {
+            raw_target.to_path_buf()
+        } else if let Some(ref base) = base_dir {
+            Path::new(base).join(raw_target)
+        } else {
+            raw_target.to_path_buf()
+        };
+
+        if !resolved.is_file() {
+            return Err(format!(
+                "LaTeX target file not found: {}",
+                resolved.display()
+            ));
+        }
+
+        let work_dir = resolved
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let file_name = resolved
+            .file_name()
+            .ok_or_else(|| "Invalid LaTeX filename".to_string())?
+            .to_string_lossy()
+            .into_owned();
+
+        let chosen_engine = engine
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| matches!(*s, "pdflatex" | "xelatex" | "lualatex" | "latexmk"))
+            .unwrap_or("pdflatex");
+
+        let bin_path = resolve_latex_binary(chosen_engine);
+        let current_path_env = std::env::var("PATH").unwrap_or_default();
+        let augmented_path = format!(
+            "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:{current_path_env}"
+        );
+
+        let mut cmd = Command::new(&bin_path);
+        cmd.current_dir(&work_dir).env("PATH", augmented_path);
+
+        if chosen_engine == "latexmk" {
+            cmd.arg("-pdf")
+                .arg("-interaction=nonstopmode")
+                .arg("-halt-on-error")
+                .arg("-file-line-error")
+                .arg(&file_name);
+        } else {
+            cmd.arg("-interaction=nonstopmode")
+                .arg("-halt-on-error")
+                .arg("-file-line-error")
+                .arg(&file_name);
+        }
+
+        let output = cmd.output().map_err(|e| {
+            format!(
+                "Failed to run '{chosen_engine}' ({}): {e}. Make sure MacTeX / TeX Live is installed.",
+                bin_path.display()
+            )
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let success = output.status.success();
+        let pdf_candidate = resolved.with_extension("pdf");
+        let pdf_path = if pdf_candidate.is_file() {
+            Some(pdf_candidate.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+
+        let mut log = format!(
+            "[{chosen_engine}] Target: {}\n",
+            resolved.display()
+        );
+        if !stdout.trim().is_empty() {
+            log.push_str(&stdout);
+        }
+        if !stderr.trim().is_empty() {
+            if !log.ends_with('\n') {
+                log.push('\n');
+            }
+            log.push_str(&stderr);
+        }
+
+        Ok(LatexBuildResult {
+            success,
+            code: output.status.code(),
+            log,
+            pdf_path,
+            resolved_target: resolved.to_string_lossy().into_owned(),
+        })
+    })
+    .await
 }
 
 static RECENT_SUBMENU: OnceLock<Mutex<Option<Submenu<tauri::Wry>>>> = OnceLock::new();
@@ -2285,9 +2589,11 @@ pub fn run() {
             inspect_variable,
             eval_plot_code,
             reset_plot,
+            check_plot_available,
             run_code,
             transpile,
             ai_assist,
+            ai_chat,
             list_ai_models,
             read_file,
             read_binary_file,
@@ -2305,10 +2611,13 @@ pub fn run() {
             list_dir,
             list_python_interpreters,
             set_python_interpreter,
+            get_file_interpreter,
+            set_file_interpreter,
             create_venv,
             install_requirements,
             resolve_venv,
-            compute_relative_path
+            compute_relative_path,
+            build_latex
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2379,16 +2688,182 @@ python_path: ".venv/bin/python3"
 editor:
   font_family: 'Fira Code, monospace'
   font_size: 16px
+  matrix_font_size: 150%
   line_numbers: off
+  format_on_save: false
+  indentType: tab
+  tabSize: 2
 python:
   path: /opt/homebrew/bin/python3
 workspace:
   startup_dir: /tmp
+startup:
+  mode: demo
+  file: ~/test.ppy
+files:
+  autoSave: after_delay
+  autoSaveDelay: 2500
+ai:
+  provider: Gemini
+  model: gemini-2.5-pro
+  api_key: "secret-key"
+  system_prompt: "Answer in Polish"
 "#;
         apply_yaml_config_str(nested, None, &mut cfg);
         assert_eq!(cfg.font_family, "Fira Code, monospace");
         assert_eq!(cfg.font_size, 16.0);
+        assert_eq!(cfg.matrix_font_size, 150.0);
         assert!(!cfg.line_numbers);
+        assert!(!cfg.format_on_save);
+        assert_eq!(cfg.indent_type, "tab");
+        assert_eq!(cfg.tab_size, 2);
         assert_eq!(cfg.python_path, "/opt/homebrew/bin/python3");
+        assert_eq!(cfg.startup_mode, "demo");
+        assert_eq!(cfg.auto_save, "afterDelay");
+        assert_eq!(cfg.auto_save_delay, 2500);
+        assert_eq!(cfg.ai_provider, "gemini");
+        assert_eq!(cfg.ai_model, "gemini-2.5-pro");
+        assert_eq!(cfg.ai_api_key, "secret-key");
+        assert_eq!(cfg.ai_system_prompt, "Answer in Polish");
+    }
+
+    #[test]
+    fn test_yaml_helpers_and_quoting() {
+        assert_eq!(strip_yaml_inline_comment("15 # comment"), "15");
+        assert_eq!(strip_yaml_inline_comment("'#not a comment' # real comment"), "'#not a comment'");
+        assert_eq!(strip_yaml_inline_comment("\"#also not\" # comment"), "\"#also not\"");
+        assert_eq!(unquote_yaml_scalar("'Fira ''Code''' # font"), "Fira 'Code'");
+        assert_eq!(unquote_yaml_scalar("\"JetBrains \\\"Mono\\\"\""), "JetBrains \"Mono\"");
+
+        assert_eq!(parse_yaml_bool("true"), Some(true));
+        assert_eq!(parse_yaml_bool("YES"), Some(true));
+        assert_eq!(parse_yaml_bool("on"), Some(true));
+        assert_eq!(parse_yaml_bool("1"), Some(true));
+        assert_eq!(parse_yaml_bool("false"), Some(false));
+        assert_eq!(parse_yaml_bool("No"), Some(false));
+        assert_eq!(parse_yaml_bool("OFF"), Some(false));
+        assert_eq!(parse_yaml_bool("0"), Some(false));
+        assert_eq!(parse_yaml_bool("invalid"), None);
+    }
+
+    #[test]
+    fn test_expand_config_path_and_relative_path() {
+        assert_eq!(expand_config_path("", None), "");
+        assert_eq!(
+            expand_config_path(".venv/bin/python3", Some(Path::new("/workspace/proj"))),
+            "/workspace/proj/.venv/bin/python3"
+        );
+        assert_eq!(
+            expand_config_path("/abs/path/python3", Some(Path::new("/workspace/proj"))),
+            "/abs/path/python3"
+        );
+        if let Some(home) = home_dir_path() {
+            let h = home.to_string_lossy();
+            assert_eq!(expand_config_path("~", None), h);
+            assert_eq!(expand_config_path("~/notes.ppy", None), format!("{h}/notes.ppy"));
+            assert_eq!(expand_config_path("$HOME/notes.ppy", None), format!("{h}/notes.ppy"));
+        }
+
+        assert_eq!(
+            relative_path(Path::new("/a/b"), Path::new("/a/b")),
+            PathBuf::from(".")
+        );
+        assert_eq!(
+            relative_path(Path::new("/a/b"), Path::new("/a/b/c/file.tex")),
+            PathBuf::from("c/file.tex")
+        );
+        assert_eq!(
+            relative_path(Path::new("/a/b/c"), Path::new("/a/b/d/main.tex")),
+            PathBuf::from("../d/main.tex")
+        );
+        assert_eq!(
+            compute_relative_path("/a/b".into(), "/a/b/sub/test.ppy".into()).unwrap(),
+            "sub/test.ppy"
+        );
+    }
+
+    #[test]
+    fn test_filesystem_commands_and_list_dir_filtering() {
+        let tmp = std::env::temp_dir().join(format!("physpy_rust_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        create_dir(tmp.to_string_lossy().into_owned()).unwrap();
+
+        // Create visible files, directories, and ignored files (.git, .DS_Store, .foo.ppyout)
+        let sub_dir = tmp.join("alpha_dir");
+        create_dir(sub_dir.to_string_lossy().into_owned()).unwrap();
+        create_dir(tmp.join(".git").to_string_lossy().into_owned()).unwrap();
+        create_dir(tmp.join("node_modules").to_string_lossy().into_owned()).unwrap();
+
+        let file_a = tmp.join("b_script.ppy");
+        let file_b = tmp.join("a_notes.tex");
+        let file_ignored = tmp.join(".b_script.ppy.ppyout");
+        let file_ds = tmp.join(".DS_Store");
+
+        write_file(file_a.to_string_lossy().into_owned(), "x = 1\n".into()).unwrap();
+        write_file(file_b.to_string_lossy().into_owned(), "\\section{Hi}\n".into()).unwrap();
+        write_file(file_ignored.to_string_lossy().into_owned(), "{}".into()).unwrap();
+        write_file(file_ds.to_string_lossy().into_owned(), "".into()).unwrap();
+
+        assert_eq!(read_file(file_a.to_string_lossy().into_owned()).unwrap(), "x = 1\n");
+
+        // Binary file read/write (absolute and relative to base_dir)
+        let bin_path = tmp.join("plot.png");
+        write_binary_file(bin_path.to_string_lossy().into_owned(), vec![137, 80, 78, 71]).unwrap();
+        assert_eq!(
+            read_binary_file("plot.png".into(), Some(tmp.to_string_lossy().into_owned())).unwrap(),
+            vec![137, 80, 78, 71]
+        );
+
+        // list_dir should sort directories first, then alphabetically, and omit ignored entries
+        let items = list_dir(tmp.to_string_lossy().into_owned()).unwrap();
+        let names: Vec<String> = items.iter().map(|i| i.name.clone()).collect();
+        assert_eq!(names, vec!["alpha_dir", "a_notes.tex", "b_script.ppy", "plot.png"]);
+        assert!(items[0].is_dir);
+        assert!(!items[1].is_dir);
+
+        // rename_path & delete_path
+        let renamed = tmp.join("c_renamed.ppy");
+        rename_path(
+            file_a.to_string_lossy().into_owned(),
+            renamed.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert!(!file_a.exists());
+        assert!(renamed.exists());
+
+        delete_path(renamed.to_string_lossy().into_owned()).unwrap();
+        assert!(!renamed.exists());
+
+        delete_path(tmp.to_string_lossy().into_owned()).unwrap();
+        assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn test_workspace_config_scope_read_and_save() {
+        let tmp = std::env::temp_dir().join(format!("physpy_cfg_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ws_str = tmp.to_string_lossy().into_owned();
+
+        // Initially workspace config does not exist
+        let scope_init = read_config_scope("workspace".into(), Some(ws_str.clone())).unwrap();
+        assert_eq!(scope_init.scope, "workspace");
+        assert!(!scope_init.exists);
+
+        // Save custom workspace YAML
+        let custom_yaml = "font_size: 19.5\nline_numbers: false\nindent_type: tab\ntab_size: 8\n";
+        let scope_saved = save_config_scope(
+            "workspace".into(),
+            Some(ws_str.clone()),
+            custom_yaml.into(),
+        )
+        .unwrap();
+        assert!(scope_saved.exists);
+        assert_eq!(scope_saved.effective.font_size, 19.5);
+        assert!(!scope_saved.effective.line_numbers);
+        assert_eq!(scope_saved.effective.indent_type, "tab");
+        assert_eq!(scope_saved.effective.tab_size, 8);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
