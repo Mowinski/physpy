@@ -21,6 +21,7 @@ import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
 import { LatexEditorController } from "./latexEditor";
+import { toRelativePath } from "./pathUtils";
 import {
   generateStaticNotebookHtml,
   type CodeExportVisibility,
@@ -415,6 +416,7 @@ export interface MenuAction {
   danger?: boolean;
   disabled?: boolean;
   separator?: boolean;
+  children?: MenuAction[];
   run?: () => void | Promise<void>;
 }
 
@@ -446,7 +448,22 @@ if (!("focusGroup" in HTMLElement.prototype)) {
 
 let contextMenuOpenedAt = 0;
 
+let activeSubmenuEl: HTMLDivElement | null = null;
+let activeSubmenuTrigger: HTMLButtonElement | null = null;
+
+function closeContextSubmenu() {
+  if (activeSubmenuEl) {
+    activeSubmenuEl.remove();
+    activeSubmenuEl = null;
+  }
+  if (activeSubmenuTrigger) {
+    activeSubmenuTrigger.setAttribute("aria-expanded", "false");
+    activeSubmenuTrigger = null;
+  }
+}
+
 function closeContextMenu() {
+  closeContextSubmenu();
   if (contextMenuEl.matches(":popover-open")) {
     contextMenuEl.hidePopover();
   }
@@ -479,17 +496,20 @@ window.addEventListener(
 
 window.addEventListener("resize", closeContextMenu);
 
-function openContextMenu(x: number, y: number, items: MenuAction[]) {
-  contextMenuOpenedAt = performance.now();
-  contextMenuGroupEl.innerHTML = "";
+function populateMenuContainer(
+  container: HTMLElement,
+  items: MenuAction[],
+  isSubmenu: boolean,
+) {
+  container.innerHTML = "";
   for (const item of items) {
     if (item.separator) {
-      contextMenuGroupEl.append(document.createElement("hr"));
+      container.append(document.createElement("hr"));
       continue;
     }
     const btn = document.createElement("button");
     btn.type = "button";
-    if (!("focusGroup" in HTMLElement.prototype)) {
+    if (!("focusGroup" in HTMLElement.prototype) || isSubmenu) {
       btn.setAttribute("role", "menuitem");
     }
     if (item.danger) btn.classList.add("danger");
@@ -499,7 +519,16 @@ function openContextMenu(x: number, y: number, items: MenuAction[]) {
     lbl.textContent = item.label ?? "";
     btn.append(lbl);
 
-    if (item.shortcut) {
+    const hasChildren = Boolean(item.children && item.children.length > 0);
+    if (hasChildren) {
+      btn.setAttribute("aria-haspopup", "menu");
+      btn.setAttribute("aria-expanded", "false");
+      const arrow = document.createElement("span");
+      arrow.className = "hint submenu-arrow";
+      arrow.setAttribute("aria-hidden", "true");
+      arrow.textContent = "▸";
+      btn.append(arrow);
+    } else if (item.shortcut) {
       const hint = document.createElement("span");
       hint.className = "hint";
       hint.setAttribute("aria-hidden", "true");
@@ -507,19 +536,111 @@ function openContextMenu(x: number, y: number, items: MenuAction[]) {
       btn.append(hint);
     }
 
+    const openChildSubmenu = (focusFirstChild: boolean) => {
+      if (!hasChildren || btn.disabled || !item.children) return;
+      if (activeSubmenuTrigger === btn && activeSubmenuEl) {
+        if (focusFirstChild) {
+          activeSubmenuEl
+            .querySelector<HTMLButtonElement>("button:not([disabled])")
+            ?.focus({ preventScroll: true });
+        }
+        return;
+      }
+      closeContextSubmenu();
+      const sub = document.createElement("div");
+      sub.className = "context-submenu";
+      sub.setAttribute("role", "menu");
+      populateMenuContainer(sub, item.children, true);
+      contextMenuEl.append(sub);
+      activeSubmenuEl = sub;
+      activeSubmenuTrigger = btn;
+      btn.setAttribute("aria-expanded", "true");
+
+      const triggerRect = btn.getBoundingClientRect();
+      const subRect = sub.getBoundingClientRect();
+      let left = triggerRect.right - 2;
+      if (left + subRect.width > window.innerWidth - 6) {
+        left = Math.max(4, triggerRect.left - subRect.width + 2);
+      }
+      let top = triggerRect.top - 4;
+      if (top + subRect.height > window.innerHeight - 6) {
+        top = Math.max(4, window.innerHeight - subRect.height - 6);
+      }
+      sub.style.left = `${left}px`;
+      sub.style.top = `${top}px`;
+
+      if (focusFirstChild) {
+        sub
+          .querySelector<HTMLButtonElement>("button:not([disabled])")
+          ?.focus({ preventScroll: true });
+      }
+    };
+
     btn.addEventListener("pointermove", () => {
       if (!btn.disabled) btn.focus({ preventScroll: true });
+      if (!isSubmenu) {
+        if (hasChildren && !btn.disabled) {
+          openChildSubmenu(false);
+        } else {
+          closeContextSubmenu();
+        }
+      }
     });
+
+    if (hasChildren) {
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          e.stopPropagation();
+          openChildSubmenu(true);
+        }
+      });
+    }
+
+    if (isSubmenu) {
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          e.stopPropagation();
+          const trigger = activeSubmenuTrigger;
+          closeContextSubmenu();
+          trigger?.focus({ preventScroll: true });
+        } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          e.stopPropagation();
+          const siblings = [
+            ...container.querySelectorAll<HTMLButtonElement>("button:not([disabled])"),
+          ];
+          if (siblings.length === 0) return;
+          const idx = siblings.indexOf(btn);
+          const nextIdx =
+            (idx + (e.key === "ArrowUp" ? -1 : 1) + siblings.length) % siblings.length;
+          siblings[nextIdx].focus({ preventScroll: true });
+        }
+      });
+    }
+
     btn.addEventListener("click", (e) => {
       // Ignore stray click generated when releasing macOS Ctrl+click that opened the menu
       if (e.ctrlKey && performance.now() - contextMenuOpenedAt < 300) {
         return;
       }
+      if (hasChildren) {
+        e.stopPropagation();
+        openChildSubmenu(true);
+        return;
+      }
       closeContextMenu();
       void item.run?.();
     });
-    contextMenuGroupEl.append(btn);
+    container.append(btn);
   }
+}
+
+function openContextMenu(x: number, y: number, items: MenuAction[]) {
+  contextMenuOpenedAt = performance.now();
+  closeContextSubmenu();
+  populateMenuContainer(contextMenuGroupEl, items, false);
 
   const targetX = x + 2;
   const targetY = y + 2;
@@ -538,6 +659,31 @@ function openContextMenu(x: number, y: number, items: MenuAction[]) {
 
   const firstBtn = contextMenuGroupEl.querySelector<HTMLButtonElement>("button:not([disabled])");
   firstBtn?.focus({ preventScroll: true });
+}
+
+function buildCopyPathAction(targetPath: string | null | undefined): MenuAction {
+  return {
+    label: "Copy Path",
+    disabled: !targetPath,
+    children: [
+      {
+        label: "Absolute",
+        disabled: !targetPath,
+        run: () => {
+          if (targetPath) void navigator.clipboard?.writeText(targetPath);
+        },
+      },
+      {
+        label: "Relative",
+        disabled: !targetPath || !rootDir,
+        run: () => {
+          if (targetPath && rootDir) {
+            void navigator.clipboard?.writeText(toRelativePath(rootDir, targetPath));
+          }
+        },
+      },
+    ],
+  };
 }
 
 // --- Tabs Management -------------------------------------------------------
@@ -653,13 +799,7 @@ function renderTabsBar() {
             await saveFile();
           },
         },
-        {
-          label: "Copy Path",
-          disabled: !tab.path,
-          run: () => {
-            if (tab.path) void navigator.clipboard?.writeText(tab.path);
-          },
-        },
+        buildCopyPathAction(tab.path),
       ]);
     });
 
@@ -2262,10 +2402,7 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
           { label: "Rename…", run: () => promptRenameEntry(entry) },
           { label: "Delete Folder", danger: true, run: () => confirmDeleteEntry(entry) },
           { separator: true },
-          {
-            label: "Copy Path",
-            run: () => void navigator.clipboard?.writeText(entry.path),
-          },
+          buildCopyPathAction(entry.path),
         ]);
       });
     } else {
@@ -2326,10 +2463,7 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
           { label: "Rename…", run: () => promptRenameEntry(entry) },
           { label: "Delete File", danger: true, run: () => confirmDeleteEntry(entry) },
           { separator: true },
-          {
-            label: "Copy Path",
-            run: () => void navigator.clipboard?.writeText(entry.path),
-          },
+          buildCopyPathAction(entry.path),
         );
         openContextMenu(e.clientX, e.clientY, actions);
       });

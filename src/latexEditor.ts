@@ -9,6 +9,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import * as backend from "./backend";
 import { SYMBOLS } from "./editor/symbols";
+import { parseLatexLog, type LatexLogEntry } from "./latexLogParser";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -342,7 +343,11 @@ export class LatexEditorController {
   private readonly pdfScrollEl: HTMLDivElement;
   private readonly pdfEmptyEl: HTMLDivElement;
   private readonly logDrawer: HTMLDivElement;
+  private readonly logSummaryEl: HTMLSpanElement;
+  private readonly btnLogViewMode: HTMLButtonElement;
+  private readonly logTableWrap: HTMLDivElement;
   private readonly logPre: HTMLPreElement;
+  private showRawLog = false;
 
   private currentFilePath: string | null = null;
   private suppressChange = false;
@@ -531,8 +536,26 @@ export class LatexEditorController {
 
     const logHeader = document.createElement("div");
     logHeader.className = "latex-log-header";
+    const logTitleGroup = document.createElement("div");
+    logTitleGroup.className = "latex-log-title-group";
     const logTitle = document.createElement("span");
     logTitle.textContent = "LaTeX Build Log";
+    this.logSummaryEl = document.createElement("span");
+    this.logSummaryEl.className = "latex-log-summary";
+    logTitleGroup.append(logTitle, this.logSummaryEl);
+
+    const logActions = document.createElement("div");
+    logActions.className = "latex-log-actions";
+    this.btnLogViewMode = document.createElement("button");
+    this.btnLogViewMode.type = "button";
+    this.btnLogViewMode.className = "latex-small-btn";
+    this.btnLogViewMode.textContent = "Raw Log";
+    this.btnLogViewMode.title = "Switch between parsed error table and raw compiler log";
+    this.btnLogViewMode.addEventListener("click", () => {
+      this.showRawLog = !this.showRawLog;
+      this.syncLogViewMode();
+    });
+
     const btnCloseLog = document.createElement("button");
     btnCloseLog.type = "button";
     btnCloseLog.className = "sidebar-icon-btn";
@@ -541,12 +564,21 @@ export class LatexEditorController {
       this.logDrawer.hidden = true;
       this.btnToggleLog.classList.remove("is-active");
     });
-    logHeader.append(logTitle, btnCloseLog);
+    logActions.append(this.btnLogViewMode, btnCloseLog);
+    logHeader.append(logTitleGroup, logActions);
+
+    this.logTableWrap = document.createElement("div");
+    this.logTableWrap.className = "latex-log-table-wrap";
+    const emptyLogMsg = document.createElement("div");
+    emptyLogMsg.className = "latex-log-empty";
+    emptyLogMsg.textContent = "No build log yet.";
+    this.logTableWrap.append(emptyLogMsg);
 
     this.logPre = document.createElement("pre");
     this.logPre.className = "latex-log-pre";
     this.logPre.textContent = "No build log yet.";
-    this.logDrawer.append(logHeader, this.logPre);
+    this.logPre.hidden = true;
+    this.logDrawer.append(logHeader, this.logTableWrap, this.logPre);
 
     this.root.append(toolbar, splitWrap, this.logDrawer);
 
@@ -951,7 +983,7 @@ export class LatexEditorController {
 
     try {
       const res = await backend.buildLatex(target, baseDir, engine);
-      this.logPre.textContent = res.log || "(no compiler output)";
+      this.renderBuildLog(res.log || "", !res.success);
       if (res.success) {
         this.buildBadgeEl.className = "latex-build-badge is-ok";
         const shortTarget = res.resolved_target.split(/[\\/]/).pop() || target;
@@ -973,7 +1005,7 @@ export class LatexEditorController {
         this.opts.setStatus(`LaTeX build failed (${engine}) — see Build Log`);
       }
     } catch (err) {
-      this.logPre.textContent = String(err);
+      this.renderBuildLog(String(err), true);
       this.buildBadgeEl.className = "latex-build-badge is-err";
       this.buildBadgeEl.textContent = "✕ Build error";
       this.logDrawer.hidden = false;
@@ -984,5 +1016,124 @@ export class LatexEditorController {
       this.btnBuild.disabled = false;
       this.btnBuild.textContent = "▶ Build PDF";
     }
+  }
+
+  private syncLogViewMode(): void {
+    this.logTableWrap.hidden = this.showRawLog;
+    this.logPre.hidden = !this.showRawLog;
+    this.btnLogViewMode.textContent = this.showRawLog ? "Errors Table" : "Raw Log";
+    this.btnLogViewMode.classList.toggle("is-active", this.showRawLog);
+  }
+
+  private jumpToLine(lineNum: number): void {
+    const doc = this.editorView.state.doc;
+    if (lineNum < 1 || lineNum > doc.lines) return;
+    const lineInfo = doc.line(lineNum);
+    this.editorView.dispatch({
+      selection: { anchor: lineInfo.from },
+      effects: EditorView.scrollIntoView(lineInfo.from, { y: "center" }),
+    });
+    this.editorView.focus();
+  }
+
+  private renderBuildLog(rawLog: string, failed: boolean): void {
+    this.logPre.textContent = rawLog || "(no compiler output)";
+    const parsed = parseLatexLog(rawLog);
+    const entries: LatexLogEntry[] = [...parsed.entries];
+
+    if (failed && entries.length === 0 && rawLog.trim()) {
+      const firstLine =
+        rawLog
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find(Boolean) || "LaTeX build failed";
+      entries.push({
+        severity: "error",
+        file: null,
+        line: null,
+        message: firstLine,
+      });
+    }
+
+    const errCount = entries.filter((e) => e.severity === "error").length;
+    const warnCount = entries.filter((e) => e.severity === "warning").length;
+    const infoCount = entries.filter((e) => e.severity === "info").length;
+
+    const summaryParts: string[] = [];
+    if (errCount > 0) summaryParts.push(`${errCount} error${errCount === 1 ? "" : "s"}`);
+    if (warnCount > 0) summaryParts.push(`${warnCount} warning${warnCount === 1 ? "" : "s"}`);
+    if (infoCount > 0) summaryParts.push(`${infoCount} box`);
+    this.logSummaryEl.textContent = summaryParts.length > 0 ? `(${summaryParts.join(", ")})` : "(No issues)";
+    this.logSummaryEl.className = `latex-log-summary${errCount > 0 ? " has-errors" : warnCount > 0 ? " has-warnings" : ""}`;
+
+    this.logTableWrap.innerHTML = "";
+    if (entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "latex-log-empty";
+      empty.textContent = rawLog.trim()
+        ? "No errors or warnings detected in build log."
+        : "(no compiler output)";
+      this.logTableWrap.append(empty);
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "latex-log-table";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const col of ["Type", "Line", "File", "Message"]) {
+      const th = document.createElement("th");
+      th.textContent = col;
+      headRow.append(th);
+    }
+    thead.append(headRow);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const entry of entries) {
+      const tr = document.createElement("tr");
+      tr.className = `is-${entry.severity}${entry.line !== null ? " is-clickable" : ""}`;
+      if (entry.line !== null) {
+        tr.title = `Jump to line ${entry.line}`;
+        tr.addEventListener("click", () => this.jumpToLine(entry.line!));
+      }
+
+      const tdType = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = `latex-log-badge is-${entry.severity}`;
+      badge.textContent =
+        entry.severity === "error" ? "Error" : entry.severity === "warning" ? "Warning" : "Info";
+      tdType.append(badge);
+
+      const tdLine = document.createElement("td");
+      tdLine.className = "latex-log-line";
+      tdLine.textContent = entry.line !== null ? String(entry.line) : "—";
+
+      const tdFile = document.createElement("td");
+      tdFile.className = "latex-log-file";
+      if (entry.file) {
+        tdFile.textContent = entry.file.split(/[\\/]/).pop() || entry.file;
+        tdFile.title = entry.file;
+      } else {
+        tdFile.textContent = "—";
+      }
+
+      const tdMsg = document.createElement("td");
+      tdMsg.className = "latex-log-msg";
+      const msgMain = document.createElement("div");
+      msgMain.textContent = entry.message;
+      tdMsg.append(msgMain);
+      if (entry.context) {
+        const msgCtx = document.createElement("code");
+        msgCtx.className = "latex-log-ctx";
+        msgCtx.textContent = entry.context;
+        tdMsg.append(msgCtx);
+      }
+
+      tr.append(tdType, tdLine, tdFile, tdMsg);
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    this.logTableWrap.append(table);
   }
 }
