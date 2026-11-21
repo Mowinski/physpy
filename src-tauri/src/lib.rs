@@ -273,6 +273,8 @@ pub struct AppConfig {
     pub ai_model: String,
     pub ai_api_key: String,
     pub ai_system_prompt: String,
+    #[serde(default)]
+    pub constants: HashMap<String, f64>,
     pub resolved_startup_dir: String,
     pub global_config_path: String,
     pub workspace_config_path: Option<String>,
@@ -390,6 +392,25 @@ static SELECTED_PYTHON: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn selected_python_mutex() -> &'static Mutex<Option<String>> {
     SELECTED_PYTHON.get_or_init(|| Mutex::new(None))
+}
+
+static ACTIVE_CONSTANTS: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+
+fn active_constants_mutex() -> &'static Mutex<HashMap<String, f64>> {
+    ACTIVE_CONSTANTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_active_constants() -> HashMap<String, f64> {
+    active_constants_mutex()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+fn set_active_constants(map: HashMap<String, f64>) {
+    if let Ok(mut g) = active_constants_mutex().lock() {
+        *g = map;
+    }
 }
 
 fn worker_mutex() -> &'static Mutex<Option<WorkerProcess>> {
@@ -560,6 +581,7 @@ async fn run_cell(
 ) -> Result<CellOutput, String> {
     blocking(move || {
         with_worker(|w| {
+            let constants = get_active_constants();
             let resp = w.send(&serde_json::json!({
                 "cmd": "run_cell",
                 "source": source,
@@ -567,6 +589,7 @@ async fn run_cell(
                 "cwd": cwd,
                 "cell_index": cell_index,
                 "doc_source": doc_source.unwrap_or_default(),
+                "constants": constants,
             }))?;
             if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(resp
@@ -591,6 +614,7 @@ async fn debug_start_cell(
 ) -> Result<DebugEvent, String> {
     blocking(move || {
         with_worker(|w| {
+            let constants = get_active_constants();
             let resp = w.send(&serde_json::json!({
                 "cmd": "debug_start",
                 "source": source,
@@ -598,6 +622,7 @@ async fn debug_start_cell(
                 "cwd": cwd,
                 "cell_index": cell_index,
                 "doc_source": doc_source.unwrap_or_default(),
+                "constants": constants,
             }))?;
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
@@ -614,6 +639,27 @@ async fn debug_action(action: String) -> Result<DebugEvent, String> {
             }))?;
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_constant_overrides(constants: HashMap<String, f64>) -> Result<(), String> {
+    let clean: HashMap<String, f64> = constants
+        .into_iter()
+        .filter(|(k, v)| !k.trim().is_empty() && v.is_finite())
+        .collect();
+    set_active_constants(clean.clone());
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            w.send(&serde_json::json!({
+                "cmd": "set_constants",
+                "constants": clean,
+            }))?;
+            Ok(())
+        })?;
+        let _ = maybe;
+        Ok(())
     })
     .await
 }
@@ -1247,6 +1293,16 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
             "ai_system_prompt" | "aiSystemPrompt" | "ai.system_prompt" => {
                 cfg.ai_system_prompt = scalar;
             }
+            _ if full_key.starts_with("constants.") => {
+                let cname = &full_key["constants.".len()..];
+                if !cname.is_empty() {
+                    if let Ok(v) = scalar.trim().parse::<f64>() {
+                        if v.is_finite() {
+                            cfg.constants.insert(cname.to_string(), v);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1290,6 +1346,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         ai_model: "gemini-3.8-flash".to_string(),
         ai_api_key: String::new(),
         ai_system_prompt: String::new(),
+        constants: HashMap::new(),
         resolved_startup_dir: default_startup,
         global_config_path: global_config_file.to_string_lossy().into_owned(),
         workspace_config_path: None,
@@ -1323,7 +1380,9 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
 
 #[tauri::command]
 fn load_config(workspace_dir: Option<String>) -> Result<AppConfig, String> {
-    Ok(resolve_hierarchical_config(workspace_dir))
+    let cfg = resolve_hierarchical_config(workspace_dir);
+    set_active_constants(cfg.constants.clone());
+    Ok(cfg)
 }
 
 fn format_config_yaml_template(scope_title: &str, cfg: &AppConfig) -> String {
@@ -1333,7 +1392,7 @@ fn format_config_yaml_template(scope_title: &str, cfg: &AppConfig) -> String {
     let escaped_file = cfg.startup_file.replace('"', "\\\"");
     let escaped_model = cfg.ai_model.replace('"', "\\\"");
     let escaped_sys = cfg.ai_system_prompt.replace('"', "\\\"");
-    format!(
+    let mut out = format!(
         "# {scope_title}\n\n\
 # 1. Editor font family, size (px), and matrix KaTeX font size (%)\n\
 font_family: '{escaped_font}'\n\
@@ -1362,7 +1421,18 @@ ai_system_prompt: \"{escaped_sys}\"\n",
         cfg.auto_save,
         cfg.auto_save_delay,
         cfg.ai_provider
-    )
+    );
+    if !cfg.constants.is_empty() {
+        out.push_str("\n# 8. Physical Constants Overrides\nconstants:\n");
+        let mut keys: Vec<&String> = cfg.constants.keys().collect();
+        keys.sort();
+        for k in keys {
+            if let Some(v) = cfg.constants.get(k) {
+                out.push_str(&format!("  {k}: {v}\n"));
+            }
+        }
+    }
+    out
 }
 
 #[tauri::command]
@@ -1431,6 +1501,7 @@ fn read_config_scope(
             ai_model: "gemini-3.8-flash".to_string(),
             ai_api_key: String::new(),
             ai_system_prompt: String::new(),
+            constants: HashMap::new(),
             resolved_startup_dir: effective.resolved_startup_dir.clone(),
             global_config_path: effective.global_config_path.clone(),
             workspace_config_path: effective.workspace_config_path.clone(),
@@ -2491,6 +2562,9 @@ pub fn run() {
             let toggle_warnings_item = MenuItemBuilder::with_id("menu_warnings", "Warnings Panel")
                 .accelerator("CmdOrCtrl+Shift+J")
                 .build(app)?;
+            let toggle_constants_item =
+                MenuItemBuilder::with_id("menu_constants", "Constants Panel")
+                    .build(app)?;
             let toggle_code_item =
                 MenuItemBuilder::with_id("menu_python_code", "Generated Python Code")
                     .accelerator("CmdOrCtrl+P")
@@ -2506,6 +2580,7 @@ pub fn run() {
                 .separator()
                 .item(&toggle_variables_item)
                 .item(&toggle_warnings_item)
+                .item(&toggle_constants_item)
                 .item(&toggle_code_item)
                 .separator()
                 .item(&toggle_sidebar_item)
@@ -2584,6 +2659,7 @@ pub fn run() {
             debug_start_cell,
             debug_action,
             reset_session,
+            set_constant_overrides,
             complete_python,
             signature_python,
             inspect_variable,
@@ -2646,6 +2722,7 @@ mod tests {
             ai_model: "gemini-3.8-flash".to_string(),
             ai_api_key: String::new(),
             ai_system_prompt: String::new(),
+            constants: HashMap::new(),
             resolved_startup_dir: "/tmp".to_string(),
             global_config_path: "/tmp/config.yaml".to_string(),
             workspace_config_path: None,
@@ -2673,12 +2750,20 @@ startup_dir: "/tmp"
 font_size: 17.5
 line_numbers: false # hide line numbers in this project
 python_path: ".venv/bin/python3"
+constants:
+  g: 9.8123
+  G: 6.674e-11
 "#;
         apply_yaml_config_str(workspace_yaml, Some(Path::new("/tmp/myproj")), &mut cfg);
         assert_eq!(cfg.font_family, "JetBrains Mono, monospace");
         assert_eq!(cfg.font_size, 17.5);
         assert!(!cfg.line_numbers);
         assert_eq!(cfg.python_path, "/tmp/myproj/.venv/bin/python3");
+        assert_eq!(cfg.constants.get("g"), Some(&9.8123));
+        assert_eq!(cfg.constants.get("G"), Some(&6.674e-11));
+        let rendered = format_config_yaml_template("Test", &cfg);
+        assert!(rendered.contains("constants:\n"));
+        assert!(rendered.contains("  g: 9.8123\n"));
     }
 
     #[test]

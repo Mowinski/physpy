@@ -5,7 +5,7 @@
  * while the document text stays plain ASCII. When the cursor/selection touches
  * a decorated range, the raw source is shown so it can be edited.
  */
-import { RangeSetBuilder } from "@codemirror/state";
+import { RangeSetBuilder, StateEffect } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import {
   Decoration,
@@ -20,14 +20,16 @@ import katex from "katex";
 import {
   ACCENTS,
   CONST_CALL_RE,
-  PHYSICAL_CONSTANTS,
   SYMBOL_RE,
   SYMBOL_TAIL_SOURCE,
   accentToLatex,
+  getEffectiveConstant,
   isValidAccentSymbol,
   isValidSymbol,
   toLatex,
 } from "./symbols";
+
+export const refreshMathSymbolsEffect = StateEffect.define<null>();
 
 const ACCENT_ALT = Object.keys(ACCENTS).join("|");
 const EXPR_SYMBOL_SOURCE = `\\\\(?:(${ACCENT_ALT})\\{((?:\\\\[A-Za-z]+\\w*|[A-Za-z_]\\w*))\\}|([A-Za-z]+))(${SYMBOL_TAIL_SOURCE})|([A-Za-z_]\\w*)`;
@@ -122,7 +124,7 @@ function exprToLatex(expr: string): string {
 
   // 3. Convert built-in physical constants \const{name}, PhysPy \symbols, and plain identifiers
   out = out.replace(new RegExp(CONST_CALL_RE.source, "g"), (full, cname: string) => {
-    const entry = PHYSICAL_CONSTANTS[cname];
+    const entry = getEffectiveConstant(cname);
     return entry ? entry.latex : full;
   });
 
@@ -299,9 +301,12 @@ function buildDecorations(view: EditorView): DecorationSet {
         const start = lineFrom + m.index!;
         const end = start + m[0].length;
         const [raw, cname] = m;
-        const entry = PHYSICAL_CONSTANTS[cname];
+        const entry = getEffectiveConstant(cname);
         if (!entry) continue;
         if (inStringOrComment(state, tree, start) || cursorTouches(start, end)) continue;
+        const title = entry.overridden
+          ? `${raw} = ${entry.value} ${entry.unit} (${entry.label}; default: ${entry.defaultValue})`
+          : `${raw} = ${entry.value} ${entry.unit} (${entry.label})`;
         items.push({
           from: start,
           to: end,
@@ -309,8 +314,8 @@ function buildDecorations(view: EditorView): DecorationSet {
             widget: new MathWidget(
               entry.latex,
               raw,
-              "cm-math-symbol cm-math-const",
-              `${raw} = ${entry.value} ${entry.unit} (${entry.label})`,
+              entry.overridden ? "cm-math-symbol cm-math-const cm-math-const-overridden" : "cm-math-symbol cm-math-const",
+              title,
             ),
           }),
         });
@@ -390,7 +395,8 @@ export const mathSymbols = ViewPlugin.fromClass(
         u.docChanged ||
         u.viewportChanged ||
         u.selectionSet ||
-        syntaxTree(u.startState) !== syntaxTree(u.state)
+        syntaxTree(u.startState) !== syntaxTree(u.state) ||
+        u.transactions.some((tr) => tr.effects.some((e) => e.is(refreshMathSymbolsEffect)))
       ) {
         this.decorations = buildDecorations(u.view);
       }
