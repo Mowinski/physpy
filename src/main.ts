@@ -15,7 +15,14 @@ import {
   setGlobalIndentConfig,
   type VariableHoverInfo,
 } from "./editor/setup";
-import { replaceSymbolsInIdent } from "./editor/symbols";
+import {
+  PHYSICAL_CONSTANTS,
+  getConstantOverrides,
+  getEffectiveConstant,
+  replaceSymbolsInIdent,
+  setConstantOverrides,
+} from "./editor/symbols";
+import { refreshMathSymbolsEffect } from "./editor/mathSymbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
 import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
@@ -262,6 +269,9 @@ const cfgAiModelsStatus = $<HTMLSpanElement>("cfg-ai-models-status");
 const cfgAiApiKeyInput = $<HTMLInputElement>("cfg-ai-api-key");
 const btnCfgAiToggleKey = $<HTMLButtonElement>("btn-cfg-ai-toggle-key");
 const cfgAiSystemPromptInput = $<HTMLInputElement>("cfg-ai-system-prompt");
+const cfgConstantsFilterInput = $<HTMLInputElement>("cfg-constants-filter");
+const cfgConstantsListEl = $<HTMLDivElement>("cfg-constants-list");
+const btnCfgResetAllConstants = $<HTMLButtonElement>("btn-cfg-reset-all-constants");
 const cfgRawYamlInput = $<HTMLTextAreaElement>("cfg-raw-yaml");
 
 const DEFAULT_AI_MODEL = "gemini-3.8-flash";
@@ -288,11 +298,16 @@ const btnWarningsEl = $<HTMLButtonElement>("btn-warnings");
 const warningsCountEl = $<HTMLSpanElement>("warnings-count");
 const tabDrawerVariablesEl = $<HTMLButtonElement>("tab-drawer-variables");
 const tabDrawerWarningsEl = $<HTMLButtonElement>("tab-drawer-warnings");
+const tabDrawerConstantsEl = $<HTMLButtonElement>("tab-drawer-constants");
 const drawerVarsCountEl = $<HTMLSpanElement>("drawer-vars-count");
 const drawerWarnCountEl = $<HTMLSpanElement>("drawer-warn-count");
+const drawerConstCountEl = $<HTMLSpanElement>("drawer-const-count");
 const drawerPaneVariablesEl = $<HTMLDivElement>("drawer-pane-variables");
 const drawerPaneWarningsEl = $<HTMLDivElement>("drawer-pane-warnings");
+const drawerPaneConstantsEl = $<HTMLDivElement>("drawer-pane-constants");
 const warningsTbodyEl = $<HTMLTableSectionElement>("warnings-tbody");
+const constantsTbodyEl = $<HTMLTableSectionElement>("constants-tbody");
+const drawerConstantsFilterInput = $<HTMLInputElement>("drawer-constants-filter");
 const interpreterLabelEl = $<HTMLSpanElement>("interpreter-label");
 const pythonDialog = $<HTMLDialogElement>("python-dialog");
 const pythonListEl = $<HTMLDivElement>("python-list");
@@ -1127,6 +1142,7 @@ async function applyHierarchicalConfig(
       }
     }
     await refreshInterpreterBadge();
+    applyConstantOverridesEverywhere(cfg.constants ?? {}, true);
     return cfg;
   } catch {
     return null;
@@ -1162,6 +1178,159 @@ function updateTabSizeRowVisibility() {
     cfgTabSizeRow.style.display =
       cfgIndentTypeSelect.value === "spaces" ? "flex" : "none";
   }
+}
+
+const CONSTANTS_STORAGE_KEY = "physpy_constant_overrides_v1";
+let settingsConstantOverrides: Record<string, number> = {};
+
+function parseFiniteConstantValue(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const num = Number(trimmed);
+  return Number.isFinite(num) ? num : null;
+}
+
+function applyConstantOverridesEverywhere(
+  overrides: Record<string, number>,
+  syncWorker = true,
+) {
+  setConstantOverrides(overrides);
+  const active = getConstantOverrides();
+  const count = Object.keys(active).length;
+  drawerConstCountEl.textContent = String(count);
+  drawerConstCountEl.hidden = count === 0;
+
+  for (const c of cells) {
+    c.view.dispatch({ effects: refreshMathSymbolsEffect.of(null) });
+  }
+  renderDrawerConstantsTable();
+
+  if (syncWorker && backend.inTauri) {
+    void backend.setConstantOverrides(active);
+  } else if (!backend.inTauri) {
+    try {
+      if (count > 0) {
+        localStorage.setItem(CONSTANTS_STORAGE_KEY, JSON.stringify(active));
+      } else {
+        localStorage.removeItem(CONSTANTS_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+function renderSettingsConstantsTable() {
+  if (!cfgConstantsListEl) return;
+  const filter = (cfgConstantsFilterInput?.value ?? "").trim().toLowerCase();
+  const table = document.createElement("table");
+  table.className = "constants-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th style="width: 120px;">Constant</th>
+        <th>Description</th>
+        <th style="width: 110px;">Unit</th>
+        <th style="width: 145px;">Default</th>
+        <th style="width: 220px;">Override Value</th>
+      </tr>
+    </thead>
+  `;
+  const tbody = document.createElement("tbody");
+  for (const [name, info] of Object.entries(PHYSICAL_CONSTANTS)) {
+    if (
+      filter &&
+      !name.toLowerCase().includes(filter) &&
+      !info.label.toLowerCase().includes(filter) &&
+      !info.unit.toLowerCase().includes(filter)
+    ) {
+      continue;
+    }
+    const hasOverride = Object.prototype.hasOwnProperty.call(settingsConstantOverrides, name);
+    const tr = document.createElement("tr");
+    if (hasOverride) tr.classList.add("is-overridden");
+
+    const tdName = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = `\\const{${name}}`;
+    tdName.append(code);
+
+    const tdLabel = document.createElement("td");
+    tdLabel.textContent = info.label;
+
+    const tdUnit = document.createElement("td");
+    const unitCode = document.createElement("code");
+    unitCode.textContent = info.unit;
+    tdUnit.append(unitCode);
+
+    const tdDefault = document.createElement("td");
+    const defCode = document.createElement("code");
+    defCode.textContent = String(info.value);
+    tdDefault.append(defCode);
+
+    const tdVal = document.createElement("td");
+    const group = document.createElement("div");
+    group.className = "constants-val-group";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.className = "constants-val-input";
+    if (hasOverride) input.classList.add("is-overridden");
+    input.placeholder = String(info.value);
+    input.value = hasOverride ? String(settingsConstantOverrides[name]) : "";
+    input.setAttribute("aria-label", `Override value for ${name}`);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "constants-reset-btn";
+    resetBtn.textContent = "↺";
+    resetBtn.title = `Reset ${name} to ${info.value}`;
+    resetBtn.disabled = !hasOverride;
+
+    input.addEventListener("input", () => {
+      const raw = input.value.trim();
+      if (!raw) {
+        delete settingsConstantOverrides[name];
+        input.classList.remove("is-invalid", "is-overridden");
+        tr.classList.remove("is-overridden");
+        resetBtn.disabled = true;
+        cfgRawYamlInput.value = buildYamlFromSettingsForm();
+        markSettingsTabDirty(true);
+        return;
+      }
+      const parsed = parseFiniteConstantValue(raw);
+      if (parsed === null) {
+        input.classList.add("is-invalid");
+        return;
+      }
+      input.classList.remove("is-invalid");
+      input.classList.add("is-overridden");
+      tr.classList.add("is-overridden");
+      resetBtn.disabled = false;
+      settingsConstantOverrides[name] = parsed;
+      cfgRawYamlInput.value = buildYamlFromSettingsForm();
+      markSettingsTabDirty(true);
+    });
+
+    resetBtn.addEventListener("click", () => {
+      delete settingsConstantOverrides[name];
+      input.value = "";
+      input.classList.remove("is-invalid", "is-overridden");
+      tr.classList.remove("is-overridden");
+      resetBtn.disabled = true;
+      cfgRawYamlInput.value = buildYamlFromSettingsForm();
+      markSettingsTabDirty(true);
+    });
+
+    group.append(input, resetBtn);
+    tdVal.append(group);
+    tr.append(tdName, tdLabel, tdUnit, tdDefault, tdVal);
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  cfgConstantsListEl.innerHTML = "";
+  cfgConstantsListEl.append(table);
 }
 
 function buildYamlFromSettingsForm(): string {
@@ -1227,6 +1396,14 @@ function buildYamlFromSettingsForm(): string {
     lines.push(`ai_api_key: "${aiApiKey}"`);
   }
   lines.push(`ai_system_prompt: "${aiSystemPrompt}"`, "");
+  const constKeys = Object.keys(settingsConstantOverrides).sort();
+  if (constKeys.length > 0) {
+    lines.push("# 8. Physical Constants Overrides", "constants:");
+    for (const k of constKeys) {
+      lines.push(`  ${k}: ${settingsConstantOverrides[k]}`);
+    }
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -1298,9 +1475,13 @@ async function refreshAiModelsList(silent = false) {
 }
 
 function syncSettingsFormFromYamlText(yamlText: string) {
+  let inConstantsSection = false;
+  const parsedConstants: Record<string, number> = {};
   for (const rawLine of yamlText.split("\n")) {
+    const indent = rawLine.length - rawLine.trimStart().length;
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
+    if (indent === 0) inConstantsSection = false;
     const colonIdx = line.indexOf(":");
     if (colonIdx < 0) continue;
     const key = line.slice(0, colonIdx).trim();
@@ -1314,6 +1495,17 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       (val.startsWith("'") && val.endsWith("'"))
     ) {
       val = val.slice(1, -1).replace(/\\"/g, '"').replace(/''/g, "'");
+    }
+    if (indent === 0 && key === "constants" && !val) {
+      inConstantsSection = true;
+      continue;
+    }
+    if (inConstantsSection && indent > 0) {
+      if (key in PHYSICAL_CONSTANTS) {
+        const num = parseFiniteConstantValue(val);
+        if (num !== null) parsedConstants[key] = num;
+      }
+      continue;
     }
     if (key === "font_family" || key === "fontFamily") {
       cfgFontFamilyInput.value = val;
@@ -1381,6 +1573,8 @@ function syncSettingsFormFromYamlText(yamlText: string) {
   updateStartupFileRowVisibility();
   updateAutoSaveDelayRowVisibility();
   updateTabSizeRowVisibility();
+  settingsConstantOverrides = parsedConstants;
+  renderSettingsConstantsTable();
 }
 
 async function loadSettingsScope(scope: "global" | "workspace") {
@@ -1423,8 +1617,10 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     renderAiModelSelectOptions(data.parsed.ai_model || DEFAULT_AI_MODEL);
     cfgAiApiKeyInput.value = scope === "global" ? data.parsed.ai_api_key || "" : "";
     cfgAiSystemPromptInput.value = data.parsed.ai_system_prompt || "";
+    settingsConstantOverrides = { ...(data.parsed.constants ?? {}) };
     cfgRawYamlInput.value = data.raw_yaml;
     syncSettingsFormFromYamlText(data.raw_yaml);
+    renderSettingsConstantsTable();
     updateStartupFileRowVisibility();
     updateAutoSaveDelayRowVisibility();
     updateTabSizeRowVisibility();
@@ -1548,6 +1744,17 @@ btnCfgScopeGlobal.addEventListener("click", () => void loadSettingsScope("global
 btnCfgScopeWorkspace.addEventListener("click", () => void loadSettingsScope("workspace"));
 $("btn-cfg-reload").addEventListener("click", () => void loadSettingsScope(activeSettingsScope));
 $("btn-cfg-save").addEventListener("click", () => void saveSettingsScope());
+
+cfgConstantsFilterInput?.addEventListener("input", () => {
+  renderSettingsConstantsTable();
+});
+
+btnCfgResetAllConstants?.addEventListener("click", () => {
+  settingsConstantOverrides = {};
+  renderSettingsConstantsTable();
+  cfgRawYamlInput.value = buildYamlFromSettingsForm();
+  markSettingsTabDirty(true);
+});
 
 $("btn-cfg-browse-python").addEventListener("click", async () => {
   if (!requireTauri()) return;
@@ -2838,7 +3045,7 @@ function scanExportsInCells(): Map<string, ScannedExport> {
   return map;
 }
 
-type DrawerTab = "variables" | "warnings";
+type DrawerTab = "variables" | "warnings" | "constants";
 let activeDrawerTab: DrawerTab = "variables";
 
 interface NotebookWarning {
@@ -2849,23 +3056,142 @@ interface NotebookWarning {
   locations: Array<{ cellIndex: number; line: number }>;
 }
 
+function renderDrawerConstantsTable() {
+  if (!constantsTbodyEl) return;
+  const filter = (drawerConstantsFilterInput?.value ?? "").trim().toLowerCase();
+  constantsTbodyEl.innerHTML = "";
+  const active = getConstantOverrides();
+
+  for (const [name, info] of Object.entries(PHYSICAL_CONSTANTS)) {
+    if (
+      filter &&
+      !name.toLowerCase().includes(filter) &&
+      !info.label.toLowerCase().includes(filter) &&
+      !info.unit.toLowerCase().includes(filter)
+    ) {
+      continue;
+    }
+    const eff = getEffectiveConstant(name)!;
+    const tr = document.createElement("tr");
+    if (eff.overridden) tr.classList.add("is-overridden");
+
+    const tdName = document.createElement("td");
+    const code = document.createElement("code");
+    code.textContent = `\\const{${name}}`;
+    tdName.append(code);
+
+    const tdDesc = document.createElement("td");
+    tdDesc.textContent = info.label;
+
+    const tdUnit = document.createElement("td");
+    const unitCode = document.createElement("code");
+    unitCode.textContent = info.unit;
+    tdUnit.append(unitCode);
+
+    const tdDefault = document.createElement("td");
+    const defCode = document.createElement("code");
+    defCode.textContent = String(info.value);
+    tdDefault.append(defCode);
+
+    const tdVal = document.createElement("td");
+    const group = document.createElement("div");
+    group.className = "constants-val-group";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.className = "constants-val-input";
+    if (eff.overridden) input.classList.add("is-overridden");
+    input.placeholder = String(info.value);
+    input.value = eff.overridden ? String(active[name]) : "";
+    input.setAttribute("aria-label", `Active value for ${name}`);
+
+    const commitValue = () => {
+      const raw = input.value.trim();
+      const next = { ...getConstantOverrides() };
+      if (!raw) {
+        if (name in next) {
+          delete next[name];
+          applyConstantOverridesEverywhere(next, true);
+          setStatus(`Reset \\const{${name}} to default (${info.value} ${info.unit})`);
+        } else {
+          input.classList.remove("is-invalid");
+        }
+        return;
+      }
+      const parsed = parseFiniteConstantValue(raw);
+      if (parsed === null) {
+        input.classList.add("is-invalid");
+        return;
+      }
+      input.classList.remove("is-invalid");
+      if (next[name] !== parsed) {
+        next[name] = parsed;
+        applyConstantOverridesEverywhere(next, true);
+        setStatus(`Updated \\const{${name}} = ${parsed} ${info.unit}`);
+      }
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitValue();
+        input.blur();
+      } else if (e.key === "Escape") {
+        const cur = getConstantOverrides();
+        input.value = name in cur ? String(cur[name]) : "";
+        input.classList.remove("is-invalid");
+        input.blur();
+      }
+    });
+    input.addEventListener("blur", commitValue);
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "constants-reset-btn";
+    resetBtn.textContent = "↺";
+    resetBtn.title = `Reset ${name} to ${info.value}`;
+    resetBtn.disabled = !eff.overridden;
+    resetBtn.addEventListener("click", () => {
+      const next = { ...getConstantOverrides() };
+      delete next[name];
+      applyConstantOverridesEverywhere(next, true);
+      setStatus(`Reset \\const{${name}} to default (${info.value} ${info.unit})`);
+    });
+
+    group.append(input, resetBtn);
+    tdVal.append(group);
+    tr.append(tdName, tdDesc, tdUnit, tdDefault, tdVal);
+    constantsTbodyEl.append(tr);
+  }
+}
+
 function setDrawerTab(tab: DrawerTab) {
   activeDrawerTab = tab;
   const isVars = tab === "variables";
+  const isWarn = tab === "warnings";
+  const isConst = tab === "constants";
 
   tabDrawerVariablesEl.classList.toggle("active", isVars);
   tabDrawerVariablesEl.setAttribute("aria-selected", String(isVars));
   drawerPaneVariablesEl.hidden = !isVars;
 
-  tabDrawerWarningsEl.classList.toggle("active", !isVars);
-  tabDrawerWarningsEl.setAttribute("aria-selected", String(!isVars));
-  drawerPaneWarningsEl.hidden = isVars;
+  tabDrawerWarningsEl.classList.toggle("active", isWarn);
+  tabDrawerWarningsEl.setAttribute("aria-selected", String(isWarn));
+  drawerPaneWarningsEl.hidden = !isWarn;
+
+  tabDrawerConstantsEl.classList.toggle("active", isConst);
+  tabDrawerConstantsEl.setAttribute("aria-selected", String(isConst));
+  drawerPaneConstantsEl.hidden = !isConst;
+  if (isConst) {
+    renderDrawerConstantsTable();
+  }
 
   if (!variablesDrawerEl.hidden) {
     btnVariablesEl.classList.toggle("active-toggle", isVars);
-    btnWarningsEl.classList.toggle("active-toggle", !isVars);
+    btnWarningsEl.classList.toggle("active-toggle", isWarn);
     btnVariablesEl.setAttribute("aria-expanded", String(isVars));
-    btnWarningsEl.setAttribute("aria-expanded", String(!isVars));
+    btnWarningsEl.setAttribute("aria-expanded", String(isWarn));
   }
 }
 
@@ -6094,6 +6420,15 @@ $("btn-variables").addEventListener("click", wrap(toggleVariablesDrawer));
 $("btn-warnings").addEventListener("click", wrap(toggleWarningsDrawer));
 $("tab-drawer-variables").addEventListener("click", () => setDrawerTab("variables"));
 $("tab-drawer-warnings").addEventListener("click", () => setDrawerTab("warnings"));
+$("tab-drawer-constants").addEventListener("click", () => setDrawerTab("constants"));
+drawerConstantsFilterInput?.addEventListener("input", () => renderDrawerConstantsTable());
+$("btn-drawer-reset-constants")?.addEventListener("click", () => {
+  applyConstantOverridesEverywhere({}, true);
+  setStatus("Reset all physical constants to defaults");
+});
+$("btn-drawer-constants-settings")?.addEventListener("click", () => {
+  openSettingsTab(rootDir ? "workspace" : "global");
+});
 $("btn-close-variables").addEventListener("click", wrap(closeDrawer));
 $("btn-interpreter").addEventListener("click", wrap(openPythonDialog));
 $("btn-python").addEventListener("click", wrap(togglePython));
@@ -8418,6 +8753,19 @@ async function loadImagePreviewTab(filePath: string | null): Promise<void> {
 
 async function initializeAppStartup() {
   const cfg = await applyHierarchicalConfig(null, true);
+  if (!backend.inTauri) {
+    try {
+      const savedConstRaw = localStorage.getItem(CONSTANTS_STORAGE_KEY);
+      if (savedConstRaw) {
+        const parsed = JSON.parse(savedConstRaw);
+        if (parsed && typeof parsed === "object") {
+          applyConstantOverridesEverywhere(parsed as Record<string, number>, false);
+        }
+      }
+    } catch {
+      // ignore invalid stored constants
+    }
+  }
   const startupMode = cfg?.startup_mode || "restore";
 
   let restoredAny = false;

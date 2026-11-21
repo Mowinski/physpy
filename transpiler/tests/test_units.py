@@ -162,3 +162,47 @@ def test_unknown_physical_constant_raises():
     res = NotebookSession().run_cell("x = \\const{nope}\n")
     assert res.code == 2
     assert "unknown physical constant" in res.stderr
+
+
+def test_physical_constant_overrides(tmp_path):
+    from physpy.units import (
+        get_constant_overrides,
+        get_effective_constant_value,
+        load_constant_overrides_from_config,
+        set_constant_overrides,
+    )
+
+    try:
+        applied = set_constant_overrides(
+            {
+                "g": 9.8123,
+                "G": "6.67e-11",
+                "unknown_const": 123,
+                "c": float("nan"),
+                "h": True,
+            }
+        )
+        assert applied == {"g": 9.8123, "G": 6.67e-11}
+        assert get_constant_overrides() == {"g": 9.8123, "G": 6.67e-11}
+        assert get_effective_constant_value("g") == 9.8123
+        assert get_effective_constant_value("c") == 299792458.0
+
+        session = NotebookSession()
+        res = session.run_cell("print(f'{\\const{g}.magnitude:.4f}', \\const{g}.units)\n")
+        assert res.code == 0, res.stderr
+        assert "9.8123 m/s²" in res.stdout
+
+        # Session reset preserves configured constant overrides
+        session.reset()
+        res2 = session.run_cell("print(f'{\\const{g}.magnitude:.4f}')\n")
+        assert res2.code == 0, res2.stderr
+        assert "9.8123" in res2.stdout
+
+        # Workspace YAML config loading
+        ws_cfg = tmp_path / ".physpy-config.yaml"
+        ws_cfg.write_text("constants:\n  g: 1.62\n  atm: 100000\n", encoding="utf-8")
+        loaded = load_constant_overrides_from_config(str(tmp_path))
+        assert loaded["g"] == 1.62
+        assert loaded["atm"] == 100000.0
+    finally:
+        set_constant_overrides({})

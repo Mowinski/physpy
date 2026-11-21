@@ -1,7 +1,7 @@
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
 import { pythonLanguage } from "@codemirror/lang-python";
-import { ACCENTS, PHYSICAL_CONSTANTS, SYMBOLS } from "./symbols";
+import { ACCENTS, PHYSICAL_CONSTANTS, SYMBOLS, getEffectiveConstant } from "./symbols";
 
 const ACCENT_PREVIEW: Record<string, string> = {
   bar: "x̄ (kreska nad)",
@@ -15,7 +15,7 @@ const ACCENT_PREVIEW: Record<string, string> = {
   dprime: "x'' (bis / podwójny prim)",
 };
 
-const OPTIONS: Completion[] = [
+const STATIC_OPTIONS: Completion[] = [
   ...Object.entries(SYMBOLS).map(([name, char]) => ({
     label: `\\${name}`,
     detail: char,
@@ -34,11 +34,6 @@ const OPTIONS: Completion[] = [
       });
     },
   })),
-  ...Object.entries(PHYSICAL_CONSTANTS).map(([name, info]) => ({
-    label: `\\const{${name}}`,
-    detail: `${info.value} ${info.unit} — ${info.label}`,
-    type: "constant",
-  })),
   {
     label: "\\i",
     detail: "i (imaginary unit 1j)",
@@ -50,7 +45,16 @@ const OPTIONS: Completion[] = [
 function symbolCompletion(ctx: CompletionContext): CompletionResult | null {
   const word = ctx.matchBefore(/\\[A-Za-z]*/);
   if (!word) return null;
-  return { from: word.from, options: OPTIONS, validFor: /^\\[A-Za-z]*$/ };
+  const constOptions: Completion[] = Object.keys(PHYSICAL_CONSTANTS).map((name) => {
+    const info = getEffectiveConstant(name)!;
+    const suffix = info.overridden ? " [modified]" : "";
+    return {
+      label: `\\const{${name}}`,
+      detail: `${info.value} ${info.unit}${suffix} — ${info.label}`,
+      type: "constant",
+    };
+  });
+  return { from: word.from, options: [...STATIC_OPTIONS, ...constOptions], validFor: /^\\[A-Za-z]*$/ };
 }
 
 export const symbolCompletions = pythonLanguage.data.of({ autocomplete: symbolCompletion });

@@ -11,6 +11,39 @@ export interface PhysicalConstantDef {
 /** Built-in physical constants with Pint units. Single source of truth shared with the Python transpiler. */
 export const PHYSICAL_CONSTANTS: Record<string, PhysicalConstantDef> = physicalConstantsTable;
 
+let constantOverrides: Record<string, number> = {};
+
+/** Set active numeric overrides for built-in physical constants. */
+export function setConstantOverrides(overrides: Record<string, number>): void {
+  const next: Record<string, number> = {};
+  for (const [k, v] of Object.entries(overrides)) {
+    if (k in PHYSICAL_CONSTANTS && typeof v === "number" && Number.isFinite(v)) {
+      next[k] = v;
+    }
+  }
+  constantOverrides = next;
+}
+
+/** Return a shallow copy of active physical constant overrides. */
+export function getConstantOverrides(): Record<string, number> {
+  return { ...constantOverrides };
+}
+
+/** Return effective definition (with any active override applied) for a built-in physical constant. */
+export function getEffectiveConstant(
+  name: string,
+): (PhysicalConstantDef & { overridden: boolean; defaultValue: number }) | undefined {
+  const base = PHYSICAL_CONSTANTS[name];
+  if (!base) return undefined;
+  const hasOverride = Object.prototype.hasOwnProperty.call(constantOverrides, name);
+  return {
+    ...base,
+    value: hasOverride ? constantOverrides[name] : base.value,
+    overridden: hasOverride,
+    defaultValue: base.value,
+  };
+}
+
 export const CONST_CALL_RE = /\\const\{([A-Za-z0-9_]+)\}/g;
 
 /** LaTeX-like name -> display character. Single source of truth shared with the Python transpiler. */

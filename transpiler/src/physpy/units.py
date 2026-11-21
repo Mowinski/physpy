@@ -10,10 +10,13 @@ from __future__ import annotations
 import builtins
 import io
 import json
+import math
+import os
 import re
 import sys
 import tokenize
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 UNIT_FN = "__physpy_unit__"
@@ -23,6 +26,8 @@ CONST_FN = "__physpy_const__"
 PHYSICAL_CONSTANTS: dict[str, dict[str, Any]] = json.loads(
     resources.files(__package__).joinpath("physical_constants.json").read_text(encoding="utf-8")
 )
+
+_CONSTANT_OVERRIDES: dict[str, float] = {}
 
 _UREG: Any = None
 _MICRO_SPACE_RE = re.compile(r"μ\s+([A-Za-zΩ]+)")
@@ -118,12 +123,100 @@ def convert_quantity(value: Any, unit_str: str) -> Any:
     return get_ureg().Quantity(value, normalized)
 
 
+def set_constant_overrides(overrides: dict[str, Any] | None) -> dict[str, float]:
+    """Set session-wide numeric overrides for built-in physical constants."""
+    _CONSTANT_OVERRIDES.clear()
+    if not overrides:
+        return {}
+    for name, raw_val in overrides.items():
+        if name not in PHYSICAL_CONSTANTS:
+            continue
+        if isinstance(raw_val, bool):
+            continue
+        try:
+            val = float(raw_val)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(val):
+            _CONSTANT_OVERRIDES[name] = val
+    return dict(_CONSTANT_OVERRIDES)
+
+
+def get_constant_overrides() -> dict[str, float]:
+    """Return a copy of active physical constant overrides."""
+    return dict(_CONSTANT_OVERRIDES)
+
+
+def get_effective_constant_value(name: str) -> float:
+    """Return the active numeric value (override or default) for a physical constant."""
+    if name not in PHYSICAL_CONSTANTS:
+        raise KeyError(f"unknown physical constant: {name}")
+    if name in _CONSTANT_OVERRIDES:
+        return _CONSTANT_OVERRIDES[name]
+    return float(PHYSICAL_CONSTANTS[name]["value"])
+
+
+def _parse_constants_from_yaml(text: str) -> dict[str, float]:
+    """Extract ``constants:`` section entries from a PhysPy YAML config string."""
+    out: dict[str, float] = {}
+    in_constants = False
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip())
+        if indent == 0:
+            in_constants = False
+        if ":" not in stripped:
+            continue
+        key, val_raw = stripped.split(":", 1)
+        key = key.strip()
+        val_clean = val_raw.split("#", 1)[0].strip()
+        if indent == 0:
+            if key == "constants" and not val_clean:
+                in_constants = True
+            continue
+        if in_constants and key in PHYSICAL_CONSTANTS:
+            unquoted = val_clean.strip("\"'")
+            try:
+                num = float(unquoted)
+            except ValueError:
+                continue
+            if math.isfinite(num):
+                out[key] = num
+    return out
+
+
+def load_constant_overrides_from_config(workspace_dir: str | None = None) -> dict[str, float]:
+    """Load hierarchical constant overrides from global and workspace YAML configs."""
+    merged: dict[str, float] = {}
+    home = Path.home()
+    global_cfg = home / ".physpy" / "config.yaml"
+    if global_cfg.is_file():
+        try:
+            merged.update(_parse_constants_from_yaml(global_cfg.read_text(encoding="utf-8")))
+        except OSError:
+            pass
+    if workspace_dir:
+        ws_path = Path(workspace_dir)
+        for fname in (".physpy-config.yaml", ".physpy-config.yml"):
+            ws_cfg = ws_path / fname
+            if ws_cfg.is_file():
+                try:
+                    merged.update(_parse_constants_from_yaml(ws_cfg.read_text(encoding="utf-8")))
+                except OSError:
+                    pass
+                break
+    return merged
+
+
 def get_physical_constant(name: str) -> Any:
     """Return a ``pint.Quantity`` for a built-in physical constant from ``physical_constants.json``."""
     entry = PHYSICAL_CONSTANTS.get(name)
     if entry is None:
         raise KeyError(f"unknown physical constant: {name}")
-    return make_quantity(entry["value"], entry["unit"])
+    value = _CONSTANT_OVERRIDES.get(name, entry["value"])
+    return make_quantity(value, entry["unit"])
 
 
 # Make `__physpy_unit__`, `__physpy_convert__`, and `__physpy_const__` available in builtins.

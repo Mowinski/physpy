@@ -279,6 +279,29 @@
                     />
                   </div>
                 </div>
+
+                <div class="settings-card settings-card-wide">
+                  <div class="constants-card-header">
+                    <h3>8. Physical Constants (<code>constants</code>)</h3>
+                    <div class="constants-card-actions">
+                      <input
+                        id="cfg-constants-filter"
+                        type="text"
+                        class="constants-filter-input"
+                        placeholder="Filter constants (e.g. g, G, c)…"
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                      <button id="btn-cfg-reset-all-constants" type="button" title="Reset all constants to default values">
+                        ↺ Reset All
+                      </button>
+                    </div>
+                  </div>
+                  <p class="settings-hint">
+                    Override built-in <code>\const{name}</code> values globally or per workspace (e.g. local gravity <code>g = 9.8123</code>). Leave empty to use the CODATA/SI default.
+                  </p>
+                  <div id="cfg-constants-list" class="constants-table-wrap"></div>
+                </div>
               </div>
 
               <div class="settings-yaml-section">
@@ -300,6 +323,9 @@
                 </button>
                 <button id="tab-drawer-warnings" type="button" class="drawer-tab" aria-selected="false" role="tab">
                   ⚠ Warnings <span id="drawer-warn-count" class="drawer-tab-badge var-count-warning" hidden>0</span>
+                </button>
+                <button id="tab-drawer-constants" type="button" class="drawer-tab" aria-selected="false" role="tab">
+                  ⚖ Constants <span id="drawer-const-count" class="drawer-tab-badge" hidden>0</span>
                 </button>
               </div>
               <div class="drawer-actions">
@@ -340,6 +366,37 @@
                       <td colspan="4" class="warnings-empty">✓ No warnings detected in this notebook</td>
                     </tr>
                   </tbody>
+                </table>
+              </div>
+            </div>
+            <div id="drawer-pane-constants" class="drawer-pane" hidden tabindex="0" role="tabpanel">
+              <div class="constants-drawer-toolbar">
+                <input
+                  id="drawer-constants-filter"
+                  type="text"
+                  class="constants-filter-input"
+                  placeholder="Filter constants (e.g. g, G, c)…"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <span class="constants-drawer-hint">Edit a value and press Enter to override in the active session</span>
+                <div class="constants-drawer-actions">
+                  <button id="btn-drawer-reset-constants" type="button" title="Reset all constant overrides to default">↺ Reset All</button>
+                  <button id="btn-drawer-constants-settings" type="button" title="Open Settings to persist overrides to Global or Workspace YAML">⚙ Persist in Settings…</button>
+                </div>
+              </div>
+              <div class="table-wrapper">
+                <table id="constants-table">
+                  <thead>
+                    <tr>
+                      <th scope="col" style="width: 130px;">Constant</th>
+                      <th scope="col">Description</th>
+                      <th scope="col" style="width: 120px;">Unit</th>
+                      <th scope="col" style="width: 150px;">Default</th>
+                      <th scope="col" style="width: 220px;">Active Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="constants-tbody"></tbody>
                 </table>
               </div>
             </div>

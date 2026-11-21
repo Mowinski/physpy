@@ -4,11 +4,14 @@ import {
   PHYSICAL_CONSTANTS,
   SYMBOLS,
   accentToLatex,
+  getConstantOverrides,
+  getEffectiveConstant,
   isValidAccentSymbol,
   isValidSymbol,
   replaceSymbolsInIdent,
   resolveAccentSymbolIdent,
   resolveSymbolIdent,
+  setConstantOverrides,
   toLatex,
 } from "../src/editor/symbols";
 import { findMatrixLiterals } from "../src/editor/matrixConceal";
@@ -55,6 +58,24 @@ describe("editor symbols, matrices, and call site detection", () => {
       expect(replaceSymbolsInIdent("\\rho_0 + \\bar{u}_a")).toBe(
         `ρ_0 + ${"u\u0304_a".normalize("NFKC")}`,
       );
+    });
+
+    it("supports overriding and resetting physical constants", () => {
+      setConstantOverrides({ g: 9.8123, unknown_const: 42, c: Number.NaN });
+      expect(getConstantOverrides()).toEqual({ g: 9.8123 });
+
+      const gEff = getEffectiveConstant("g");
+      expect(gEff?.value).toBe(9.8123);
+      expect(gEff?.defaultValue).toBe(9.80665);
+      expect(gEff?.overridden).toBe(true);
+
+      const cEff = getEffectiveConstant("c");
+      expect(cEff?.value).toBe(299792458);
+      expect(cEff?.overridden).toBe(false);
+
+      setConstantOverrides({});
+      expect(getEffectiveConstant("g")?.value).toBe(9.80665);
+      expect(getEffectiveConstant("g")?.overridden).toBe(false);
     });
   });
 

@@ -195,6 +195,7 @@ export interface AppConfig {
   ai_model?: string;
   ai_api_key?: string;
   ai_system_prompt?: string;
+  constants?: Record<string, number>;
   resolved_startup_dir: string;
   global_config_path: string;
   workspace_config_path: string | null;
@@ -236,6 +237,9 @@ export const saveConfigScope = (
   workspaceDir: string | null,
   rawYaml: string,
 ) => invoke<ConfigScopeData>("save_config_scope", { scope, workspaceDir, rawYaml });
+
+export const setConstantOverrides = (constants: Record<string, number>) =>
+  invoke<void>("set_constant_overrides", { constants });
 
 export function onMenuOpenSettings(handler: () => void): void {
   if (!inTauri) return;
