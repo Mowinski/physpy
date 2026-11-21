@@ -32,6 +32,20 @@ Return ONLY valid JSON matching the requested schema with:
 - `explanation`: a concise 1-2 sentence explanation in the same language as the user's prompt.
 """
 
+PHYSPY_CHAT_SYSTEM_PROMPT = """You are an AI physics, mathematics, and coding assistant embedded inside PhysPy, a physics & engineering Python notebook IDE.
+Respond clearly in the same language as the user's message using Markdown, KaTeX math (`$...$` inline and `$$...$$` display), and code blocks (` ```physpy ` or ` ```python `).
+
+PhysPy language reference:
+- Physical units are bracket literals after numbers: `g = 9.81 [m/s^2]`, `r = 220 [\\Omega]`, unit conversion uses `expr -> [unit]`.
+- Built-in CODATA/SI constants use `\\const{name}` (e.g. `\\const{g}`, `\\const{c}`, `\\const{h}`, `\\const{hbar}`, `\\const{k_B}`, `\\const{N_A}`, `\\const{R}`, `\\const{e}`, `\\const{m_e}`, `\\const{m_p}`, `\\const{G}`, `\\const{eps_0}`, `\\const{mu_0}`, `\\const{sigma}`, `\\const{atm}`).
+- Measurements with uncertainty: `Pomiar(val, u)` with automatic uncertainty propagation (`+`, `-`, `*`, `/`) and `.to('unit')` / `-> [unit]`.
+- Data structures: `struct Nazwa:` creates a `@dataclass` with optional unit enforcement `pole: [jednostka]`.
+- Greek letters, accents, and primes: `\\alpha`, `\\rho_0`, `\\Delta_T`, `\\bar{x}`, `\\hat{p}`, `\\vec{v}`, `\\dot{q}`, `\\ddot{q}`, `\\tilde{y}`, `\\prime{x}`, `\\dprime{x}`, imaginary unit `\\i`.
+- Matrices: `M = mat[1, 2; 3, 4]`, percentages `5%` (`0.05`), powers `x^2`, space-grouped numbers `1 000 000`, implicit multiplication `2\\pi r`, pipe operator `x |> fn`.
+- Cell isolation: only `export x = ...`, `export const x = ...`, `export struct ...`, or `export import ...` persist across cells.
+- Visualization, tables & output: `plot fig` / `plot ax` / `plot plt` renders figures; `table df` renders DataFrames or lists of structs; `print(f"$E = {E}$")` renders `$...$` and `$$...$$` math via KaTeX in cell stdout.
+"""
+
 _FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]+)?\s*\n(.*?)```", re.DOTALL)
 
 
@@ -229,6 +243,116 @@ def call_gemini(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def call_gemini_chat(payload: dict[str, Any]) -> dict[str, Any]:
+    """Multi-turn conversational chat with Gemini using the active notebook context."""
+    provider = str(payload.get("provider") or "gemini").strip().lower()
+    if provider not in ("", "gemini"):
+        return {"ok": False, "error": f"Unsupported AI provider '{provider}'. Currently only 'gemini' is supported."}
+
+    raw_messages = payload.get("messages")
+    if not isinstance(raw_messages, list) or not raw_messages:
+        return {"ok": False, "error": "Chat messages cannot be empty."}
+
+    api_key = resolve_api_key(payload.get("api_key"))
+    if not api_key:
+        return {
+            "ok": False,
+            "error": (
+                "Missing Gemini API key. Set `ai_api_key` in Settings (~/.physpy/config.yaml) "
+                "or set the GEMINI_API_KEY environment variable."
+            ),
+        }
+
+    model = str(payload.get("model") or DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+    custom_sys = str(payload.get("custom_system_prompt") or "").strip()
+
+    sys_parts = [PHYSPY_CHAT_SYSTEM_PROMPT.strip()]
+    if custom_sys:
+        sys_parts.append(f"Additional user instructions:\n{custom_sys}")
+
+    notebook_source = str(payload.get("notebook_source") or "").strip()
+    if notebook_source:
+        sys_parts.append(f"### Current notebook source\n```physpy\n{notebook_source[:16000]}\n```")
+
+    exports = payload.get("exports")
+    if isinstance(exports, dict) and exports:
+        lines = [f"- {k}: {v}" for k, v in list(exports.items())[:50]]
+        sys_parts.append("### Active exported variables in current session\n" + "\n".join(lines))
+
+    system_text = "\n\n".join(sys_parts)
+
+    contents: list[dict[str, Any]] = []
+    for msg in raw_messages:
+        if not isinstance(msg, dict):
+            continue
+        text = str(msg.get("content") or "").strip()
+        if not text:
+            continue
+        role_raw = str(msg.get("role") or "user").strip().lower()
+        role = "model" if role_raw in ("assistant", "model") else "user"
+        contents.append({"role": role, "parts": [{"text": text}]})
+
+    if not contents:
+        return {"ok": False, "error": "Chat messages cannot be empty."}
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{urllib.parse.quote(model, safe='')}:generateContent"
+    body = {
+        "systemInstruction": {"parts": [{"text": system_text}]},
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.3,
+        },
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=180, context=_build_ssl_context()) as resp:
+            raw_resp = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": _format_http_error(exc)}
+    except urllib.error.URLError as exc:
+        return {"ok": False, "error": f"Network error calling Gemini: {exc.reason}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed calling Gemini: {exc}"}
+
+    try:
+        resp_json = json.loads(raw_resp)
+        reply_text = _extract_candidate_text(resp_json)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    usage = resp_json.get("usageMetadata")
+    if not isinstance(usage, dict):
+        usage = {}
+    prompt_tokens = usage.get("promptTokenCount")
+    candidates_tokens = usage.get("candidatesTokenCount")
+    thoughts_tokens = usage.get("thoughtsTokenCount") or 0
+    total_tokens = usage.get("totalTokenCount")
+    output_tokens = (
+        (candidates_tokens + thoughts_tokens)
+        if isinstance(candidates_tokens, int)
+        else None
+    )
+
+    return {
+        "ok": True,
+        "reply": reply_text,
+        "model": model,
+        "input_tokens": prompt_tokens if isinstance(prompt_tokens, int) else None,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens if isinstance(total_tokens, int) else None,
+    }
+
+
 def list_gemini_models(payload: dict[str, Any]) -> dict[str, Any]:
     """Fetch available Gemini models supporting ``generateContent`` for the API key."""
     provider = str(payload.get("provider") or "gemini").strip().lower()
@@ -301,6 +425,11 @@ def run_ai_cli() -> int:
         return 1
 
     action = str(payload.get("action") or "generate").strip().lower()
-    result = list_gemini_models(payload) if action == "list_models" else call_gemini(payload)
+    if action == "list_models":
+        result = list_gemini_models(payload)
+    elif action == "chat":
+        result = call_gemini_chat(payload)
+    else:
+        result = call_gemini(payload)
     print(json.dumps(result))
     return 0 if result.get("ok") else 1

@@ -7,7 +7,7 @@ import json
 import urllib.error
 import urllib.request
 
-from physpy.ai import build_user_message, call_gemini, list_gemini_models
+from physpy.ai import build_user_message, call_gemini, call_gemini_chat, list_gemini_models
 
 
 def test_call_gemini_requires_api_key(monkeypatch):
@@ -139,3 +139,60 @@ def test_list_gemini_models_filters_generate_content(monkeypatch):
     res = list_gemini_models({"api_key": "test-key"})
     assert res["ok"] is True
     assert [m["id"] for m in res["models"]] == ["gemini-2.5-pro", "gemini-3.8-flash"]
+
+
+def test_call_gemini_chat_multi_turn(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": "Okres drgań wahadła to $T = 2\\pi \\sqrt{L/g}$.",
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 42,
+                        "candidatesTokenCount": 18,
+                        "totalTokenCount": 60,
+                    },
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=180, context=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    res = call_gemini_chat(
+        {
+            "api_key": "test-key",
+            "model": "gemini-3.8-flash",
+            "notebook_source": "export L = 1.2 [m]",
+            "exports": {"L": "1.2 m"},
+            "messages": [
+                {"role": "user", "content": "Jaki jest wzór na okres wahadła?"},
+                {"role": "assistant", "content": "Wzór zależy od L i g."},
+                {"role": "user", "content": "Podaj dokładny wzór"},
+            ],
+        }
+    )
+    assert res["ok"] is True
+    assert "$T = 2\\pi" in res["reply"]
+    assert res["input_tokens"] == 42
+    assert res["output_tokens"] == 18
+    assert [c["role"] for c in captured["body"]["contents"]] == ["user", "model", "user"]

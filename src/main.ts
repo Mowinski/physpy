@@ -20,6 +20,7 @@ import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLin
 import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
+import { LatexEditorController } from "./latexEditor";
 import {
   generateStaticNotebookHtml,
   type CodeExportVisibility,
@@ -118,7 +119,7 @@ interface NotebookOutputsFile {
   cells: (SavedCellOutput | null)[];
 }
 
-type TabKind = "notebook" | "settings" | "csv";
+type TabKind = "notebook" | "settings" | "csv" | "latex" | "image";
 
 interface TabDoc {
   id: number;
@@ -128,6 +129,7 @@ interface TabDoc {
   content: string;
   dirty: boolean;
   interpreterInfo?: backend.PythonInterpreterInfo | null;
+  fileBoundInterpreter?: boolean;
   collapsedCells?: CellCollapseMode[];
   savedOutputs?: NotebookOutputsFile | null;
   csvMode?: CsvViewMode;
@@ -137,6 +139,21 @@ interface TabDoc {
 
 function isCsvPath(path: string | null | undefined): boolean {
   return !!path && /\.(csv|tsv)$/i.test(path.trim());
+}
+
+function isLatexPath(path: string | null | undefined): boolean {
+  return !!path && /\.(tex|bib|sty|cls)$/i.test(path.trim());
+}
+
+function isImagePath(path: string | null | undefined): boolean {
+  return !!path && /\.(png|jpe?g|webp|svg|gif|bmp|ico)$/i.test(path.trim());
+}
+
+function resolveTabKindForPath(path: string | null | undefined): TabKind {
+  if (isCsvPath(path)) return "csv";
+  if (isLatexPath(path)) return "latex";
+  if (isImagePath(path)) return "image";
+  return "notebook";
 }
 
 let nextCellId = 1;
@@ -156,7 +173,10 @@ let activeSettingsScope: "global" | "workspace" = "global";
 const notebookEl = $<HTMLDivElement>("notebook");
 const settingsViewEl = $<HTMLDivElement>("settings-view");
 const csvViewEl = $<HTMLDivElement>("csv-view");
+const latexViewEl = $<HTMLDivElement>("latex-view");
+const imageViewEl = $<HTMLDivElement>("image-view");
 let csvEditor: CsvEditorController | null = null;
+let latexEditor: LatexEditorController | null = null;
 
 function getCsvEditor(): CsvEditorController {
   if (!csvEditor) {
@@ -181,10 +201,35 @@ function getCsvEditor(): CsvEditorController {
   return csvEditor;
 }
 
+function getLatexEditor(): LatexEditorController {
+  if (!latexEditor) {
+    latexEditor = new LatexEditorController({
+      container: latexViewEl,
+      getWorkspaceDir: () => rootDir,
+      onChange: () => {
+        markDirty();
+        latexEditor?.markSaved(false);
+      },
+      onSave: async () => {
+        await saveFile();
+      },
+      onBlur: () => handleEditorBlur(),
+      setStatus: (msg) => setStatus(msg),
+    });
+  }
+  return latexEditor;
+}
+
 function getActiveTabSerializedContent(): string {
   const cur = activeTab();
   if (cur?.kind === "csv") {
     return csvEditor ? csvEditor.getText() : cur.content;
+  }
+  if (cur?.kind === "latex") {
+    return latexEditor ? latexEditor.serialize() : cur.content;
+  }
+  if (cur?.kind === "image") {
+    return "";
   }
   return serializeDocument();
 }
@@ -286,16 +331,49 @@ const viewer = createViewer($("python"));
 let activeInterpreterPath: string | null = null;
 let activeInterpreterInfo: backend.PythonInterpreterInfo | null = null;
 
-function updateActiveInterpreterUI(info: backend.PythonInterpreterInfo) {
+function updateActiveInterpreterUI(info: backend.PythonInterpreterInfo, fileBound?: boolean) {
   activeInterpreterPath = info.path;
   activeInterpreterInfo = info;
   const cur = activeTab();
   if (cur && cur.kind !== "settings") {
     cur.interpreterInfo = info;
+    if (fileBound !== undefined) {
+      cur.fileBoundInterpreter = fileBound;
+    }
   }
-  interpreterLabelEl.textContent = info.label;
+  const isBound = Boolean(cur?.fileBoundInterpreter && cur?.path);
+  interpreterLabelEl.textContent = isBound ? `${info.label} 📌` : info.label;
   const btn = $("btn-interpreter");
-  if (btn) btn.title = `Active Python: ${info.path}`;
+  if (btn) {
+    btn.title = isBound
+      ? `Active Python (bound to ${cur?.path?.split(/[\\/]/).pop()} in ~/.physpy/file_interpreters.json): ${info.path}`
+      : `Active Python: ${info.path}`;
+  }
+}
+
+async function ensureActiveTabInterpreter(): Promise<void> {
+  if (!backend.inTauri) return;
+  const cur = activeTab();
+  if (!cur || (cur.kind && cur.kind !== "notebook")) return;
+  if (cur.path) {
+    try {
+      const bound = await backend.getFileInterpreter(cur.path, true);
+      if (bound) {
+        updateActiveInterpreterUI(bound, true);
+        return;
+      }
+    } catch {
+      // ignore lookup error
+    }
+  }
+  if (cur.interpreterInfo && cur.interpreterInfo.path !== activeInterpreterPath) {
+    try {
+      const info = await backend.setPythonInterpreter(cur.interpreterInfo.path);
+      updateActiveInterpreterUI(info, Boolean(cur.fileBoundInterpreter));
+    } catch {
+      // ignore invalid path
+    }
+  }
 }
 
 function setStatus(text: string) {
@@ -468,7 +546,7 @@ function saveActiveTabSnapshot() {
   const cur = activeTab();
   if (cur && cur.kind !== "settings") {
     cur.content = getActiveTabSerializedContent();
-    if (cur.kind !== "csv") {
+    if (cur.kind === "notebook" || !cur.kind) {
       cur.collapsedCells = cells.map((c) => c.collapseMode);
       cur.savedOutputs = snapshotNotebookOutputs();
     }
@@ -591,13 +669,13 @@ function renderTabsBar() {
 
 function createNewTab(opts?: { path?: string | null; content?: string; dirty?: boolean }): TabDoc {
   saveActiveTabSnapshot();
-  const kind: TabKind = isCsvPath(opts?.path) ? "csv" : "notebook";
+  const kind: TabKind = resolveTabKindForPath(opts?.path);
   const tab: TabDoc = {
     id: nextTabId++,
     kind,
     path: opts?.path ?? null,
-    untitledName: `untitled-${untitledCounter++}.ppy`,
-    content: opts?.content ?? (kind === "csv" ? "" : "# %% Cell 1\n"),
+    untitledName: `untitled-${untitledCounter++}.${kind === "latex" ? "tex" : kind === "csv" ? "csv" : "ppy"}`,
+    content: opts?.content ?? (kind === "csv" || kind === "latex" ? "" : "# %% Cell 1\n"),
     dirty: opts?.dirty ?? false,
   };
   tabs.push(tab);
@@ -640,14 +718,19 @@ function switchToTab(tabId: number) {
   if (target.kind === "settings") {
     notebookEl.hidden = true;
     csvViewEl.hidden = true;
+    latexViewEl.hidden = true;
+    imageViewEl.hidden = true;
     settingsViewEl.hidden = false;
     updateTitle();
+    renderOutline();
     void loadSettingsScope(activeSettingsScope);
     return;
   }
   if (target.kind === "csv") {
     settingsViewEl.hidden = true;
     notebookEl.hidden = true;
+    latexViewEl.hidden = true;
+    imageViewEl.hidden = true;
     csvViewEl.hidden = false;
     currentPath = target.path;
     dirty = target.dirty;
@@ -659,25 +742,80 @@ function switchToTab(tabId: number) {
       dirty: target.dirty,
     });
     updateTitle();
+    renderOutline();
     getCsvEditor().focus();
+    saveSessionState();
+    return;
+  }
+  if (target.kind === "latex") {
+    settingsViewEl.hidden = true;
+    notebookEl.hidden = true;
+    csvViewEl.hidden = true;
+    imageViewEl.hidden = true;
+    latexViewEl.hidden = false;
+    currentPath = target.path;
+    dirty = target.dirty;
+    getLatexEditor().load(target.content, {
+      path: target.path,
+      dirty: target.dirty,
+    });
+    updateTitle();
+    renderOutline();
+    getLatexEditor().focus();
+    saveSessionState();
+    return;
+  }
+  if (target.kind === "image") {
+    settingsViewEl.hidden = true;
+    notebookEl.hidden = true;
+    csvViewEl.hidden = true;
+    latexViewEl.hidden = true;
+    imageViewEl.hidden = false;
+    currentPath = target.path;
+    dirty = false;
+    updateTitle();
+    renderOutline();
+    void loadImagePreviewTab(target.path);
     saveSessionState();
     return;
   }
   settingsViewEl.hidden = true;
   csvViewEl.hidden = true;
+  latexViewEl.hidden = true;
+  imageViewEl.hidden = true;
   notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
   loadDocumentIntoCells(target.content, target.collapsedCells, target.savedOutputs, target.id);
   updateTitle();
 
-  if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
+  if (target.path && backend.inTauri) {
+    void backend.getFileInterpreter(target.path, true).then((boundInfo) => {
+      if (boundInfo) {
+        target.interpreterInfo = boundInfo;
+        target.fileBoundInterpreter = true;
+        if (activeTabId === target.id) {
+          updateActiveInterpreterUI(boundInfo, true);
+        }
+      } else if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
+        const info = target.interpreterInfo;
+        void backend.setPythonInterpreter(info.path).then(() => {
+          if (activeTabId === target.id) {
+            updateActiveInterpreterUI(info, false);
+          }
+        });
+      } else if (activeInterpreterInfo && activeTabId === target.id) {
+        updateActiveInterpreterUI(activeInterpreterInfo, false);
+      }
+    });
+  } else if (target.interpreterInfo && target.interpreterInfo.path !== activeInterpreterPath) {
     const info = target.interpreterInfo;
     void backend.setPythonInterpreter(info.path).then(() => {
-      updateActiveInterpreterUI(info);
+      updateActiveInterpreterUI(info, Boolean(target.fileBoundInterpreter));
     });
   } else if (!target.interpreterInfo && activeInterpreterInfo) {
     target.interpreterInfo = activeInterpreterInfo;
+    updateActiveInterpreterUI(activeInterpreterInfo, false);
   }
 
   void refreshPython();
@@ -772,6 +910,12 @@ async function triggerAutoSave(reason: string) {
     cur.content = serialized;
     cur.dirty = false;
     if (cur.kind === "csv") csvEditor?.markSaved();
+    if (cur.kind === "latex") {
+      latexEditor?.markSaved(true);
+      if (latexEditor?.shouldBuildOnSave()) {
+        void latexEditor.triggerBuild(currentPath);
+      }
+    }
     updateTitle();
     setStatus(`Auto-saved (${reason}) ${currentPath.split(/[\\/]/).pop()}`);
     void refreshFileTree();
@@ -785,7 +929,11 @@ function handleEditorBlur() {
     setTimeout(() => {
       const active = document.activeElement;
       const insideEditor =
-        active && (active.closest(".cm-editor") || active.closest(".cell-card") || active.closest("#csv-view"));
+        active &&
+        (active.closest(".cm-editor") ||
+          active.closest(".cell-card") ||
+          active.closest("#csv-view") ||
+          active.closest("#latex-view"));
       if (!insideEditor) {
         void triggerAutoSave("onFocusChange");
       }
@@ -1329,6 +1477,26 @@ async function openPythonDialog(): Promise<boolean> {
   pythonDialogError.hidden = true;
   pythonListEl.innerHTML = `<div class="tree-empty">Scanning Python environments…</div>`;
   pythonDialog.returnValue = "";
+
+  const bindCheck = $<HTMLInputElement>("python-bind-to-file");
+  const bindLabel = $("python-bind-file-label");
+  const btnUnbind = $<HTMLButtonElement>("btn-unbind-file-python");
+  const cur = activeTab();
+  const isNotebookTab = !cur || !cur.kind || cur.kind === "notebook";
+  $("python-file-bind-row").hidden = !isNotebookTab;
+  bindCheck.checked = true;
+
+  if (currentPath && isNotebookTab) {
+    const shortName = currentPath.split(/[\\/]/).pop() ?? currentPath;
+    bindLabel.innerHTML = `Assign interpreter to <strong>${shortName}</strong> (stored in <code>~/.physpy/file_interpreters.json</code>, not inside the <code>.ppy</code> file)`;
+    btnUnbind.hidden = !cur?.fileBoundInterpreter;
+  } else if (isNotebookTab) {
+    bindLabel.innerHTML = `Assign interpreter to this tab (saved to <code>~/.physpy/file_interpreters.json</code> when the file is saved)`;
+    btnUnbind.hidden = true;
+  } else {
+    btnUnbind.hidden = true;
+  }
+
   pythonDialog.showModal();
 
   try {
@@ -1363,18 +1531,52 @@ async function openPythonDialog(): Promise<boolean> {
 async function applyPythonSelection() {
   const chosen = pythonCustomInput.value.trim();
   if (!chosen) return;
+  const bindCheck = $<HTMLInputElement>("python-bind-to-file");
+  const cur = activeTab();
+  const isNotebookTab = !cur || !cur.kind || cur.kind === "notebook";
+  const shouldBind = Boolean(isNotebookTab && bindCheck.checked);
+
   try {
-    const info = await backend.setPythonInterpreter(chosen);
-    updateActiveInterpreterUI(info);
-    $("btn-interpreter").title = `Active Python: ${info.path}`;
+    let info: backend.PythonInterpreterInfo;
+    if (shouldBind && currentPath) {
+      const bound = await backend.setFileInterpreter(currentPath, chosen);
+      info = bound ?? (await backend.setPythonInterpreter(chosen));
+      updateActiveInterpreterUI(info, true);
+    } else {
+      info = await backend.setPythonInterpreter(chosen);
+      updateActiveInterpreterUI(info, shouldBind);
+    }
     await resetSession(true);
-    setStatus(`Switched Python interpreter to ${info.label} (${info.path})`);
+    const shortFile = currentPath ? currentPath.split(/[\\/]/).pop() : null;
+    setStatus(
+      shouldBind && shortFile
+        ? `Assigned ${info.label} (${info.path}) to ${shortFile} in ~/.physpy/file_interpreters.json`
+        : `Switched Python interpreter to ${info.label} (${info.path})`,
+    );
     pythonDialog.close();
   } catch (e) {
     pythonDialogError.hidden = false;
     pythonDialogError.textContent = String(e);
   }
 }
+
+$("btn-unbind-file-python").addEventListener("click", async () => {
+  if (!currentPath) return;
+  try {
+    await backend.setFileInterpreter(currentPath, null);
+    const cur = activeTab();
+    if (cur) cur.fileBoundInterpreter = false;
+    if (activeInterpreterInfo) {
+      updateActiveInterpreterUI(activeInterpreterInfo, false);
+    }
+    const shortFile = currentPath.split(/[\\/]/).pop() ?? currentPath;
+    setStatus(`Removed custom interpreter binding for ${shortFile}`);
+    pythonDialog.close();
+  } catch (e) {
+    pythonDialogError.hidden = false;
+    pythonDialogError.textContent = String(e);
+  }
+});
 
 pythonDialog.addEventListener("close", () => {
   pythonDialog.returnValue = "";
@@ -1693,7 +1895,7 @@ matrixDialogForm.addEventListener("submit", (e) => {
 
 function openExportHtmlDialog() {
   const tab = activeTab();
-  if (!tab || tab.kind === "settings" || tab.kind === "csv") {
+  if (!tab || tab.kind === "settings" || tab.kind === "csv" || tab.kind === "latex") {
     setStatus("Static HTML export is available for Python notebooks.");
     return;
   }
@@ -1896,6 +2098,7 @@ function fileIcon(name: string): string {
   const lower = name.toLowerCase();
   if (lower.endsWith(".ppy")) return "📘";
   if (lower.endsWith(".ipynb")) return "📓";
+  if (lower.endsWith(".tex") || lower.endsWith(".bib") || lower.endsWith(".sty") || lower.endsWith(".cls")) return "𝑳";
   if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return "📊";
   if (lower.endsWith(".py")) return "🐍";
   if (lower.endsWith(".pdf")) return "📕";
@@ -1909,7 +2112,11 @@ async function promptNewFileIn(dirPath: string) {
   const name = window.prompt("New file name:", "notebook.ppy")?.trim();
   if (!name) return;
   const fullPath = `${dirPath.replace(/\/+$/, "")}/${name}`;
-  const initialContent = isCsvPath(name) ? "" : "# %% Cell 1\n";
+  const initialContent = isCsvPath(name)
+    ? ""
+    : isLatexPath(name)
+      ? "\\documentclass[11pt,a4paper]{article}\n\\usepackage[utf8]{inputenc}\n\\usepackage{amsmath,amssymb,graphicx}\n\n\\title{Report}\n\\author{}\n\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\n\\end{document}\n"
+      : "# %% Cell 1\n";
   try {
     await backend.writeFileByPath(fullPath, initialContent);
     expandedDirs.add(dirPath);
@@ -1967,17 +2174,24 @@ async function confirmDeleteEntry(entry: backend.DirEntryItem) {
 }
 
 async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: number) {
-  container.innerHTML = "";
+  const seq = Number(container.dataset.renderSeq || "0") + 1;
+  container.dataset.renderSeq = String(seq);
+
   let entries: backend.DirEntryItem[];
   try {
     entries = await backend.listDir(dirPath);
   } catch (e) {
+    if (container.dataset.renderSeq !== String(seq)) return;
+    container.innerHTML = "";
     const errEl = document.createElement("div");
     errEl.className = "tree-empty";
     errEl.textContent = String(e);
     container.append(errEl);
     return;
   }
+
+  if (container.dataset.renderSeq !== String(seq)) return;
+  container.innerHTML = "";
 
   if (entries.length === 0 && depth === 0) {
     const emptyEl = document.createElement("div");
@@ -2056,11 +2270,14 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
       });
     } else {
       const isIpynb = entry.name.toLowerCase().endsWith(".ipynb");
+      const isImage = isImagePath(entry.name);
       const isMedia = isMediaFilename(entry.name);
       icon.textContent = fileIcon(entry.name);
       row.addEventListener("click", () => {
         if (isIpynb) {
           void openIpynbImportDialog(entry.path);
+        } else if (isImage) {
+          void openFileByPath(entry.path);
         } else if (isMedia) {
           insertMediaCellWithFile(entry.path);
         } else {
@@ -2080,6 +2297,12 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
             },
             { separator: true },
           );
+        }
+        if (isImage) {
+          actions.push({
+            label: "🖼 Open Image Preview in Tab",
+            run: () => openFileByPath(entry.path),
+          });
         }
         if (isMedia) {
           actions.push(
@@ -2225,12 +2448,12 @@ async function openFileByPath(path: string) {
     return;
   }
   try {
-    const contents = await backend.readFileByPath(path);
+    const contents = isImagePath(path) ? "" : await backend.readFileByPath(path);
     // Replace current tab if it is an untouched untitled tab
     const cur = activeTab();
     if (cur && !cur.path && !cur.dirty && tabs.length === 1) {
       await resetSession(true);
-      cur.kind = isCsvPath(path) ? "csv" : "notebook";
+      cur.kind = resolveTabKindForPath(path);
       cur.path = path;
       cur.content = contents;
       cur.dirty = false;
@@ -2876,7 +3099,10 @@ function renumberCells() {
 function markDirty() {
   dirty = true;
   updateTitle();
-  if (activeTab()?.kind !== "csv") {
+  const curKind = activeTab()?.kind;
+  if (curKind === "latex") {
+    renderOutline();
+  } else if (curKind !== "csv" && curKind !== "image" && curKind !== "settings") {
     renderSessionExports();
     renderOutline();
     clearTimeout(transpileTimer);
@@ -3027,7 +3253,7 @@ function loadCollapsedModesForPath(filePath: string | null): Map<number, CellCol
 
 function persistCollapsedStateForActiveTab() {
   const cur = activeTab();
-  if (cur && cur.kind !== "settings" && cur.kind !== "csv") {
+  if (cur && cur.kind !== "settings" && cur.kind !== "csv" && cur.kind !== "latex") {
     cur.collapsedCells = cells.map((c) => c.collapseMode);
   }
   if (!currentPath) return;
@@ -3755,6 +3981,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
       { key: "Mod-Shift-m", run: () => (openMatrixDialog(), true) },
       { key: "Mod-Shift-e", run: () => (openExportHtmlDialog(), true) },
       { key: "Mod-Shift-d", run: () => (void startCellDebugging(state), true) },
+      { key: "Mod-Shift-k", run: () => toggleAiChatPane() },
       { key: "Mod-p", run: () => togglePython() },
       { key: "Mod-f", run: () => (openGlobalFindBar(false, state), true) },
       { key: "Mod-Shift-f", run: () => (openGlobalFindBar(true, state), true) },
@@ -4678,7 +4905,10 @@ function applySavedCellOutput(
 
   cell.plotsWrap.innerHTML = "";
   const plots = out.plots ?? [];
-  const plotMeta = out.plotMeta ?? [];
+  const rawPlotMeta = out.plotMeta ?? [];
+  const plotMeta = fromDisk
+    ? rawPlotMeta.map((m) => (m ? { ...m, plot_id: "" } : m))
+    : rawPlotMeta;
   cell.lastPlots = [...plots];
   cell.lastPlotMeta = [...plotMeta];
   plots.forEach((b64, plotIdx) => {
@@ -4834,7 +5064,7 @@ function restoreNotebookOutputs(snapshot: NotebookOutputsFile, fromDisk = false)
 let outputsSaveTimer: number | undefined;
 
 async function writeOutputsSidecarNow(notebookPath: string | null = currentPath): Promise<void> {
-  if (!backend.inTauri || !notebookPath || isCsvPath(notebookPath)) return;
+  if (!backend.inTauri || !notebookPath || isCsvPath(notebookPath) || isLatexPath(notebookPath)) return;
   const sidecarPath = getOutputsSidecarPath(notebookPath);
   const snapshot = snapshotNotebookOutputs();
   const hasAnyCellOutput = snapshot.cells.some((c) => c !== null);
@@ -4856,7 +5086,7 @@ async function writeOutputsSidecarNow(notebookPath: string | null = currentPath)
 
 function scheduleWriteOutputsSidecar(immediate = false): void {
   clearTimeout(outputsSaveTimer);
-  if (!backend.inTauri || !currentPath || isCsvPath(currentPath)) return;
+  if (!backend.inTauri || !currentPath || isCsvPath(currentPath) || isLatexPath(currentPath)) return;
   const targetPath = currentPath;
   if (immediate) {
     void writeOutputsSidecarNow(targetPath);
@@ -4868,7 +5098,7 @@ function scheduleWriteOutputsSidecar(immediate = false): void {
 }
 
 async function loadOutputsSidecarForTab(tabId: number, filePath: string): Promise<void> {
-  if (!backend.inTauri || isCsvPath(filePath)) return;
+  if (!backend.inTauri || isCsvPath(filePath) || isLatexPath(filePath)) return;
   try {
     const raw = await backend.readFileByPath(getOutputsSidecarPath(filePath));
     const parsed = JSON.parse(raw) as NotebookOutputsFile;
@@ -5318,6 +5548,7 @@ async function startCellDebugging(cell: CellState) {
   if (activeDebugSession) {
     await handleDebugAction("stop");
   }
+  await ensureActiveTabInterpreter();
 
   const idx = cells.indexOf(cell);
   setStatus(`Starting debugger on cell ${idx + 1}…`);
@@ -5416,6 +5647,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
   }
 
   if (!requireTauri()) return true;
+  await ensureActiveTabInterpreter();
   setStatus(`Running cell ${idx + 1}…`);
   cell.el.classList.add("running");
 
@@ -5543,7 +5775,8 @@ async function resetSession(quiet = false): Promise<boolean> {
 
 async function runCellsRange(startIdx: number, endIdx: number, resetBefore: boolean): Promise<boolean> {
   if (!requireTauri()) return true;
-  if (activeTab()?.kind === "csv" || activeTab()?.kind === "settings") return true;
+  const curKind = activeTab()?.kind;
+  if (curKind === "csv" || curKind === "settings" || curKind === "latex") return true;
   if (resetBefore) {
     await resetSession(true);
   }
@@ -5675,14 +5908,26 @@ async function saveFile(): Promise<boolean> {
       cur.dirty = false;
       if (cur.kind === "csv") {
         csvEditor?.markSaved();
+      } else if (cur.kind === "latex") {
+        latexEditor?.markSaved(true);
       } else {
         cur.savedOutputs = snapshotNotebookOutputs();
         void writeOutputsSidecarNow(path);
+        if (cur.fileBoundInterpreter && cur.interpreterInfo?.path) {
+          void backend.setFileInterpreter(path, cur.interpreterInfo.path).then((bound) => {
+            if (bound) updateActiveInterpreterUI(bound, true);
+          });
+        }
       }
     }
     updateTitle();
     setStatus(`Saved ${path}`);
     void refreshFileTree();
+    if (cur?.kind === "latex" && latexEditor?.shouldBuildOnSave()) {
+      void latexEditor.triggerBuild(path);
+    } else if (latexEditor && latexEditor.shouldBuildOnSave() && latexEditor.resolveTargetPath(null)) {
+      void latexEditor.triggerBuild(null);
+    }
   }
   return true;
 }
@@ -5700,14 +5945,14 @@ $("btn-run-all").addEventListener("click", wrap(runAllCells));
 $("btn-reset").addEventListener("click", wrap(() => resetSession(false)));
 function handleToggleCollapseAll() {
   const cur = activeTab();
-  if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
+  if (cur && (cur.kind === "settings" || cur.kind === "csv" || cur.kind === "latex")) return;
   const allCollapsed = cells.length > 0 && cells.every((c) => c.collapseMode === "collapsed");
   setAllCellsCollapseMode(allCollapsed ? "expanded" : "collapsed");
 }
 
 function handleReportView() {
   const cur = activeTab();
-  if (cur && (cur.kind === "settings" || cur.kind === "csv")) return;
+  if (cur && (cur.kind === "settings" || cur.kind === "csv" || cur.kind === "latex")) return;
   toggleReportView();
 }
 
@@ -5718,6 +5963,7 @@ $("tab-drawer-warnings").addEventListener("click", () => setDrawerTab("warnings"
 $("btn-close-variables").addEventListener("click", wrap(closeDrawer));
 $("btn-interpreter").addEventListener("click", wrap(openPythonDialog));
 $("btn-python").addEventListener("click", wrap(togglePython));
+$("btn-ai-chat").addEventListener("click", wrap(toggleAiChatPane));
 
 backend.onMenuOpenSettings(() => {
   openSettingsTab();
@@ -5817,7 +6063,7 @@ window.addEventListener("keydown", (e) => {
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "settings") {
     e.preventDefault();
     void saveSettingsScope();
-  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && activeTab()?.kind === "csv") {
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && (activeTab()?.kind === "csv" || activeTab()?.kind === "latex")) {
     e.preventDefault();
     void saveFile();
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j" && e.shiftKey) {
@@ -5987,6 +6233,80 @@ function renderOutline(): void {
   const listEl = $("outline-list");
   const countEl = $("outline-count");
   listEl.innerHTML = "";
+
+  const cur = activeTab();
+  if (!cur || cur.kind === "settings" || cur.kind === "csv" || cur.kind === "image") {
+    countEl.textContent = "";
+    const empty = document.createElement("div");
+    empty.className = "outline-empty";
+    empty.textContent = "Brak struktury dla tego typu karty";
+    listEl.append(empty);
+    return;
+  }
+
+  if (cur.kind === "latex") {
+    const src = latexEditor ? latexEditor.serialize() : cur.content;
+    const texEntries: { label: string; badge: string; level: number; offset: number }[] = [];
+    const lines = src.split(/\r?\n/);
+    let pos = 0;
+    for (const line of lines) {
+      const m = /^\s*\\(part|chapter|section|subsection|subsubsection)\*?\{([^}]*)\}/.exec(line);
+      if (m) {
+        const kind = m[1];
+        const title = m[2].trim();
+        if (title) {
+          const level =
+            kind === "part" || kind === "chapter" || kind === "section"
+              ? 1
+              : kind === "subsection"
+                ? 2
+                : 3;
+          const badge =
+            kind === "part"
+              ? "PT"
+              : kind === "chapter"
+                ? "CH"
+                : kind === "section"
+                  ? "§"
+                  : kind === "subsection"
+                    ? "§§"
+                    : "§§§";
+          texEntries.push({ label: title, badge, level, offset: pos });
+        }
+      }
+      pos += line.length + 1;
+    }
+
+    countEl.textContent = texEntries.length > 0 ? String(texEntries.length) : "";
+    if (texEntries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "outline-empty";
+      empty.textContent = "Brak sekcji \\section{...} w tym pliku .tex";
+      listEl.append(empty);
+      return;
+    }
+
+    for (const item of texEntries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `outline-item level-${item.level}`;
+      btn.title = item.label;
+
+      const badge = document.createElement("span");
+      badge.className = "outline-kind-badge md";
+      badge.textContent = item.badge;
+
+      const text = document.createElement("span");
+      text.textContent = item.label;
+
+      btn.append(badge, text);
+      btn.addEventListener("click", () => {
+        latexEditor?.scrollToOffset(item.offset);
+      });
+      listEl.append(btn);
+    }
+    return;
+  }
 
   interface OutlineEntry {
     label: string;
@@ -6635,6 +6955,7 @@ let plotReplBusy = false;
 interface LightboxState {
   b64: string;
   meta?: backend.PlotMeta;
+  isEditable: boolean;
   title: string;
   cell?: CellState;
   cellIdx: number;
@@ -6672,21 +6993,27 @@ function pyQuoteStr(val: string): string {
 }
 
 function syncPlotQuickControls(): void {
+  const lockedBanner = $("plot-repl-locked-banner");
   const qcWrap = $("plot-repl-quick-controls");
+  const inputWrap = document.querySelector<HTMLElement>(".plot-repl-input-wrap");
   const titleIn = $<HTMLInputElement>("plot-qc-title");
   const xlabelIn = $<HTMLInputElement>("plot-qc-xlabel");
   const ylabelIn = $<HTMLInputElement>("plot-qc-ylabel");
+  const seriesWrap = $("plot-qc-series-wrap");
   const btnGrid = $<HTMLButtonElement>("plot-qc-grid");
   const btnXScale = $<HTMLButtonElement>("plot-qc-xscale");
   const btnYScale = $<HTMLButtonElement>("plot-qc-yscale");
   const selLegend = $<HTMLSelectElement>("plot-qc-legend");
   const selFont = $<HTMLSelectElement>("plot-qc-fontsize");
 
-  const hasPlotCopy = Boolean(lbState?.meta?.plot_id);
+  const isEditable = Boolean(lbState?.isEditable && lbState?.meta?.plot_id);
   const ax = lbState?.meta?.axes?.[0];
-  const disabled = !hasPlotCopy || plotReplBusy || !ax;
+  const disabled = !isEditable || plotReplBusy || !ax;
 
-  qcWrap.style.opacity = hasPlotCopy ? "1" : "0.5";
+  lockedBanner.hidden = isEditable;
+  qcWrap.classList.toggle("is-locked", !isEditable);
+  inputWrap?.classList.toggle("is-locked", !isEditable);
+
   titleIn.disabled = disabled;
   xlabelIn.disabled = disabled;
   ylabelIn.disabled = disabled;
@@ -6696,7 +7023,11 @@ function syncPlotQuickControls(): void {
   selLegend.disabled = disabled;
   selFont.disabled = disabled;
 
-  if (!ax) return;
+  if (!ax) {
+    seriesWrap.hidden = true;
+    seriesWrap.innerHTML = "";
+    return;
+  }
 
   if (document.activeElement !== titleIn) {
     titleIn.value = ax.title ?? "";
@@ -6706,6 +7037,58 @@ function syncPlotQuickControls(): void {
   }
   if (document.activeElement !== ylabelIn) {
     ylabelIn.value = ax.ylabel ?? "";
+  }
+
+  const seriesList = ax.series ?? [];
+  if (seriesList.length > 0) {
+    seriesWrap.hidden = false;
+    seriesWrap.innerHTML = "";
+    const hdr = document.createElement("div");
+    hdr.className = "plot-qc-series-header";
+    hdr.textContent = "Series / Legend Labels";
+    seriesWrap.append(hdr);
+
+    for (const s of seriesList) {
+      const row = document.createElement("div");
+      row.className = "plot-qc-series-row";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "plot-qc-series-name";
+      nameSpan.textContent = `${s.name}:`;
+
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "plot-qc-input";
+      inp.placeholder = `${s.name} label (legend)…`;
+      inp.value = s.label ?? "";
+      inp.spellcheck = false;
+      inp.disabled = disabled;
+
+      const applySeriesLabel = () => {
+        const nextVal = inp.value.trim();
+        if (nextVal === (s.label ?? "")) return;
+        if (nextVal) {
+          void runPlotReplSnippet(`${s.target}.set_label(${pyQuoteStr(nextVal)}); ax.legend()`);
+        } else {
+          void runPlotReplSnippet(`${s.target}.set_label('_nolegend_'); ax.legend()`);
+        }
+      };
+
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          applySeriesLabel();
+          inp.blur();
+        }
+      });
+      inp.addEventListener("change", () => applySeriesLabel());
+
+      row.append(nameSpan, inp);
+      seriesWrap.append(row);
+    }
+  } else {
+    seriesWrap.hidden = true;
+    seriesWrap.innerHTML = "";
   }
 
   const gridOn = Boolean(ax.grid);
@@ -6743,13 +7126,14 @@ function renderPlotReplPanel(): void {
   syncPlotQuickControls();
 
   const plotId = lbState?.meta?.plot_id;
-  if (!plotId) {
-    codePre.textContent = "# Re-run the cell to create an editable Figure copy";
+  const isEditable = Boolean(lbState?.isEditable && plotId);
+  if (!isEditable || !plotId) {
+    codePre.textContent = "# Uruchom komórkę (▶ Run), aby utworzyć kopię Figure do edycji";
     codePre.classList.remove("has-code");
     btnCopyCode.disabled = true;
     btnReset.disabled = true;
     btnRun.disabled = true;
-    logEl.innerHTML = `<div class="plot-repl-log-empty">This plot has no active session copy yet. Run the cell to enable live Figure REPL editing.</div>`;
+    logEl.innerHTML = `<div class="plot-repl-log-empty">Brak aktywnego obiektu <code>fig</code> w pamięci sesji (wykres nie był jeszcze uruchomiony w bieżącej sesji Pythona). Uruchom komórkę, aby odblokować edycję.</div>`;
     return;
   }
 
@@ -6849,6 +7233,7 @@ async function runPlotReplSnippet(rawSource: string, fromEditor = false): Promis
     }
 
     if (!res.ok) {
+      if (lbState) lbState.isEditable = false;
       st.logs.push({
         cmd: source,
         stdout: "",
@@ -6966,9 +7351,13 @@ function openPlotLightbox(
     }
   }
 
+  const plotId = activeMeta?.plot_id ?? "";
+  const isStaleCell = Boolean(cell?.outputStale);
+
   lbState = {
     b64: activeB64,
     meta: activeMeta,
+    isEditable: Boolean(plotId && !isStaleCell),
     title,
     cell,
     cellIdx,
@@ -6988,6 +7377,15 @@ function openPlotLightbox(
   $("plot-lb-measure-box").hidden = true;
 
   renderPlotReplPanel();
+
+  if (plotId && backend.inTauri) {
+    void backend.checkPlotAvailable(plotId).then((avail) => {
+      if (lbState && lbState.meta?.plot_id === plotId) {
+        lbState.isEditable = avail;
+        renderPlotReplPanel();
+      }
+    });
+  }
 
   if (!dialog.open) dialog.showModal();
 }
@@ -7320,6 +7718,570 @@ function initPlotLightbox(): void {
 }
 initPlotLightbox();
 
+// --- Right-side AI Chat Sidebar --------------------------------------------
+
+interface AiChatSession {
+  id: string;
+  title: string;
+  messages: backend.AiChatMessage[];
+  createdAt: number;
+}
+
+const AI_CHAT_STORAGE_KEY = "physpy_ai_chat_sessions_v1";
+let aiChatSessions: AiChatSession[] = [];
+let activeAiChatSessionId = "";
+let aiChatBusy = false;
+
+function loadAiChatSessions(): void {
+  try {
+    const raw = localStorage.getItem(AI_CHAT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
+        aiChatSessions = parsed.sessions;
+        activeAiChatSessionId =
+          typeof parsed.activeId === "string" &&
+          aiChatSessions.some((s) => s.id === parsed.activeId)
+            ? parsed.activeId
+            : aiChatSessions[0].id;
+        return;
+      }
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  createNewAiChatSession(false);
+}
+
+function saveAiChatSessions(): void {
+  try {
+    localStorage.setItem(
+      AI_CHAT_STORAGE_KEY,
+      JSON.stringify({
+        activeId: activeAiChatSessionId,
+        sessions: aiChatSessions,
+      }),
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function getActiveAiChatSession(): AiChatSession {
+  let found = aiChatSessions.find((s) => s.id === activeAiChatSessionId);
+  if (!found) {
+    if (aiChatSessions.length === 0) {
+      createNewAiChatSession(false);
+    }
+    found = aiChatSessions[0];
+    activeAiChatSessionId = found.id;
+  }
+  return found;
+}
+
+function createNewAiChatSession(render = true): AiChatSession {
+  const nextNum = aiChatSessions.length + 1;
+  const session: AiChatSession = {
+    id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    title: `Session ${nextNum}`,
+    messages: [],
+    createdAt: Date.now(),
+  };
+  aiChatSessions.push(session);
+  activeAiChatSessionId = session.id;
+  saveAiChatSessions();
+  if (render) {
+    renderAiChatPane();
+    $<HTMLTextAreaElement>("ai-chat-input").focus();
+  }
+  return session;
+}
+
+function deleteAiChatSession(sessionId: string): void {
+  const idx = aiChatSessions.findIndex((s) => s.id === sessionId);
+  if (idx === -1) return;
+  aiChatSessions.splice(idx, 1);
+  if (aiChatSessions.length === 0) {
+    createNewAiChatSession(false);
+  } else if (activeAiChatSessionId === sessionId) {
+    const nextIdx = Math.min(idx, aiChatSessions.length - 1);
+    activeAiChatSessionId = aiChatSessions[nextIdx].id;
+  }
+  saveAiChatSessions();
+  renderAiChatPane();
+}
+
+function updateAiChatTokenEstimate(): void {
+  const estEl = $("ai-chat-token-est");
+  const inputEl = $<HTMLTextAreaElement>("ai-chat-input");
+  const includeCtx = $<HTMLInputElement>("ai-chat-include-ctx").checked;
+  const session = getActiveAiChatSession();
+
+  let chars = 950 + inputEl.value.length;
+  for (const m of session.messages) {
+    chars += m.content.length;
+  }
+  if (includeCtx) {
+    const nb = cells
+      .filter((c) => c.kind === "code")
+      .map((c) => c.view.state.doc.toString())
+      .join("\n\n");
+    chars += Math.min(nb.length, 16000);
+    for (const [k, v] of Object.entries(sessionRuntimeExports)) {
+      chars += k.length + v.length + 4;
+    }
+  }
+  const approxTokens = Math.max(1, Math.round(chars / 4));
+  estEl.textContent = `~${approxTokens.toLocaleString()} tok`;
+}
+
+function renderAiChatPane(): void {
+  const sessionsBar = $("ai-chat-sessions-bar");
+  const messagesEl = $("ai-chat-messages");
+  const btnSend = $<HTMLButtonElement>("btn-ai-chat-send");
+  const btnNew = $<HTMLButtonElement>("btn-ai-new-session");
+  const btnDelete = $<HTMLButtonElement>("btn-ai-delete-session");
+
+  const active = getActiveAiChatSession();
+  btnSend.disabled = aiChatBusy;
+  btnNew.disabled = aiChatBusy;
+  btnDelete.disabled = aiChatBusy;
+
+  sessionsBar.innerHTML = "";
+  for (const sess of aiChatSessions) {
+    const pill = document.createElement("div");
+    pill.className = `ai-chat-session-pill${sess.id === active.id ? " active" : ""}`;
+    pill.title = sess.title;
+    pill.addEventListener("click", () => {
+      if (aiChatBusy) return;
+      activeAiChatSessionId = sess.id;
+      saveAiChatSessions();
+      renderAiChatPane();
+    });
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "ai-chat-session-name";
+    nameSpan.textContent = sess.title;
+    pill.append(nameSpan);
+
+    const closeSpan = document.createElement("span");
+    closeSpan.className = "ai-chat-session-close";
+    closeSpan.textContent = "✕";
+    closeSpan.title = "Close & delete this session";
+    closeSpan.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (aiChatBusy) return;
+      deleteAiChatSession(sess.id);
+    });
+    pill.append(closeSpan);
+
+    sessionsBar.append(pill);
+  }
+
+  messagesEl.innerHTML = "";
+  if (active.messages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "ai-chat-empty";
+    empty.innerHTML =
+      "<strong>New AI Chat Session</strong><br/>" +
+      "Ask questions about physics, formulas, units, plots, or request PhysPy code snippets.<br/>" +
+      "Uses your configured Gemini API key from Settings.";
+    messagesEl.append(empty);
+  } else {
+    for (const msg of active.messages) {
+      const card = document.createElement("div");
+      card.className = `ai-chat-msg ${msg.role === "user" ? "ai-chat-msg-user" : "ai-chat-msg-assistant"}`;
+
+      const meta = document.createElement("div");
+      meta.className = "ai-chat-msg-meta";
+      const roleSpan = document.createElement("span");
+      roleSpan.className = "ai-chat-msg-role";
+      roleSpan.textContent = msg.role === "user" ? "You" : `AI (${msg.model || "Gemini"})`;
+      meta.append(roleSpan);
+
+      if (msg.role === "assistant" && (msg.input_tokens != null || msg.output_tokens != null)) {
+        const tokSpan = document.createElement("span");
+        const parts: string[] = [];
+        if (msg.input_tokens != null) parts.push(`↑ ${msg.input_tokens.toLocaleString()}`);
+        if (msg.output_tokens != null) parts.push(`↓ ${msg.output_tokens.toLocaleString()} tok`);
+        tokSpan.textContent = parts.join(" · ");
+        meta.append(tokSpan);
+      }
+      card.append(meta);
+
+      const body = document.createElement("div");
+      body.className = "ai-chat-msg-body";
+      if (msg.role === "user") {
+        body.textContent = msg.content;
+      } else {
+        body.innerHTML = renderMarkdownWithLatex(msg.content);
+        body.querySelectorAll("pre").forEach((preEl) => {
+          const codeText = (preEl.textContent ?? "").trim();
+          if (!codeText) return;
+          const bar = document.createElement("div");
+          bar.className = "ai-chat-code-toolbar";
+
+          const btnCopy = document.createElement("button");
+          btnCopy.type = "button";
+          btnCopy.className = "ai-chat-code-btn";
+          btnCopy.textContent = "📋 Copy";
+          btnCopy.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(codeText);
+              btnCopy.textContent = "✓ Copied";
+              setTimeout(() => {
+                btnCopy.textContent = "📋 Copy";
+              }, 1100);
+            } catch {
+              // Ignore clipboard errors
+            }
+          });
+
+          const btnInsert = document.createElement("button");
+          btnInsert.type = "button";
+          btnInsert.className = "ai-chat-code-btn";
+          btnInsert.textContent = "+ Cell";
+          btnInsert.title = "Insert as a new code cell in the notebook";
+          btnInsert.addEventListener("click", () => {
+            const newCell = createCellCard({
+              kind: "code",
+              title: "AI Snippet",
+              source: codeText + "\n",
+            });
+            markDirty();
+            newCell.view.focus();
+            setStatus("Inserted AI code block as a new cell");
+          });
+
+          bar.append(btnCopy, btnInsert);
+          preEl.parentElement?.insertBefore(bar, preEl);
+        });
+      }
+      card.append(body);
+      messagesEl.append(card);
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  updateAiChatTokenEstimate();
+}
+
+async function sendAiChatMessage(): Promise<void> {
+  if (aiChatBusy) return;
+  if (!requireTauri()) return;
+  const inputEl = $<HTMLTextAreaElement>("ai-chat-input");
+  const statusEl = $("ai-chat-status");
+  const includeCtx = $<HTMLInputElement>("ai-chat-include-ctx").checked;
+  const text = inputEl.value.trim();
+  if (!text) return;
+
+  const session = getActiveAiChatSession();
+  if (session.messages.length === 0 && /^Session \d+$/.test(session.title)) {
+    session.title = text.length > 26 ? text.slice(0, 25) + "…" : text;
+  }
+
+  session.messages.push({ role: "user", content: text });
+  inputEl.value = "";
+  aiChatBusy = true;
+  statusEl.textContent = "Thinking…";
+  saveAiChatSessions();
+  renderAiChatPane();
+
+  try {
+    const notebookSource = includeCtx
+      ? cells
+          .filter((c) => c.kind === "code")
+          .map((c, idx) => `# %% ${c.title || `Cell ${idx + 1}`}\n${c.view.state.doc.toString()}`)
+          .join("\n\n")
+      : "";
+    const exportsPayload = includeCtx ? { ...sessionRuntimeExports } : {};
+
+    const res = await backend.aiChat({
+      messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+      notebookSource,
+      exports: exportsPayload,
+      workspaceDir: rootDir,
+    });
+
+    session.messages.push({
+      role: "assistant",
+      content: res.reply,
+      model: res.model,
+      input_tokens: res.input_tokens,
+      output_tokens: res.output_tokens,
+    });
+    statusEl.textContent = "";
+    saveAiChatSessions();
+  } catch (err) {
+    session.messages.push({
+      role: "assistant",
+      content: `**Error:** ${String(err)}`,
+    });
+    statusEl.textContent = "Request failed";
+    saveAiChatSessions();
+  } finally {
+    aiChatBusy = false;
+    renderAiChatPane();
+    inputEl.focus();
+  }
+}
+
+function toggleAiChatPane(): boolean {
+  const pane = $("ai-chat-pane");
+  const btn = $("btn-ai-chat");
+  pane.hidden = !pane.hidden;
+  btn.setAttribute("aria-expanded", String(!pane.hidden));
+  if (!pane.hidden) {
+    renderAiChatPane();
+    $<HTMLTextAreaElement>("ai-chat-input").focus();
+  }
+  return true;
+}
+
+function initAiChatSidebar(): void {
+  loadAiChatSessions();
+
+  $("btn-close-ai-chat").addEventListener("click", () => {
+    toggleAiChatPane();
+  });
+
+  $("btn-ai-new-session").addEventListener("click", () => {
+    if (aiChatBusy) return;
+    createNewAiChatSession(true);
+  });
+
+  $("btn-ai-delete-session").addEventListener("click", () => {
+    if (aiChatBusy) return;
+    deleteAiChatSession(activeAiChatSessionId);
+  });
+
+  $("btn-ai-chat-send").addEventListener("click", () => {
+    void sendAiChatMessage();
+  });
+
+  const inputEl = $<HTMLTextAreaElement>("ai-chat-input");
+  inputEl.addEventListener("input", () => {
+    updateAiChatTokenEstimate();
+  });
+  inputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void sendAiChatMessage();
+    }
+  });
+
+  $("ai-chat-include-ctx").addEventListener("change", () => {
+    updateAiChatTokenEstimate();
+  });
+}
+initAiChatSidebar();
+
+// --- Image File Preview Tab (#image-view) ----------------------------------
+
+let currentImagePreviewBlobUrl: string | null = null;
+let imagePreviewScale = 1;
+let imagePreviewTx = 0;
+let imagePreviewTy = 0;
+let imagePreviewBg: "checker" | "white" | "dark" = "checker";
+
+async function loadImagePreviewTab(filePath: string | null): Promise<void> {
+  imageViewEl.innerHTML = "";
+  if (currentImagePreviewBlobUrl) {
+    URL.revokeObjectURL(currentImagePreviewBlobUrl);
+    currentImagePreviewBlobUrl = null;
+  }
+  if (!filePath || !backend.inTauri) return;
+
+  const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "image-view-toolbar";
+
+  const titleEl = document.createElement("span");
+  titleEl.className = "image-view-title";
+  titleEl.textContent = `🖼 ${fileName}`;
+
+  const metaEl = document.createElement("span");
+  metaEl.className = "image-view-meta";
+  metaEl.textContent = "Loading…";
+
+  const spacer = document.createElement("div");
+  spacer.className = "csv-toolbar-spacer";
+
+  const btnZoomOut = document.createElement("button");
+  btnZoomOut.type = "button";
+  btnZoomOut.className = "latex-small-btn";
+  btnZoomOut.textContent = "−";
+  btnZoomOut.title = "Zoom out";
+
+  const btnZoomReset = document.createElement("button");
+  btnZoomReset.type = "button";
+  btnZoomReset.className = "latex-small-btn";
+  btnZoomReset.textContent = "100% / Fit";
+  btnZoomReset.title = "Reset zoom and pan";
+
+  const btnZoomIn = document.createElement("button");
+  btnZoomIn.type = "button";
+  btnZoomIn.className = "latex-small-btn";
+  btnZoomIn.textContent = "+";
+  btnZoomIn.title = "Zoom in";
+
+  const btnBg = document.createElement("button");
+  btnBg.type = "button";
+  btnBg.className = "latex-small-btn";
+  btnBg.textContent = `Bg: ${imagePreviewBg}`;
+  btnBg.title = "Cycle image background (checkerboard / white / dark)";
+
+  const btnCopyLatex = document.createElement("button");
+  btnCopyLatex.type = "button";
+  btnCopyLatex.className = "latex-small-btn";
+  btnCopyLatex.textContent = "📋 \\includegraphics";
+  btnCopyLatex.title = "Copy LaTeX \\includegraphics snippet for this image";
+
+  const btnReload = document.createElement("button");
+  btnReload.type = "button";
+  btnReload.className = "latex-small-btn";
+  btnReload.textContent = "↻ Reload";
+  btnReload.title = "Reload image from disk";
+
+  toolbar.append(
+    titleEl,
+    metaEl,
+    spacer,
+    btnZoomOut,
+    btnZoomReset,
+    btnZoomIn,
+    btnBg,
+    btnCopyLatex,
+    btnReload,
+  );
+
+  const stage = document.createElement("div");
+  stage.className = "image-view-stage";
+
+  const canvas = document.createElement("div");
+  canvas.className = "image-view-canvas";
+
+  const img = document.createElement("img");
+  img.className = `image-view-img bg-${imagePreviewBg}`;
+  img.alt = fileName;
+  img.draggable = false;
+
+  canvas.append(img);
+  stage.append(canvas);
+  imageViewEl.append(toolbar, stage);
+
+  imagePreviewScale = 1;
+  imagePreviewTx = 0;
+  imagePreviewTy = 0;
+
+  const applyTransform = () => {
+    canvas.style.transform = `translate(${imagePreviewTx}px, ${imagePreviewTy}px) scale(${imagePreviewScale})`;
+    btnZoomReset.textContent = `${Math.round(imagePreviewScale * 100)}%`;
+  };
+
+  btnZoomOut.addEventListener("click", () => {
+    imagePreviewScale = Math.max(0.2, Math.round((imagePreviewScale / 1.2) * 100) / 100);
+    applyTransform();
+  });
+
+  btnZoomIn.addEventListener("click", () => {
+    imagePreviewScale = Math.min(16, Math.round(imagePreviewScale * 1.2 * 100) / 100);
+    applyTransform();
+  });
+
+  btnZoomReset.addEventListener("click", () => {
+    imagePreviewScale = 1;
+    imagePreviewTx = 0;
+    imagePreviewTy = 0;
+    applyTransform();
+  });
+
+  btnBg.addEventListener("click", () => {
+    imagePreviewBg =
+      imagePreviewBg === "checker"
+        ? "white"
+        : imagePreviewBg === "white"
+          ? "dark"
+          : "checker";
+    img.className = `image-view-img bg-${imagePreviewBg}`;
+    btnBg.textContent = `Bg: ${imagePreviewBg}`;
+  });
+
+  btnCopyLatex.addEventListener("click", async () => {
+    const rel = toWorkspaceRelativeIfPossible(filePath);
+    const snippet = `\\includegraphics[width=0.8\\textwidth]{${rel}}`;
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setStatus(`Copied ${snippet}`);
+    } catch {
+      // ignore clipboard errors
+    }
+  });
+
+  btnReload.addEventListener("click", () => {
+    void loadImagePreviewTab(filePath);
+  });
+
+  stage.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nextScale = Math.max(0.2, Math.min(16, imagePreviewScale * factor));
+      const rect = stage.getBoundingClientRect();
+      const cx = e.clientX - (rect.left + rect.width / 2);
+      const cy = e.clientY - (rect.top + rect.height / 2);
+      const ratio = nextScale / imagePreviewScale;
+      imagePreviewTx = cx - (cx - imagePreviewTx) * ratio;
+      imagePreviewTy = cy - (cy - imagePreviewTy) * ratio;
+      imagePreviewScale = nextScale;
+      applyTransform();
+    },
+    { passive: false },
+  );
+
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let origTx = 0;
+  let origTy = 0;
+
+  stage.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    origTx = imagePreviewTx;
+    origTy = imagePreviewTy;
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging || imageViewEl.hidden) return;
+    imagePreviewTx = origTx + (e.clientX - startX);
+    imagePreviewTy = origTy + (e.clientY - startY);
+    applyTransform();
+  });
+
+  window.addEventListener("mouseup", () => {
+    dragging = false;
+  });
+
+  try {
+    const bytes = await backend.readBinaryFile(filePath, rootDir);
+    const sizeKb = (bytes.length / 1024).toFixed(1);
+    const blob = new Blob([new Uint8Array(bytes)], { type: mimeForPath(filePath) });
+    const url = URL.createObjectURL(blob);
+    currentImagePreviewBlobUrl = url;
+    img.addEventListener("load", () => {
+      metaEl.textContent = `${img.naturalWidth} × ${img.naturalHeight} px · ${sizeKb} KB · Wheel to zoom · Drag to pan`;
+    });
+    img.src = url;
+  } catch (err) {
+    metaEl.textContent = `Failed to load image: ${String(err)}`;
+  }
+}
+
 async function initializeAppStartup() {
   const cfg = await applyHierarchicalConfig(null, true);
   const startupMode = cfg?.startup_mode || "restore";
@@ -7337,7 +8299,7 @@ async function initializeAppStartup() {
         if (Array.isArray(session.fileTabs) && session.fileTabs.length > 0) {
           for (const filePath of session.fileTabs) {
             try {
-              const contents = await backend.readFileByPath(filePath);
+              const contents = isImagePath(filePath) ? "" : await backend.readFileByPath(filePath);
               createNewTab({ path: filePath, content: contents, dirty: false });
               restoredAny = true;
             } catch {

@@ -163,8 +163,20 @@ _IDEMPOTENT_PLOT_PREFIXES: tuple[tuple[str, ...], ...] = (
 )
 
 
+_SERIES_LABEL_RE = re.compile(r"^(ax\.(?:lines|collections)\[\d+\]\.set_label\()")
+
+
 def _record_plot_history(history: list[str], snippet: str) -> None:
     if "\n" not in snippet:
+        m = _SERIES_LABEL_RE.match(snippet)
+        if m:
+            prefix = m.group(1)
+            for idx, existing in enumerate(history):
+                if "\n" not in existing and existing.startswith(prefix):
+                    history[idx] = snippet
+                    return
+            history.append(snippet)
+            return
         for group in _IDEMPOTENT_PLOT_PREFIXES:
             if any(snippet.startswith(p) for p in group):
                 for idx, existing in enumerate(history):
@@ -787,6 +799,9 @@ def run_worker() -> int:
         elif cmd == "reset_plot":
             plot_id = str(req.get("plot_id", ""))
             resp = session.reset_plot(plot_id)
+        elif cmd == "check_plot":
+            plot_id = str(req.get("plot_id", ""))
+            resp = {"ok": True, "available": bool(plot_id and plot_id in session.plot_store)}
         elif cmd == "format_code":
             from .formatter import format_physpy_code
 

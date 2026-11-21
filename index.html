@@ -24,6 +24,7 @@
           🐍 <span id="interpreter-label">Python</span>
         </button>
         <button id="btn-python" type="button" title="Toggle generated Python preview (Cmd+P)">Code<kbd>⌘P</kbd></button>
+        <button id="btn-ai-chat" type="button" title="Toggle AI Chat sidebar (Shift+Cmd+K)" aria-expanded="false">✨ AI Chat<kbd>⇧⌘K</kbd></button>
       </div>
       <div id="main">
         <aside id="sidebar">
@@ -289,6 +290,8 @@
             </div>
           </div>
           <div id="csv-view" hidden></div>
+          <div id="latex-view" hidden></div>
+          <div id="image-view" hidden></div>
           <section id="variables-drawer" hidden aria-label="Bottom panel">
             <div class="drawer-header">
               <div class="drawer-tabs" role="tablist">
@@ -346,6 +349,37 @@
           <div class="pane-title">Generated Python</div>
           <div id="python"></div>
         </div>
+        <aside id="ai-chat-pane" class="ai-chat-pane" hidden aria-label="AI Chat Assistant">
+          <div class="ai-chat-header">
+            <span class="ai-chat-title">✨ AI Chat</span>
+            <div class="ai-chat-header-actions">
+              <button id="btn-ai-new-session" type="button" class="ai-chat-top-btn" title="Open a new AI chat session">+ New Session</button>
+              <button id="btn-ai-delete-session" type="button" class="ai-chat-top-btn ai-chat-danger-btn" title="Close and delete current chat session">🗑 Delete</button>
+              <button id="btn-close-ai-chat" type="button" class="sidebar-icon-btn" title="Close AI Chat panel (Shift+Cmd+K)">✕</button>
+            </div>
+          </div>
+          <div id="ai-chat-sessions-bar" class="ai-chat-sessions-bar" role="tablist" aria-label="AI Chat Sessions"></div>
+          <div id="ai-chat-messages" class="ai-chat-messages"></div>
+          <div class="ai-chat-composer">
+            <div class="ai-chat-composer-opts">
+              <label class="ai-chat-ctx-toggle" title="Include current notebook cells and exported variables in the conversation context">
+                <input id="ai-chat-include-ctx" type="checkbox" checked />
+                <span>Include notebook context</span>
+              </label>
+              <span id="ai-chat-token-est" class="ai-chat-token-est">~0 tok</span>
+            </div>
+            <textarea
+              id="ai-chat-input"
+              class="ai-chat-input"
+              rows="3"
+              placeholder="Ask AI about your physics problem, data, or PhysPy code… (Enter to send, Shift+Enter for newline)"
+            ></textarea>
+            <div class="ai-chat-composer-footer">
+              <span id="ai-chat-status" class="ai-chat-status"></span>
+              <button id="btn-ai-chat-send" type="button" class="primary ai-chat-send-btn">Send ↵</button>
+            </div>
+          </div>
+        </aside>
       </div>
       <div id="statusbar"><span id="status"></span></div>
     </div>
@@ -376,8 +410,15 @@
             <button id="btn-browse-python" type="button">Browse…</button>
           </div>
         </div>
+        <div id="python-file-bind-row" class="dialog-custom-row" style="margin-top: 8px;">
+          <label class="ipynb-checkbox" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input id="python-bind-to-file" type="checkbox" checked />
+            <span id="python-bind-file-label">Remember this interpreter for the current file (saved in <code>~/.physpy/file_interpreters.json</code>)</span>
+          </label>
+        </div>
         <p id="python-dialog-error" class="dialog-error" hidden></p>
         <div class="dialog-footer">
+          <button id="btn-unbind-file-python" type="button" hidden title="Remove per-file interpreter binding from ~/.physpy/file_interpreters.json">Unbind File</button>
           <button type="submit" value="cancel">Cancel</button>
           <button type="submit" value="apply" class="primary">Use Interpreter</button>
         </div>
@@ -574,14 +615,29 @@
             </div>
             <button type="button" id="btn-plot-repl-reset" class="plot-repl-small-btn" title="Restore figure copy to initial plot state">↺ Reset</button>
           </div>
+          <div id="plot-repl-locked-banner" class="plot-repl-locked-banner" hidden>
+            <span class="plot-repl-locked-icon">🔒</span>
+            <div class="plot-repl-locked-text">
+              <strong>Edycja zablokowana — brak <code>fig</code> w sesji</strong>
+              <span>Wykres pochodzi z zapisanego wyjścia lub zresetowanej sesji. Uruchom komórkę (▶ Run), aby odblokować konfigurację i REPL.</span>
+            </div>
+          </div>
           <div id="plot-repl-quick-controls" class="plot-repl-quick-controls">
             <div class="plot-qc-row">
-              <input id="plot-qc-title" type="text" class="plot-qc-input" placeholder="Title…" title="Axes title (Enter to apply)" spellcheck="false" />
+              <span class="plot-qc-field-label">Title:</span>
+              <input id="plot-qc-title" type="text" class="plot-qc-input" placeholder="Plot title…" title="Axes title (Enter to apply)" spellcheck="false" />
             </div>
             <div class="plot-qc-row plot-qc-two-col">
-              <input id="plot-qc-xlabel" type="text" class="plot-qc-input" placeholder="X label…" title="X axis label (Enter to apply)" spellcheck="false" />
-              <input id="plot-qc-ylabel" type="text" class="plot-qc-input" placeholder="Y label…" title="Y axis label (Enter to apply)" spellcheck="false" />
+              <div class="plot-qc-labeled-field">
+                <span class="plot-qc-field-label">X:</span>
+                <input id="plot-qc-xlabel" type="text" class="plot-qc-input" placeholder="X label…" title="X axis label (Enter to apply)" spellcheck="false" />
+              </div>
+              <div class="plot-qc-labeled-field">
+                <span class="plot-qc-field-label">Y:</span>
+                <input id="plot-qc-ylabel" type="text" class="plot-qc-input" placeholder="Y label…" title="Y axis label (Enter to apply)" spellcheck="false" />
+              </div>
             </div>
+            <div id="plot-qc-series-wrap" class="plot-qc-series-wrap" hidden></div>
             <div class="plot-qc-row plot-qc-toggles">
               <button type="button" id="plot-qc-grid" class="plot-qc-chip" title="Toggle gridlines">⊞ Grid</button>
               <button type="button" id="plot-qc-xscale" class="plot-qc-chip" title="Toggle X axis linear / log scale">X: lin</button>

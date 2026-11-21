@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 *.ppyout
+test-results/
+playwright-report/

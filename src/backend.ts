@@ -29,6 +29,12 @@ export interface TableOutput {
   raw_text: string;
 }
 
+export interface PlotSeriesMeta {
+  target: string;
+  name: string;
+  label: string;
+}
+
 export interface PlotAxesMeta {
   left: number;
   right: number;
@@ -44,6 +50,7 @@ export interface PlotAxesMeta {
   grid?: boolean;
   legend?: boolean;
   fontsize?: number;
+  series?: PlotSeriesMeta[];
 }
 
 export interface PlotMeta {
@@ -113,9 +120,33 @@ export interface InstallResult {
   requirements_file_written: boolean;
 }
 
+export interface LatexBuildResult {
+  success: boolean;
+  code: number | null;
+  log: string;
+  pdf_path: string | null;
+  resolved_target: string;
+}
+
 export interface AiAssistResult {
   code: string;
   explanation?: string;
+  model?: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+export interface AiChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  model?: string;
+}
+
+export interface AiChatResult {
+  reply: string;
   model?: string;
   input_tokens?: number | null;
   output_tokens?: number | null;
@@ -182,7 +213,12 @@ export interface ConfigScopeData {
 export const inTauri = "__TAURI_INTERNALS__" in window;
 
 const FILTERS = [
-  { name: "PhysPy & Data", extensions: ["ppy", "py", "csv", "tsv"] },
+  {
+    name: "PhysPy, LaTeX, Data & Images",
+    extensions: ["ppy", "py", "tex", "bib", "sty", "cls", "csv", "tsv", "png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"],
+  },
+  { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"] },
+  { name: "LaTeX Document", extensions: ["tex", "bib", "sty", "cls"] },
   { name: "CSV / TSV", extensions: ["csv", "tsv"] },
   { name: "PhysPy Notebook", extensions: ["ppy", "py"] },
 ];
@@ -278,6 +314,9 @@ export const evalPlotCode = (plotId: string, source: string, docSource: string) 
 export const resetPlot = (plotId: string) =>
   invoke<PlotReplResult>("reset_plot", { plotId });
 
+export const checkPlotAvailable = (plotId: string) =>
+  invoke<boolean>("check_plot_available", { plotId });
+
 export const runCode = (source: string, path: string | null) =>
   invoke<RunOutput>("run_code", { source, path });
 
@@ -290,6 +329,13 @@ export const aiAssist = (params: {
   exports: Record<string, string>;
   workspaceDir: string | null;
 }) => invoke<AiAssistResult>("ai_assist", params);
+
+export const aiChat = (params: {
+  messages: { role: string; content: string }[];
+  notebookSource: string;
+  exports: Record<string, string>;
+  workspaceDir: string | null;
+}) => invoke<AiChatResult>("ai_chat", params);
 
 export const listAiModels = (apiKey: string | null, workspaceDir: string | null) =>
   invoke<GeminiModelInfo[]>("list_ai_models", { apiKey, workspaceDir });
@@ -332,6 +378,12 @@ export const listPythonInterpreters = (workspaceDir: string | null) =>
 export const setPythonInterpreter = (path: string) =>
   invoke<PythonInterpreterInfo>("set_python_interpreter", { path });
 
+export const getFileInterpreter = (filePath: string, activate = true) =>
+  invoke<PythonInterpreterInfo | null>("get_file_interpreter", { filePath, activate });
+
+export const setFileInterpreter = (filePath: string, pythonPath: string | null) =>
+  invoke<PythonInterpreterInfo | null>("set_file_interpreter", { filePath, pythonPath });
+
 export async function pickPythonBinary(defaultDir: string | null = null): Promise<string | null> {
   try {
     const picked = await invoke<string | null>("pick_file_with_hidden", { defaultDir });
@@ -357,6 +409,9 @@ export async function pickFolder(defaultDir: string | null = null): Promise<stri
 export async function openFile(): Promise<{ path: string; contents: string } | null> {
   const path = await open({ multiple: false, directory: false, filters: FILTERS });
   if (typeof path !== "string") return null;
+  if (/\.(png|jpe?g|webp|svg|gif|bmp|ico)$/i.test(path)) {
+    return { path, contents: "" };
+  }
   return { path, contents: await invoke<string>("read_file", { path }) };
 }
 
@@ -473,6 +528,27 @@ export async function formatCells(cells: string[]): Promise<string[]> {
     console.warn("format_cells failed:", err);
     return cells;
   }
+}
+
+export const buildLatex = (
+  targetPath: string,
+  baseDir?: string | null,
+  engine?: string,
+) =>
+  invoke<LatexBuildResult>("build_latex", {
+    targetPath,
+    baseDir: baseDir ?? null,
+    engine: engine ?? "pdflatex",
+  });
+
+export async function pickLatexTargetFile(defaultDir?: string | null): Promise<string | null> {
+  const picked = await open({
+    multiple: false,
+    directory: false,
+    defaultPath: defaultDir ?? undefined,
+    filters: [{ name: "LaTeX Document", extensions: ["tex"] }],
+  });
+  return typeof picked === "string" ? picked : null;
 }
 
 
