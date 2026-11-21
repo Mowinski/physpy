@@ -49,6 +49,7 @@ Dokument podsumowuje architekturę, zrealizowane funkcje oraz bieżący stan rep
   - Pasek `exported (N)` jest zwinięty domyślnie i otwiera po kliknięciu posortowaną alfabetycznie tabelę z oczyszczonymi floatami (`_short_repr` do 240 znaków).
   - Panel **Variables** (`⌘J`): sortowanie po `Variable` lub `Defined in`, przypinanie zmiennych `📌` na górze (zapis w `localStorage`), przycisk `⤢` otwierający modal z pełną, nieuciętą wartością (`inspect_variable` → `inspect_var`).
   - Sticky nagłówki komórek z menu `+` (Above / Below) oraz galeria przypiętych wykresów z kolejnością, zmianą nazw i trybem **Compare**.
+  - Modal wykresu (`plot-lightbox-dialog`) z bocznym panelem **Figure REPL (copy)** i szybkimi przełącznikami (**Quick Controls**): każda komenda `plot ...` tworzy w `NotebookSession.plot_store` izolowaną kopię (`copy_figure` z `FigureCanvasAgg`) pod unikalnym `plot_id` (`base_fig` + `work_fig`). W modalu można wykonywać kod Pythona/PhysPy w trybie REPL na `fig`, `ax`, `axes`, `plt` (z autouzupełnianiem), wyklikać zmianę tytułu, etykiet osi, siatki, skali lin/log, legendy oraz rozmiaru czcionki, podejrzeć i skopiować skumulowany kod (`📋 Copy Code`, z deduplikacją powtarzających się setterów) oraz przywrócić stan początkowy (`↺ Reset`) bez modyfikowania wykresu w samej komórce.
 - **AI Assistant (`ai.py`, `lib.rs`, `backend.ts`, `main.ts`):**
   - Timeout zapytań Gemini zwiększony do `180 s`.
   - Podgląd szacowanych tokenów (`~X tok`) przed wysłaniem oraz dokładne zużycie (`↑ input tok · ↓ output tok`) z `usageMetadata` po odpowiedzi.
@@ -56,14 +57,7 @@ Dokument podsumowuje architekturę, zrealizowane funkcje oraz bieżący stan rep
 ---
 
 ## 3. Komendy weryfikacji i buildu
-- Testy Pythona: `cd transpiler && .venv/bin/pytest -q` (ostatni wynik: `144 passed`).
+- Testy Pythona: `cd transpiler && .venv/bin/pytest -q` (ostatni wynik: `145 passed`).
 - TypeScript: `npx tsc --noEmit` (ostatni wynik: 0 błędów).
 - Build i instalacja macOS `.app`:
   `npm run tauri build -- --bundles app && rm -rf /Applications/PhysPy.app && cp -R src-tauri/target/release/bundle/macos/PhysPy.app /Applications/PhysPy.app`
-
----
-
-## 4. Stan Git
-- Ostatni commit na `origin/main`: `6d24016`.
-- Zmiany w working tree po `6d24016` (niezacommitowane):
-  `const_owners` (re-run `const`), LaTeX `$...$`/`$$...$$` w `stdout`, zwijany pasek `exported (N)`, fix kliknięcia i nakładania w `mathSymbols`, wyłączony live LaTeX w Markdown, sortowalny/przypinany panel **Variables** + modal `inspect_var`, `struct` + `Pomiar` + `table` dla list, `timeout=180` + licznik tokenów AI, aktualizacja `README.md`, `docs/IDEAS.md`, `docs/CONTEXT.md`.

@@ -40,12 +40,28 @@ export interface PlotAxesMeta {
   yscale: string;
   xlabel: string;
   ylabel: string;
+  title?: string;
+  grid?: boolean;
+  legend?: boolean;
+  fontsize?: number;
 }
 
 export interface PlotMeta {
+  plot_id?: string;
   svg: string;
   pdf: string;
   axes: PlotAxesMeta[];
+}
+
+export interface PlotReplResult {
+  ok: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+  png: string;
+  plot_meta?: PlotMeta | null;
+  history: string[];
+  error?: string | null;
 }
 
 export interface CellOutput {
@@ -255,6 +271,12 @@ export interface VariableInspectInfo {
 
 export const inspectVariable = (name: string) =>
   invoke<VariableInspectInfo | null>("inspect_variable", { name });
+
+export const evalPlotCode = (plotId: string, source: string, docSource: string) =>
+  invoke<PlotReplResult>("eval_plot_code", { plotId, source, docSource });
+
+export const resetPlot = (plotId: string) =>
+  invoke<PlotReplResult>("reset_plot", { plotId });
 
 export const runCode = (source: string, path: string | null) =>
   invoke<RunOutput>("run_code", { source, path });

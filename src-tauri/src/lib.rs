@@ -87,16 +87,45 @@ pub struct PlotAxesMeta {
     pub xlabel: String,
     #[serde(default)]
     pub ylabel: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub grid: bool,
+    #[serde(default)]
+    pub legend: bool,
+    #[serde(default)]
+    pub fontsize: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlotMeta {
+    #[serde(default)]
+    pub plot_id: String,
     #[serde(default)]
     pub svg: String,
     #[serde(default)]
     pub pdf: String,
     #[serde(default)]
     pub axes: Vec<PlotAxesMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlotReplResult {
+    pub ok: bool,
+    #[serde(default)]
+    pub code: i32,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub png: String,
+    #[serde(default)]
+    pub plot_meta: Option<PlotMeta>,
+    #[serde(default)]
+    pub history: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -641,6 +670,40 @@ async fn inspect_variable(name: String) -> Result<Option<VariableInspectDto>, St
             Ok(serde_json::from_value(info).ok())
         })?;
         Ok(maybe.flatten())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn eval_plot_code(
+    plot_id: String,
+    source: String,
+    doc_source: Option<String>,
+) -> Result<PlotReplResult, String> {
+    blocking(move || {
+        with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "eval_plot",
+                "plot_id": plot_id,
+                "source": source,
+                "doc_source": doc_source.unwrap_or_default(),
+            }))?;
+            serde_json::from_value(resp).map_err(|e| e.to_string())
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reset_plot(plot_id: String) -> Result<PlotReplResult, String> {
+    blocking(move || {
+        with_worker(|w| {
+            let resp = w.send(&serde_json::json!({
+                "cmd": "reset_plot",
+                "plot_id": plot_id,
+            }))?;
+            serde_json::from_value(resp).map_err(|e| e.to_string())
+        })
     })
     .await
 }
@@ -2220,6 +2283,8 @@ pub fn run() {
             complete_python,
             signature_python,
             inspect_variable,
+            eval_plot_code,
+            reset_plot,
             run_code,
             transpile,
             ai_assist,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import builtins
 import contextlib
+import copy
 import io
 import json
 import linecache
@@ -21,7 +22,7 @@ from .complete import get_completions, get_signature
 from .errors import TranspileError
 from .matrix import MATRIX_FN, make_matrix, to_matrix_latex
 from .pipeline import compile_source, to_ast
-from .plotting import PLOT_FN, render_plot_bundle
+from .plotting import PLOT_FN, copy_figure, render_plot_bundle, resolve_figure
 from .symbols import IDENTIFIERS
 from .tables import TABLE_FN, extract_table_data, is_tabular_object
 from .units import UNIT_FN, make_quantity, reset_ureg
@@ -137,8 +138,61 @@ def _full_repr(val: Any) -> str:
             return f"<{type(val).__name__}>"
 
 
+@dataclass
+class PlotReplEntry:
+    """Stores an isolated deep copy of a Figure created by `plot ...` for interactive modal REPL."""
+
+    plot_id: str
+    base_fig: Any
+    work_fig: Any
+    history: list[str] = field(default_factory=list)
+    ns: dict[str, Any] = field(default_factory=dict)
+
+
+_IDEMPOTENT_PLOT_PREFIXES: tuple[tuple[str, ...], ...] = (
+    ("ax.set_title(",),
+    ("ax.set_xlabel(",),
+    ("ax.set_ylabel(",),
+    ("ax.set_xlim(",),
+    ("ax.set_ylim(",),
+    ("ax.set_xscale(",),
+    ("ax.set_yscale(",),
+    ("ax.grid(",),
+    ("ax.legend(", "if ax.get_legend():"),
+    ("ax.title.set_fontsize(",),
+)
+
+
+def _record_plot_history(history: list[str], snippet: str) -> None:
+    if "\n" not in snippet:
+        for group in _IDEMPOTENT_PLOT_PREFIXES:
+            if any(snippet.startswith(p) for p in group):
+                for idx, existing in enumerate(history):
+                    if "\n" not in existing and any(existing.startswith(p) for p in group):
+                        history[idx] = snippet
+                        return
+                break
+    history.append(snippet)
+
+
+def _is_matplotlib_artist_result(val: Any) -> bool:
+    """Return True if ``val`` is a Matplotlib Artist/Axes/Figure or a sequence of Artists."""
+    try:
+        from matplotlib.artist import Artist
+
+        if isinstance(val, Artist):
+            return True
+        if isinstance(val, (list, tuple)) and val and all(isinstance(x, Artist) for x in val):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class NotebookSession:
     """Holds only explicitly `export`-ed variables (and exported `const` names) between cell runs."""
+
+    MAX_STORED_PLOTS = 64
 
     def __init__(self) -> None:
         os.environ["MPLBACKEND"] = "Agg"
@@ -150,6 +204,8 @@ class NotebookSession:
             pass
         self.exports: dict[str, Any] = {}
         self.const_owners: dict[str, str] = {}
+        self.plot_store: dict[str, PlotReplEntry] = {}
+        self._plot_seq: int = 0
 
     @property
     def consts(self) -> set[str]:
@@ -158,6 +214,8 @@ class NotebookSession:
     def reset(self) -> None:
         self.exports.clear()
         self.const_owners.clear()
+        self.plot_store.clear()
+        self._plot_seq = 0
         linecache.clearcache()
         reset_ureg()
         try:
@@ -235,10 +293,27 @@ class NotebookSession:
         cell_latex: str | None = None
 
         def _capture_plot(target: Any) -> None:
-            bundle = render_plot_bundle(target)
+            fig = resolve_figure(target)
+            self._plot_seq += 1
+            plot_id = f"plot_{self._plot_seq}"
+            try:
+                base_copy = copy_figure(fig)
+                work_copy = copy_figure(base_copy)
+                self.plot_store[plot_id] = PlotReplEntry(
+                    plot_id=plot_id,
+                    base_fig=base_copy,
+                    work_fig=work_copy,
+                )
+                while len(self.plot_store) > self.MAX_STORED_PLOTS:
+                    oldest_key = next(iter(self.plot_store))
+                    del self.plot_store[oldest_key]
+            except Exception:
+                pass
+            bundle = render_plot_bundle(fig, close_fig=True)
             cell_plots.append(bundle["png"])
             cell_plot_meta.append(
                 {
+                    "plot_id": plot_id,
                     "svg": bundle["svg"],
                     "pdf": bundle["pdf"],
                     "axes": bundle["axes"],
@@ -385,6 +460,233 @@ class NotebookSession:
     def summary(self) -> dict[str, str]:
         return {k: _short_repr(v) for k, v in self.exports.items()}
 
+    def completion_exports(self) -> dict[str, Any]:
+        """Return exports augmented with `fig`, `ax`, `axes`, `plt`, `np` when a plot exists."""
+        merged = dict(self.exports)
+        if self.plot_store:
+            latest = list(self.plot_store.values())[-1]
+            merged.setdefault("fig", latest.work_fig)
+            axes_list = list(getattr(latest.work_fig, "axes", []))
+            merged.setdefault("axes", axes_list)
+            if axes_list:
+                merged.setdefault("ax", axes_list[0])
+            for k, v in latest.ns.items():
+                merged.setdefault(k, v)
+        try:
+            import matplotlib.pyplot as plt
+
+            merged.setdefault("plt", plt)
+        except Exception:
+            pass
+        try:
+            import numpy as np
+
+            merged.setdefault("np", np)
+        except Exception:
+            pass
+        return merged
+
+    def eval_plot_code(self, plot_id: str, source: str) -> dict[str, Any]:
+        """Execute ``source`` against the working copy of ``plot_id`` in REPL mode and re-render."""
+        entry = self.plot_store.get(plot_id)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": "Plot copy is no longer in session memory (re-run the cell to recreate it).",
+            }
+
+        filename = f"<{plot_id}-repl>"
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+
+        try:
+            tree = to_ast(
+                source,
+                filename,
+                predeclared_consts=set(self.const_owners),
+            )
+            has_last_expr = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
+            if has_last_expr:
+                main_body = tree.body[:-1]
+                last_expr = tree.body[-1].value
+                mod_main = ast.Module(body=main_body, type_ignores=[])
+                mod_last = ast.Expression(body=last_expr)
+                ast.fix_missing_locations(mod_main)
+                ast.fix_missing_locations(mod_last)
+                code_main = compile(mod_main, filename, "exec")
+                code_last = compile(mod_last, filename, "eval")
+            else:
+                code_main = compile(tree, filename, "exec")
+                code_last = None
+        except TranspileError as exc:
+            return {
+                "ok": True,
+                "code": 2,
+                "stdout": "",
+                "stderr": exc.format(filename) + "\n",
+                "png": "",
+                "plot_meta": None,
+                "history": list(entry.history),
+            }
+        except SyntaxError as exc:
+            return {
+                "ok": True,
+                "code": 2,
+                "stdout": "",
+                "stderr": f"{filename}:{exc.lineno}:{exc.offset}: syntax error: {exc.msg}\n",
+                "png": "",
+                "plot_meta": None,
+                "history": list(entry.history),
+            }
+
+        linecache.cache[filename] = (
+            len(source),
+            None,
+            source.splitlines(keepends=True),
+            filename,
+        )
+
+        axes_list = list(getattr(entry.work_fig, "axes", []))
+        default_ax = axes_list[0] if axes_list else None
+        extra_mods: dict[str, Any] = {}
+        try:
+            import matplotlib.pyplot as plt
+
+            extra_mods["plt"] = plt
+        except Exception:
+            pass
+        try:
+            import numpy as np
+
+            extra_mods["np"] = np
+        except Exception:
+            pass
+
+        dummy_exports: dict[str, Any] = {}
+        dummy_consts: set[str] = set()
+        reserved_keys = {
+            "__name__",
+            "__file__",
+            "__builtins__",
+            "__exports__",
+            "__consts__",
+            PLOT_FN,
+            TABLE_FN,
+            UNIT_FN,
+            MATRIX_FN,
+            "fig",
+            "axes",
+        }
+        repl_ns: dict[str, Any] = {
+            "__name__": "__main__",
+            "__file__": filename,
+            "__builtins__": __builtins__,
+            **extra_mods,
+            **self.exports,
+            **entry.ns,
+            "__exports__": dummy_exports,
+            "__consts__": dummy_consts,
+            PLOT_FN: lambda *_a, **_kw: None,
+            TABLE_FN: lambda *_a, **_kw: None,
+            UNIT_FN: make_quantity,
+            MATRIX_FN: make_matrix,
+            "fig": entry.work_fig,
+            "axes": axes_list,
+        }
+        if "ax" not in entry.ns or entry.ns.get("ax") is None:
+            repl_ns["ax"] = default_ax
+
+        exit_code = 0
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            try:
+                exec(code_main, repl_ns)
+                if code_last is not None:
+                    last_val = eval(code_last, repl_ns)
+                    if (
+                        last_val is not None
+                        and not _is_matplotlib_artist_result(last_val)
+                        and not out_buf.getvalue().strip()
+                    ):
+                        out_buf.write(f"{_short_repr(last_val)}\n")
+            except SystemExit as exc:
+                exit_code = exc.code if isinstance(exc.code, int) else 0
+            except BaseException:
+                tb = traceback.format_exc().splitlines(keepends=True)
+                user_frames = tb[1:]
+                for i, line in enumerate(user_frames):
+                    if f'File "{filename}"' in line:
+                        user_frames = user_frames[i:]
+                        break
+                err_buf.write(tb[0] + "".join(user_frames))
+                exit_code = 1
+
+        if exit_code == 0:
+            for k, v in repl_ns.items():
+                if k in reserved_keys or k.startswith("__"):
+                    continue
+                if k in self.exports and self.exports[k] is v:
+                    continue
+                if k in extra_mods and extra_mods[k] is v:
+                    continue
+                if k == "ax" and v is default_ax:
+                    continue
+                entry.ns[k] = v
+            stripped = source.strip()
+            if stripped:
+                _record_plot_history(entry.history, stripped)
+
+        try:
+            bundle = render_plot_bundle(entry.work_fig, close_fig=False)
+        except Exception as exc:
+            return {
+                "ok": True,
+                "code": 1,
+                "stdout": out_buf.getvalue(),
+                "stderr": err_buf.getvalue() + f"\nFailed to re-render figure: {exc}\n",
+                "png": "",
+                "plot_meta": None,
+                "history": list(entry.history),
+            }
+
+        return {
+            "ok": True,
+            "code": exit_code,
+            "stdout": out_buf.getvalue(),
+            "stderr": err_buf.getvalue(),
+            "png": bundle["png"],
+            "plot_meta": {
+                "plot_id": plot_id,
+                "svg": bundle["svg"],
+                "pdf": bundle["pdf"],
+                "axes": bundle["axes"],
+            },
+            "history": list(entry.history),
+        }
+
+    def reset_plot(self, plot_id: str) -> dict[str, Any]:
+        """Reset the working figure of ``plot_id`` back to its initial ``plot`` snapshot."""
+        entry = self.plot_store.get(plot_id)
+        if entry is None:
+            return {
+                "ok": False,
+                "error": "Plot copy is no longer in session memory (re-run the cell to recreate it).",
+            }
+        entry.work_fig = copy_figure(entry.base_fig)
+        entry.history.clear()
+        entry.ns.clear()
+        bundle = render_plot_bundle(entry.work_fig, close_fig=False)
+        return {
+            "ok": True,
+            "png": bundle["png"],
+            "plot_meta": {
+                "plot_id": plot_id,
+                "svg": bundle["svg"],
+                "pdf": bundle["pdf"],
+                "axes": bundle["axes"],
+            },
+            "history": [],
+        }
+
 
 def run_worker() -> int:
     """Persistent JSON-lines RPC loop used by the Tauri desktop app."""
@@ -464,7 +766,7 @@ def run_worker() -> int:
                 attr_target=req.get("attr_target"),
                 cell_source=str(req.get("cell_source", "")),
                 doc_source=str(req.get("doc_source", "")),
-                exports=session.exports,
+                exports=session.completion_exports(),
             )
             resp = {"ok": True, "items": items}
         elif cmd == "signature":
@@ -472,9 +774,19 @@ def run_worker() -> int:
                 expr=str(req.get("expr", "")),
                 cell_source=str(req.get("cell_source", "")),
                 doc_source=str(req.get("doc_source", "")),
-                exports=session.exports,
+                exports=session.completion_exports(),
             )
             resp = {"ok": True, "signature": sig}
+        elif cmd == "eval_plot":
+            plot_id = str(req.get("plot_id", ""))
+            source = str(req.get("source", ""))
+            doc_source = str(req.get("doc_source", ""))
+            if doc_source:
+                session.ensure_global_imports(doc_source)
+            resp = session.eval_plot_code(plot_id, source)
+        elif cmd == "reset_plot":
+            plot_id = str(req.get("plot_id", ""))
+            resp = session.reset_plot(plot_id)
         elif cmd == "format_code":
             from .formatter import format_physpy_code
 

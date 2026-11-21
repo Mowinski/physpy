@@ -547,6 +547,7 @@
         <span id="plot-lightbox-title" class="plot-lightbox-title">Plot Inspector</span>
         <span id="plot-lightbox-coords" class="plot-lightbox-coords">Hover over axes for (x, y) · Wheel to zoom · Drag to pan · Shift+Drag to measure Δ</span>
         <div class="plot-lightbox-actions">
+          <button type="button" id="btn-lb-toggle-repl" title="Toggle Figure REPL sidebar">⌨ REPL</button>
           <button type="button" id="btn-lb-reset-zoom">Reset Zoom</button>
           <button type="button" id="btn-lb-copy-coords">📋 Copy (x, y)</button>
           <button type="button" id="btn-lb-pin">📌 Pin</button>
@@ -556,13 +557,74 @@
           <button type="button" id="btn-lb-close">✕</button>
         </div>
       </div>
-      <div id="plot-lightbox-stage" class="plot-lightbox-stage">
-        <div id="plot-lightbox-canvas" class="plot-lightbox-canvas">
-          <img id="plot-lightbox-img" alt="Plot preview" draggable="false" />
-          <div id="plot-lb-crosshair-x" class="plot-lb-crosshair-x" hidden></div>
-          <div id="plot-lb-crosshair-y" class="plot-lb-crosshair-y" hidden></div>
-          <div id="plot-lb-measure-box" class="plot-lb-measure-box" hidden></div>
+      <div class="plot-lightbox-body">
+        <div id="plot-lightbox-stage" class="plot-lightbox-stage">
+          <div id="plot-lightbox-canvas" class="plot-lightbox-canvas">
+            <img id="plot-lightbox-img" alt="Plot preview" draggable="false" />
+            <div id="plot-lb-crosshair-x" class="plot-lb-crosshair-x" hidden></div>
+            <div id="plot-lb-crosshair-y" class="plot-lb-crosshair-y" hidden></div>
+            <div id="plot-lb-measure-box" class="plot-lb-measure-box" hidden></div>
+          </div>
         </div>
+        <aside id="plot-lightbox-repl" class="plot-lightbox-repl">
+          <div class="plot-repl-header">
+            <div class="plot-repl-title-wrap">
+              <span class="plot-repl-title">Figure REPL (copy)</span>
+              <span class="plot-repl-vars-hint" title="Predefined variables in this REPL"><code>fig</code> · <code>ax</code> · <code>axes</code> · <code>plt</code></span>
+            </div>
+            <button type="button" id="btn-plot-repl-reset" class="plot-repl-small-btn" title="Restore figure copy to initial plot state">↺ Reset</button>
+          </div>
+          <div id="plot-repl-quick-controls" class="plot-repl-quick-controls">
+            <div class="plot-qc-row">
+              <input id="plot-qc-title" type="text" class="plot-qc-input" placeholder="Title…" title="Axes title (Enter to apply)" spellcheck="false" />
+            </div>
+            <div class="plot-qc-row plot-qc-two-col">
+              <input id="plot-qc-xlabel" type="text" class="plot-qc-input" placeholder="X label…" title="X axis label (Enter to apply)" spellcheck="false" />
+              <input id="plot-qc-ylabel" type="text" class="plot-qc-input" placeholder="Y label…" title="Y axis label (Enter to apply)" spellcheck="false" />
+            </div>
+            <div class="plot-qc-row plot-qc-toggles">
+              <button type="button" id="plot-qc-grid" class="plot-qc-chip" title="Toggle gridlines">⊞ Grid</button>
+              <button type="button" id="plot-qc-xscale" class="plot-qc-chip" title="Toggle X axis linear / log scale">X: lin</button>
+              <button type="button" id="plot-qc-yscale" class="plot-qc-chip" title="Toggle Y axis linear / log scale">Y: lin</button>
+            </div>
+            <div class="plot-qc-row plot-qc-two-col">
+              <select id="plot-qc-legend" class="plot-qc-select" title="Legend visibility and position">
+                <option value="off">Legend: Off</option>
+                <option value="best">Legend: Auto</option>
+                <option value="upper right">Legend: Top-R</option>
+                <option value="upper left">Legend: Top-L</option>
+                <option value="lower right">Legend: Bot-R</option>
+                <option value="lower left">Legend: Bot-L</option>
+                <option value="outside">Legend: Outside</option>
+              </select>
+              <select id="plot-qc-fontsize" class="plot-qc-select" title="Font size for title, axis labels, and ticks">
+                <option value="8">Font: 8 pt</option>
+                <option value="9">Font: 9 pt</option>
+                <option value="10" selected>Font: 10 pt</option>
+                <option value="11">Font: 11 pt</option>
+                <option value="12">Font: 12 pt</option>
+                <option value="14">Font: 14 pt</option>
+                <option value="16">Font: 16 pt</option>
+                <option value="18">Font: 18 pt</option>
+              </select>
+            </div>
+          </div>
+          <div class="plot-repl-code-section">
+            <div class="plot-repl-section-bar">
+              <span>Executed Code (copy to notebook)</span>
+              <button type="button" id="btn-plot-repl-copy-code" class="plot-repl-small-btn" title="Copy all executed commands">📋 Copy Code</button>
+            </div>
+            <pre id="plot-repl-accumulated-code" class="plot-repl-accumulated-code" tabindex="0"># Commands executed on this figure copy appear here</pre>
+          </div>
+          <div id="plot-repl-log" class="plot-repl-log"></div>
+          <div class="plot-repl-input-wrap">
+            <div id="plot-repl-editor" class="plot-repl-editor"></div>
+            <div class="plot-repl-input-footer">
+              <span class="plot-repl-shortcut-hint">Shift+Enter / ⌘Enter to run on <code>fig</code>, <code>ax</code></span>
+              <button type="button" id="btn-plot-repl-run" class="primary plot-repl-run-btn">▶ Run</button>
+            </div>
+          </div>
+        </aside>
       </div>
     </dialog>
 

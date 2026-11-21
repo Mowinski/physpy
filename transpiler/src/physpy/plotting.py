@@ -8,6 +8,7 @@ Regular assignments (``plot = 1``) or function calls without whitespace
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import tokenize
 from typing import Any
@@ -130,6 +131,7 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
     """Extract normalized top-left bounding boxes and axis limits for interactive cursor readout."""
     axes_meta: list[dict[str, Any]] = []
     try:
+        _ensure_agg_canvas(fig)
         fig.canvas.draw()
         renderer = fig.canvas.get_renderer()
         fig_bbox = fig.get_tightbbox(renderer)
@@ -148,6 +150,16 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
                 ax_box = ax.get_window_extent(renderer)
                 xlim = [float(v) for v in ax.get_xlim()]
                 ylim = [float(v) for v in ax.get_ylim()]
+                grid_on = bool(
+                    getattr(ax.xaxis, "_major_tick_kw", {}).get("gridOn", False)
+                    or getattr(ax.yaxis, "_major_tick_kw", {}).get("gridOn", False)
+                )
+                leg = ax.get_legend()
+                legend_on = bool(leg is not None and leg.get_visible())
+                try:
+                    fontsize = round(float(ax.xaxis.label.get_fontsize()), 1)
+                except Exception:
+                    fontsize = 10.0
                 axes_meta.append(
                     {
                         "left": (float(ax_box.x0) - img_x0) / img_w,
@@ -160,6 +172,10 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
                         "yscale": str(ax.get_yscale()),
                         "xlabel": str(ax.get_xlabel() or ""),
                         "ylabel": str(ax.get_ylabel() or ""),
+                        "title": str(ax.get_title() or ""),
+                        "grid": grid_on,
+                        "legend": legend_on,
+                        "fontsize": fontsize,
                     }
                 )
             except Exception:
@@ -169,7 +185,26 @@ def _extract_axes_meta(fig: Any, pad_inches: float = 0.1) -> list[dict[str, Any]
     return axes_meta
 
 
-def render_plot_bundle(target: Any) -> dict[str, Any]:
+def _ensure_agg_canvas(fig: Any) -> Any:
+    """Ensure ``fig`` has a ``FigureCanvasAgg`` attached (needed after ``deepcopy``)."""
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        if not isinstance(getattr(fig, "canvas", None), FigureCanvasAgg):
+            FigureCanvasAgg(fig)
+    except Exception:
+        pass
+    return fig
+
+
+def copy_figure(target: Any) -> Any:
+    """Resolve ``target`` to a ``matplotlib.figure.Figure`` and return an isolated deep copy."""
+    fig = resolve_figure(target)
+    cloned = copy.deepcopy(fig)
+    return _ensure_agg_canvas(cloned)
+
+
+def render_plot_bundle(target: Any, *, close_fig: bool = True) -> dict[str, Any]:
     """Render ``target`` into PNG (base64), SVG (text), PDF (base64), and axes metadata."""
     fig = resolve_figure(target)
     pad_inches = 0.1
@@ -194,12 +229,13 @@ def render_plot_bundle(target: Any) -> dict[str, Any]:
     except Exception:
         pdf_b64 = ""
 
-    try:
-        import matplotlib.pyplot as plt
+    if close_fig:
+        try:
+            import matplotlib.pyplot as plt
 
-        plt.close(fig)
-    except Exception:
-        pass
+            plt.close(fig)
+        except Exception:
+            pass
 
     return {
         "png": base64.b64encode(png_buf.getvalue()).decode("ascii"),

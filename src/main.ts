@@ -5497,6 +5497,7 @@ async function runSingleCell(cell: CellState, advanceFocus: boolean): Promise<bo
 
 async function resetSession(quiet = false): Promise<boolean> {
   endDebugSession();
+  plotReplStates.clear();
   if (!requireTauri()) return true;
   await backend.resetSession();
   execCounter = 0;
@@ -6613,6 +6614,24 @@ function mapNormToAxes(
   return null;
 }
 
+interface PlotReplLogEntry {
+  cmd: string;
+  stdout: string;
+  stderr: string;
+  isError: boolean;
+}
+
+interface PlotReplClientState {
+  b64: string;
+  meta: backend.PlotMeta;
+  history: string[];
+  logs: PlotReplLogEntry[];
+}
+
+const plotReplStates = new Map<string, PlotReplClientState>();
+let plotReplEditorView: EditorView | null = null;
+let plotReplBusy = false;
+
 interface LightboxState {
   b64: string;
   meta?: backend.PlotMeta;
@@ -6629,6 +6648,294 @@ interface LightboxState {
 
 let lbState: LightboxState | null = null;
 
+function renderPlotLightboxImage(): void {
+  if (!lbState) return;
+  const img = $<HTMLImageElement>("plot-lightbox-img");
+  const coordsEl = $("plot-lightbox-coords");
+  const btnSvg = $<HTMLButtonElement>("btn-lb-save-svg");
+  const btnPdf = $<HTMLButtonElement>("btn-lb-save-pdf");
+  const meta = lbState.meta;
+
+  coordsEl.textContent =
+    meta && meta.axes.length > 0
+      ? "Hover over axes for (x, y) · Wheel to zoom · Drag to pan · Shift+Drag to measure Δ"
+      : "Wheel to zoom · Drag to pan";
+  img.src = meta?.svg
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(meta.svg)}`
+    : `data:image/png;base64,${lbState.b64}`;
+  btnSvg.hidden = !meta?.svg;
+  btnPdf.hidden = !meta?.pdf;
+}
+
+function pyQuoteStr(val: string): string {
+  return JSON.stringify(val);
+}
+
+function syncPlotQuickControls(): void {
+  const qcWrap = $("plot-repl-quick-controls");
+  const titleIn = $<HTMLInputElement>("plot-qc-title");
+  const xlabelIn = $<HTMLInputElement>("plot-qc-xlabel");
+  const ylabelIn = $<HTMLInputElement>("plot-qc-ylabel");
+  const btnGrid = $<HTMLButtonElement>("plot-qc-grid");
+  const btnXScale = $<HTMLButtonElement>("plot-qc-xscale");
+  const btnYScale = $<HTMLButtonElement>("plot-qc-yscale");
+  const selLegend = $<HTMLSelectElement>("plot-qc-legend");
+  const selFont = $<HTMLSelectElement>("plot-qc-fontsize");
+
+  const hasPlotCopy = Boolean(lbState?.meta?.plot_id);
+  const ax = lbState?.meta?.axes?.[0];
+  const disabled = !hasPlotCopy || plotReplBusy || !ax;
+
+  qcWrap.style.opacity = hasPlotCopy ? "1" : "0.5";
+  titleIn.disabled = disabled;
+  xlabelIn.disabled = disabled;
+  ylabelIn.disabled = disabled;
+  btnGrid.disabled = disabled;
+  btnXScale.disabled = disabled;
+  btnYScale.disabled = disabled;
+  selLegend.disabled = disabled;
+  selFont.disabled = disabled;
+
+  if (!ax) return;
+
+  if (document.activeElement !== titleIn) {
+    titleIn.value = ax.title ?? "";
+  }
+  if (document.activeElement !== xlabelIn) {
+    xlabelIn.value = ax.xlabel ?? "";
+  }
+  if (document.activeElement !== ylabelIn) {
+    ylabelIn.value = ax.ylabel ?? "";
+  }
+
+  const gridOn = Boolean(ax.grid);
+  btnGrid.classList.toggle("is-active", gridOn);
+  btnGrid.textContent = gridOn ? "⊞ Grid: On" : "⊞ Grid: Off";
+
+  const xLog = ax.xscale === "log";
+  btnXScale.classList.toggle("is-active", xLog);
+  btnXScale.textContent = xLog ? "X: log" : "X: lin";
+
+  const yLog = ax.yscale === "log";
+  btnYScale.classList.toggle("is-active", yLog);
+  btnYScale.textContent = yLog ? "Y: log" : "Y: lin";
+
+  if (!ax.legend) {
+    selLegend.value = "off";
+  } else if (selLegend.value === "off") {
+    selLegend.value = "best";
+  }
+
+  if (ax.fontsize) {
+    const rounded = String(Math.round(ax.fontsize));
+    const hasOpt = Array.from(selFont.options).some((o) => o.value === rounded);
+    if (hasOpt) selFont.value = rounded;
+  }
+}
+
+function renderPlotReplPanel(): void {
+  const codePre = $("plot-repl-accumulated-code");
+  const logEl = $("plot-repl-log");
+  const btnCopyCode = $<HTMLButtonElement>("btn-plot-repl-copy-code");
+  const btnReset = $<HTMLButtonElement>("btn-plot-repl-reset");
+  const btnRun = $<HTMLButtonElement>("btn-plot-repl-run");
+
+  syncPlotQuickControls();
+
+  const plotId = lbState?.meta?.plot_id;
+  if (!plotId) {
+    codePre.textContent = "# Re-run the cell to create an editable Figure copy";
+    codePre.classList.remove("has-code");
+    btnCopyCode.disabled = true;
+    btnReset.disabled = true;
+    btnRun.disabled = true;
+    logEl.innerHTML = `<div class="plot-repl-log-empty">This plot has no active session copy yet. Run the cell to enable live Figure REPL editing.</div>`;
+    return;
+  }
+
+  let st = plotReplStates.get(plotId);
+  if (!st && lbState?.meta) {
+    st = {
+      b64: lbState.b64,
+      meta: lbState.meta,
+      history: [],
+      logs: [],
+    };
+    plotReplStates.set(plotId, st);
+  }
+
+  const history = st?.history ?? [];
+  const logs = st?.logs ?? [];
+
+  if (history.length > 0) {
+    codePre.textContent = history.join("\n");
+    codePre.classList.add("has-code");
+    btnCopyCode.disabled = false;
+  } else {
+    codePre.textContent = "# Commands executed on this figure copy appear here";
+    codePre.classList.remove("has-code");
+    btnCopyCode.disabled = true;
+  }
+
+  btnReset.disabled = plotReplBusy || (history.length === 0 && logs.length === 0);
+  btnRun.disabled = plotReplBusy;
+
+  logEl.innerHTML = "";
+  if (logs.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "plot-repl-log-empty";
+    empty.innerHTML =
+      "Run Python / PhysPy commands on this figure copy.<br/>" +
+      "Examples:<br/>" +
+      "<code>ax.set_title('New Title')</code><br/>" +
+      "<code>ax.set_yscale('log')</code><br/>" +
+      "<code>ax.axhline(0, ls='--', color='red')</code>";
+    logEl.append(empty);
+  } else {
+    for (const item of logs) {
+      const row = document.createElement("div");
+      row.className = `plot-repl-entry${item.isError ? " is-error" : ""}`;
+
+      const cmdDiv = document.createElement("div");
+      cmdDiv.className = "plot-repl-entry-cmd";
+      cmdDiv.title = "Click to copy command to REPL input";
+      cmdDiv.textContent = item.cmd;
+      cmdDiv.addEventListener("click", () => {
+        if (!plotReplEditorView) return;
+        setDoc(plotReplEditorView, item.cmd);
+        plotReplEditorView.focus();
+      });
+      row.append(cmdDiv);
+
+      if (item.stdout.trim()) {
+        const outPre = document.createElement("pre");
+        outPre.className = "plot-repl-entry-out";
+        outPre.textContent = item.stdout.trimEnd();
+        row.append(outPre);
+      }
+      if (item.stderr.trim()) {
+        const errPre = document.createElement("pre");
+        errPre.className = "plot-repl-entry-err";
+        errPre.textContent = item.stderr.trimEnd();
+        row.append(errPre);
+      }
+
+      logEl.append(row);
+    }
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+}
+
+async function runPlotReplSnippet(rawSource: string, fromEditor = false): Promise<void> {
+  if (plotReplBusy || !lbState?.meta?.plot_id) return;
+  if (!requireTauri()) return;
+  const source = rawSource.trim();
+  if (!source) return;
+
+  const plotId = lbState.meta.plot_id;
+  plotReplBusy = true;
+  renderPlotReplPanel();
+
+  try {
+    const docSource = cells
+      .filter((c) => c.kind === "code")
+      .map((c) => c.view.state.doc.toString())
+      .join("\n\n");
+    const res = await backend.evalPlotCode(plotId, source, docSource);
+    let st = plotReplStates.get(plotId);
+    if (!st) {
+      st = { b64: lbState.b64, meta: lbState.meta, history: [], logs: [] };
+      plotReplStates.set(plotId, st);
+    }
+
+    if (!res.ok) {
+      st.logs.push({
+        cmd: source,
+        stdout: "",
+        stderr: res.error || "Failed to execute command on figure copy.",
+        isError: true,
+      });
+    } else {
+      const isErr = res.code !== 0;
+      st.logs.push({
+        cmd: source,
+        stdout: res.stdout || "",
+        stderr: res.stderr || "",
+        isError: isErr,
+      });
+      st.history = res.history ?? st.history;
+      if (res.png) {
+        st.b64 = res.png;
+        lbState.b64 = res.png;
+      }
+      if (res.plot_meta) {
+        st.meta = res.plot_meta;
+        lbState.meta = res.plot_meta;
+      }
+      renderPlotLightboxImage();
+      if (fromEditor && !isErr && plotReplEditorView) {
+        setDoc(plotReplEditorView, "");
+      }
+    }
+  } catch (err) {
+    const st = plotReplStates.get(plotId);
+    st?.logs.push({
+      cmd: source,
+      stdout: "",
+      stderr: String(err),
+      isError: true,
+    });
+  } finally {
+    plotReplBusy = false;
+    renderPlotReplPanel();
+    if (fromEditor) {
+      plotReplEditorView?.focus();
+    }
+  }
+}
+
+async function runPlotReplCommand(): Promise<void> {
+  if (!plotReplEditorView) return;
+  await runPlotReplSnippet(plotReplEditorView.state.doc.toString(), true);
+}
+
+async function resetPlotReplFigure(): Promise<void> {
+  if (plotReplBusy || !lbState?.meta?.plot_id) return;
+  if (!requireTauri()) return;
+  const plotId = lbState.meta.plot_id;
+  plotReplBusy = true;
+  renderPlotReplPanel();
+
+  try {
+    const res = await backend.resetPlot(plotId);
+    if (res.ok && res.png && res.plot_meta) {
+      lbState.b64 = res.png;
+      lbState.meta = res.plot_meta;
+      plotReplStates.set(plotId, {
+        b64: res.png,
+        meta: res.plot_meta,
+        history: [],
+        logs: [],
+      });
+      renderPlotLightboxImage();
+      setStatus("Reset figure copy to initial plot state");
+    } else if (!res.ok && res.error) {
+      const st = plotReplStates.get(plotId);
+      st?.logs.push({
+        cmd: "# reset",
+        stdout: "",
+        stderr: res.error,
+        isError: true,
+      });
+    }
+  } catch (err) {
+    setStatus(`Failed to reset plot: ${String(err)}`);
+  } finally {
+    plotReplBusy = false;
+    renderPlotReplPanel();
+  }
+}
+
 function openPlotLightbox(
   b64: string,
   meta: backend.PlotMeta | undefined,
@@ -6639,16 +6946,29 @@ function openPlotLightbox(
   totalPlots = 1,
 ): void {
   const dialog = $<HTMLDialogElement>("plot-lightbox-dialog");
-  const img = $<HTMLImageElement>("plot-lightbox-img");
   const canvas = $("plot-lightbox-canvas");
   const titleEl = $("plot-lightbox-title");
-  const coordsEl = $("plot-lightbox-coords");
-  const btnSvg = $<HTMLButtonElement>("btn-lb-save-svg");
-  const btnPdf = $<HTMLButtonElement>("btn-lb-save-pdf");
+
+  let activeB64 = b64;
+  let activeMeta = meta;
+  if (meta?.plot_id) {
+    const existing = plotReplStates.get(meta.plot_id);
+    if (existing) {
+      activeB64 = existing.b64;
+      activeMeta = existing.meta;
+    } else {
+      plotReplStates.set(meta.plot_id, {
+        b64,
+        meta,
+        history: [],
+        logs: [],
+      });
+    }
+  }
 
   lbState = {
-    b64,
-    meta,
+    b64: activeB64,
+    meta: activeMeta,
     title,
     cell,
     cellIdx,
@@ -6661,19 +6981,13 @@ function openPlotLightbox(
   };
 
   titleEl.textContent = title;
-  coordsEl.textContent =
-    meta && meta.axes.length > 0
-      ? "Hover over axes for (x, y) · Wheel to zoom · Drag to pan · Shift+Drag to measure Δ"
-      : "Wheel to zoom · Drag to pan";
-  img.src = meta?.svg
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(meta.svg)}`
-    : `data:image/png;base64,${b64}`;
+  renderPlotLightboxImage();
   canvas.style.transform = "translate(0px, 0px) scale(1)";
   $("plot-lb-crosshair-x").hidden = true;
   $("plot-lb-crosshair-y").hidden = true;
   $("plot-lb-measure-box").hidden = true;
-  btnSvg.hidden = !meta?.svg;
-  btnPdf.hidden = !meta?.pdf;
+
+  renderPlotReplPanel();
 
   if (!dialog.open) dialog.showModal();
 }
@@ -6867,6 +7181,138 @@ function initPlotLightbox(): void {
     if (saved) {
       rememberPlotDir(saved);
       setStatus(`Saved PDF plot to ${saved}`);
+    }
+  });
+
+  $("btn-lb-toggle-repl").addEventListener("click", () => {
+    const replAside = $("plot-lightbox-repl");
+    replAside.hidden = !replAside.hidden;
+    if (!replAside.hidden) {
+      plotReplEditorView?.focus();
+    }
+  });
+
+  const replEditorHost = $("plot-repl-editor");
+  plotReplEditorView = createEditor({
+    parent: replEditorHost,
+    doc: "",
+    keys: [
+      { key: "Mod-Enter", run: () => (void runPlotReplCommand(), true) },
+      { key: "Shift-Enter", run: () => (void runPlotReplCommand(), true) },
+    ],
+    pythonAssist: {
+      isEnabled: () => dialog.open,
+      getDocSource: () =>
+        cells
+          .filter((c) => c.kind === "code")
+          .map((c) => c.view.state.doc.toString())
+          .join("\n\n"),
+      complete: (req) =>
+        backend.inTauri ? backend.completePython(req) : Promise.resolve([]),
+      signature: (req) =>
+        backend.inTauri ? backend.signaturePython(req) : Promise.resolve(null),
+    },
+  });
+
+  $("btn-plot-repl-run").addEventListener("click", () => {
+    void runPlotReplCommand();
+  });
+
+  $("btn-plot-repl-reset").addEventListener("click", () => {
+    void resetPlotReplFigure();
+  });
+
+  const qcTitle = $<HTMLInputElement>("plot-qc-title");
+  const qcXLabel = $<HTMLInputElement>("plot-qc-xlabel");
+  const qcYLabel = $<HTMLInputElement>("plot-qc-ylabel");
+  const applyTitle = () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax || qcTitle.value === (ax.title ?? "")) return;
+    void runPlotReplSnippet(`ax.set_title(${pyQuoteStr(qcTitle.value)})`);
+  };
+  const applyXLabel = () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax || qcXLabel.value === (ax.xlabel ?? "")) return;
+    void runPlotReplSnippet(`ax.set_xlabel(${pyQuoteStr(qcXLabel.value)})`);
+  };
+  const applyYLabel = () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax || qcYLabel.value === (ax.ylabel ?? "")) return;
+    void runPlotReplSnippet(`ax.set_ylabel(${pyQuoteStr(qcYLabel.value)})`);
+  };
+
+  for (const [inputEl, applyFn] of [
+    [qcTitle, applyTitle],
+    [qcXLabel, applyXLabel],
+    [qcYLabel, applyYLabel],
+  ] as const) {
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyFn();
+        inputEl.blur();
+      }
+    });
+    inputEl.addEventListener("change", () => applyFn());
+  }
+
+  $("plot-qc-grid").addEventListener("click", () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax) return;
+    const nextGrid = !ax.grid;
+    void runPlotReplSnippet(nextGrid ? "ax.grid(True, alpha=0.35)" : "ax.grid(False)");
+  });
+
+  $("plot-qc-xscale").addEventListener("click", () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax) return;
+    const nextScale = ax.xscale === "log" ? "linear" : "log";
+    void runPlotReplSnippet(`ax.set_xscale('${nextScale}')`);
+  });
+
+  $("plot-qc-yscale").addEventListener("click", () => {
+    const ax = lbState?.meta?.axes?.[0];
+    if (!ax) return;
+    const nextScale = ax.yscale === "log" ? "linear" : "log";
+    void runPlotReplSnippet(`ax.set_yscale('${nextScale}')`);
+  });
+
+  $<HTMLSelectElement>("plot-qc-legend").addEventListener("change", (e) => {
+    const val = (e.target as HTMLSelectElement).value;
+    if (val === "off") {
+      void runPlotReplSnippet("if ax.get_legend(): ax.get_legend().remove()");
+    } else if (val === "outside") {
+      void runPlotReplSnippet("ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left')");
+    } else {
+      void runPlotReplSnippet(`ax.legend(loc='${val}')`);
+    }
+  });
+
+  $<HTMLSelectElement>("plot-qc-fontsize").addEventListener("change", (e) => {
+    const size = Number((e.target as HTMLSelectElement).value) || 10;
+    const titleSize = size + 2;
+    const tickSize = Math.max(6, size - 1);
+    void runPlotReplSnippet(
+      `ax.title.set_fontsize(${titleSize}); ax.xaxis.label.set_fontsize(${size}); ax.yaxis.label.set_fontsize(${size}); ax.tick_params(labelsize=${tickSize})`,
+    );
+  });
+
+  $("btn-plot-repl-copy-code").addEventListener("click", async () => {
+    const plotId = lbState?.meta?.plot_id;
+    const st = plotId ? plotReplStates.get(plotId) : undefined;
+    if (!st || st.history.length === 0) return;
+    const codeText = st.history.join("\n");
+    try {
+      await navigator.clipboard.writeText(codeText);
+      const btn = $<HTMLButtonElement>("btn-plot-repl-copy-code");
+      const orig = btn.textContent;
+      btn.textContent = "✓ Copied";
+      setTimeout(() => {
+        btn.textContent = orig;
+      }, 1200);
+      setStatus("Copied figure edit code to clipboard");
+    } catch {
+      // Ignore clipboard errors
     }
   });
 
