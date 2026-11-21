@@ -1,0 +1,17 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // User profiles and quotas: readable only by the owner, writable only via Cloud Functions (Admin SDK).
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+
+    // Published report metadata: readable only by the owner, writable only via Cloud Functions (Admin SDK).
+    match /reports/{reportId} {
+      allow read: if request.auth != null && resource.data.ownerId == request.auth.uid;
+      allow write: if false;
+    }
+  }
+}

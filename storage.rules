@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // All report uploads and reads are mediated by Cloud Functions (Admin SDK)
+    // to enforce quotas, size limits, ownership, and CSP headers.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

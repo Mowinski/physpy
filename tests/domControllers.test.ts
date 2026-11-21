@@ -224,7 +224,7 @@ describe("DOM & Editor Controllers (jsdom)", () => {
       expect(html).toContain("<!DOCTYPE html>");
       expect(html).toContain("<title>Physics Experiment #1</title>");
       expect(html).toContain("Gravity Calculation");
-      expect(html).toContain("↳ exported: g = 9.81 m/s²");
+      expect(html).not.toContain("↳ exported:");
       expect(html).toContain("katex-mock");
       expect(html).toContain("data:image/png;base64,");
       expect(html).toContain('<span class="nb-unit">[mV]</span>');
@@ -241,7 +241,7 @@ describe("DOM & Editor Controllers (jsdom)", () => {
         selectedCellIds: new Set([2, 3]),
       });
       expect(htmlHidden).not.toContain('<details class="nb-code-details"');
-      expect(htmlHidden).toContain("↳ exported: g = 9.81 m/s²");
+      expect(htmlHidden).not.toContain("↳ exported:");
 
       mdView.destroy();
       codeView.destroy();

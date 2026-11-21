@@ -27,6 +27,7 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "codemirror": "^6.0.2",
+    "firebase": "^13.4.0",
     "katex": "^0.19.1",
     "pdfjs-dist": "^6.5.438"
   },
