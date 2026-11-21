@@ -2562,6 +2562,9 @@ pub fn run() {
             let toggle_warnings_item = MenuItemBuilder::with_id("menu_warnings", "Warnings Panel")
                 .accelerator("CmdOrCtrl+Shift+J")
                 .build(app)?;
+            let toggle_constants_item =
+                MenuItemBuilder::with_id("menu_constants", "Constants Panel")
+                    .build(app)?;
             let toggle_code_item =
                 MenuItemBuilder::with_id("menu_python_code", "Generated Python Code")
                     .accelerator("CmdOrCtrl+P")
@@ -2577,6 +2580,7 @@ pub fn run() {
                 .separator()
                 .item(&toggle_variables_item)
                 .item(&toggle_warnings_item)
+                .item(&toggle_constants_item)
                 .item(&toggle_code_item)
                 .separator()
                 .item(&toggle_sidebar_item)

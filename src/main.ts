@@ -6466,6 +6466,8 @@ backend.onMenuAction((actionId) => {
     toggleVariablesDrawer();
   } else if (actionId === "menu_warnings") {
     toggleWarningsDrawer();
+  } else if (actionId === "menu_constants") {
+    openDrawerTab("constants");
   } else if (actionId === "menu_python_code") {
     togglePython();
   } else if (actionId === "menu_toggle_sidebar") {
