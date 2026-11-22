@@ -249,6 +249,32 @@ fn default_tab_size() -> u32 {
     4
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CustomConstantDef {
+    pub value: f64,
+    #[serde(default = "default_dimensionless_unit")]
+    pub unit: String,
+    #[serde(default)]
+    pub latex: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+fn default_dimensionless_unit() -> String {
+    "dimensionless".to_string()
+}
+
+impl Default for CustomConstantDef {
+    fn default() -> Self {
+        Self {
+            value: f64::NAN,
+            unit: default_dimensionless_unit(),
+            latex: String::new(),
+            label: String::new(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub font_family: String,
@@ -275,6 +301,8 @@ pub struct AppConfig {
     pub ai_system_prompt: String,
     #[serde(default)]
     pub constants: HashMap<String, f64>,
+    #[serde(default)]
+    pub custom_constants: HashMap<String, CustomConstantDef>,
     pub resolved_startup_dir: String,
     pub global_config_path: String,
     pub workspace_config_path: Option<String>,
@@ -395,9 +423,14 @@ fn selected_python_mutex() -> &'static Mutex<Option<String>> {
 }
 
 static ACTIVE_CONSTANTS: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+static ACTIVE_CUSTOM_CONSTANTS: OnceLock<Mutex<HashMap<String, CustomConstantDef>>> = OnceLock::new();
 
 fn active_constants_mutex() -> &'static Mutex<HashMap<String, f64>> {
     ACTIVE_CONSTANTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn active_custom_constants_mutex() -> &'static Mutex<HashMap<String, CustomConstantDef>> {
+    ACTIVE_CUSTOM_CONSTANTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn get_active_constants() -> HashMap<String, f64> {
@@ -409,6 +442,19 @@ fn get_active_constants() -> HashMap<String, f64> {
 
 fn set_active_constants(map: HashMap<String, f64>) {
     if let Ok(mut g) = active_constants_mutex().lock() {
+        *g = map;
+    }
+}
+
+fn get_active_custom_constants() -> HashMap<String, CustomConstantDef> {
+    active_custom_constants_mutex()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+fn set_active_custom_constants(map: HashMap<String, CustomConstantDef>) {
+    if let Ok(mut g) = active_custom_constants_mutex().lock() {
         *g = map;
     }
 }
@@ -582,6 +628,7 @@ async fn run_cell(
     blocking(move || {
         with_worker(|w| {
             let constants = get_active_constants();
+            let custom_constants = get_active_custom_constants();
             let resp = w.send(&serde_json::json!({
                 "cmd": "run_cell",
                 "source": source,
@@ -590,6 +637,7 @@ async fn run_cell(
                 "cell_index": cell_index,
                 "doc_source": doc_source.unwrap_or_default(),
                 "constants": constants,
+                "custom_constants": custom_constants,
             }))?;
             if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(resp
@@ -615,6 +663,7 @@ async fn debug_start_cell(
     blocking(move || {
         with_worker(|w| {
             let constants = get_active_constants();
+            let custom_constants = get_active_custom_constants();
             let resp = w.send(&serde_json::json!({
                 "cmd": "debug_start",
                 "source": source,
@@ -623,6 +672,7 @@ async fn debug_start_cell(
                 "cell_index": cell_index,
                 "doc_source": doc_source.unwrap_or_default(),
                 "constants": constants,
+                "custom_constants": custom_constants,
             }))?;
             serde_json::from_value(resp).map_err(|e| e.to_string())
         })
@@ -655,6 +705,47 @@ async fn set_constant_overrides(constants: HashMap<String, f64>) -> Result<(), S
             w.send(&serde_json::json!({
                 "cmd": "set_constants",
                 "constants": clean,
+            }))?;
+            Ok(())
+        })?;
+        let _ = maybe;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_custom_constants(
+    custom_constants: HashMap<String, CustomConstantDef>,
+) -> Result<(), String> {
+    let clean: HashMap<String, CustomConstantDef> = custom_constants
+        .into_iter()
+        .filter(|(k, v)| {
+            !k.trim().is_empty()
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && v.value.is_finite()
+        })
+        .map(|(k, mut v)| {
+            if v.unit.trim().is_empty() {
+                v.unit = default_dimensionless_unit();
+            } else {
+                v.unit = v.unit.trim().to_string();
+            }
+            if v.latex.trim().is_empty() {
+                v.latex = k.clone();
+            } else {
+                v.latex = v.latex.trim().to_string();
+            }
+            v.label = v.label.trim().to_string();
+            (k, v)
+        })
+        .collect();
+    set_active_custom_constants(clean.clone());
+    blocking(move || {
+        let maybe = try_with_worker(|w| {
+            w.send(&serde_json::json!({
+                "cmd": "set_custom_constants",
+                "custom_constants": clean,
             }))?;
             Ok(())
         })?;
@@ -1303,6 +1394,43 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     }
                 }
             }
+            _ if full_key.starts_with("custom_constants.") => {
+                let rest = &full_key["custom_constants.".len()..];
+                if let Some((cname, field)) = rest.split_once('.') {
+                    if !cname.is_empty()
+                        && cname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        let entry = cfg
+                            .custom_constants
+                            .entry(cname.to_string())
+                            .or_insert_with(CustomConstantDef::default);
+                        match field {
+                            "value" => {
+                                if let Ok(v) = scalar.trim().parse::<f64>() {
+                                    if v.is_finite() {
+                                        entry.value = v;
+                                    }
+                                }
+                            }
+                            "unit" => {
+                                let u = scalar.trim();
+                                entry.unit = if u.is_empty() {
+                                    default_dimensionless_unit()
+                                } else {
+                                    u.to_string()
+                                };
+                            }
+                            "latex" => {
+                                entry.latex = scalar.trim().to_string();
+                            }
+                            "label" => {
+                                entry.label = scalar.trim().to_string();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1347,6 +1475,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         ai_api_key: String::new(),
         ai_system_prompt: String::new(),
         constants: HashMap::new(),
+        custom_constants: HashMap::new(),
         resolved_startup_dir: default_startup,
         global_config_path: global_config_file.to_string_lossy().into_owned(),
         workspace_config_path: None,
@@ -1375,6 +1504,16 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         }
     }
 
+    cfg.custom_constants.retain(|_, v| v.value.is_finite());
+    for (k, v) in cfg.custom_constants.iter_mut() {
+        if v.unit.trim().is_empty() {
+            v.unit = default_dimensionless_unit();
+        }
+        if v.latex.trim().is_empty() {
+            v.latex = k.clone();
+        }
+    }
+
     cfg
 }
 
@@ -1382,6 +1521,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
 fn load_config(workspace_dir: Option<String>) -> Result<AppConfig, String> {
     let cfg = resolve_hierarchical_config(workspace_dir);
     set_active_constants(cfg.constants.clone());
+    set_active_custom_constants(cfg.custom_constants.clone());
     Ok(cfg)
 }
 
@@ -1429,6 +1569,30 @@ ai_system_prompt: \"{escaped_sys}\"\n",
         for k in keys {
             if let Some(v) = cfg.constants.get(k) {
                 out.push_str(&format!("  {k}: {v}\n"));
+            }
+        }
+    }
+    if !cfg.custom_constants.is_empty() {
+        out.push_str("\n# 9. Custom Physical Constants\ncustom_constants:\n");
+        let mut keys: Vec<&String> = cfg.custom_constants.keys().collect();
+        keys.sort();
+        for k in keys {
+            if let Some(v) = cfg.custom_constants.get(k) {
+                if !v.value.is_finite() {
+                    continue;
+                }
+                let escaped_unit = v.unit.replace('"', "\\\"");
+                let escaped_latex = v.latex.replace('"', "\\\"");
+                let escaped_label = v.label.replace('"', "\\\"");
+                out.push_str(&format!("  {k}:\n"));
+                out.push_str(&format!("    value: {}\n", v.value));
+                out.push_str(&format!("    unit: \"{escaped_unit}\"\n"));
+                if !escaped_latex.is_empty() && escaped_latex != *k {
+                    out.push_str(&format!("    latex: \"{escaped_latex}\"\n"));
+                }
+                if !escaped_label.is_empty() {
+                    out.push_str(&format!("    label: \"{escaped_label}\"\n"));
+                }
             }
         }
     }
@@ -1502,6 +1666,7 @@ fn read_config_scope(
             ai_api_key: String::new(),
             ai_system_prompt: String::new(),
             constants: HashMap::new(),
+        custom_constants: HashMap::new(),
             resolved_startup_dir: effective.resolved_startup_dir.clone(),
             global_config_path: effective.global_config_path.clone(),
             workspace_config_path: effective.workspace_config_path.clone(),
@@ -2690,6 +2855,7 @@ pub fn run() {
             debug_action,
             reset_session,
             set_constant_overrides,
+            set_custom_constants,
             complete_python,
             signature_python,
             inspect_variable,
@@ -2753,6 +2919,7 @@ mod tests {
             ai_api_key: String::new(),
             ai_system_prompt: String::new(),
             constants: HashMap::new(),
+        custom_constants: HashMap::new(),
             resolved_startup_dir: "/tmp".to_string(),
             global_config_path: "/tmp/config.yaml".to_string(),
             workspace_config_path: None,

@@ -16,7 +16,7 @@ import unicodedata
 from importlib import resources
 
 from .errors import TranspileError, position
-from .units import CONST_FN, PHYSICAL_CONSTANTS
+from .units import CONST_FN, has_constant
 
 # name -> display character, shared with the editor frontend.
 SYMBOLS: dict[str, str] = json.loads(
@@ -84,6 +84,10 @@ def resolve_symbol(name: str, tail: str, src: str, i: int) -> str:
         if NUMERIC_END_RE.search(src[:i]):
             return "* 1j"
         return "1j"
+    if name == "pi" and not tail:
+        if NUMERIC_END_RE.search(src[:i]):
+            return "* 3.141592653589793"
+        return "3.141592653589793"
     resolved_tail = _resolve_tail(tail, src, i)
     if name in IDENTIFIERS:
         return unicodedata.normalize("NFKC", IDENTIFIERS[name] + resolved_tail)
@@ -150,7 +154,7 @@ def _scan_string(src: str, i: int, quote: str, is_fstring: bool, out: list[str])
                 m_const = _CONST_CALL_RE.match(src, i)
                 if m_const:
                     cname = m_const.group(1)
-                    if cname not in PHYSICAL_CONSTANTS:
+                    if not has_constant(cname):
                         raise TranspileError(f"unknown physical constant \\const{{{cname}}}", *position(src, i))
                     out.append(f"{CONST_FN}({cname!r})")
                     i = m_const.end()
@@ -196,7 +200,7 @@ def rewrite_symbols(src: str) -> str:
             m_const = _CONST_CALL_RE.match(src, i)
             if m_const:
                 cname = m_const.group(1)
-                if cname not in PHYSICAL_CONSTANTS:
+                if not has_constant(cname):
                     raise TranspileError(f"unknown physical constant \\const{{{cname}}}", *position(src, i))
                 out.append(f"{CONST_FN}({cname!r})")
                 i = m_const.end()

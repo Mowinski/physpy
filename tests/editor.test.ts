@@ -4,14 +4,18 @@ import {
   PHYSICAL_CONSTANTS,
   SYMBOLS,
   accentToLatex,
+  getAllConstants,
   getConstantOverrides,
+  getCustomConstants,
   getEffectiveConstant,
   isValidAccentSymbol,
+  isValidConstantName,
   isValidSymbol,
   replaceSymbolsInIdent,
   resolveAccentSymbolIdent,
   resolveSymbolIdent,
   setConstantOverrides,
+  setCustomConstants,
   toLatex,
 } from "../src/editor/symbols";
 import { findMatrixLiterals } from "../src/editor/matrixConceal";
@@ -76,6 +80,30 @@ describe("editor symbols, matrices, and call site detection", () => {
       setConstantOverrides({});
       expect(getEffectiveConstant("g")?.value).toBe(9.80665);
       expect(getEffectiveConstant("g")?.overridden).toBe(false);
+    });
+
+    it("supports defining, overriding, and clearing custom constants", () => {
+      expect(isValidConstantName("rho_w")).toBe(true);
+      expect(isValidConstantName("bad name")).toBe(false);
+
+      setCustomConstants({
+        rho_w: { value: 1000, unit: "kg/m^3", latex: "rho_w", label: "water density" },
+        g: { value: 1, unit: "m/s^2", latex: "g", label: "should not shadow" },
+      });
+      expect(Object.keys(getCustomConstants())).toEqual(["rho_w"]);
+      expect(getAllConstants().rho_w?.value).toBe(1000);
+
+      const eff = getEffectiveConstant("rho_w");
+      expect(eff?.isCustom).toBe(true);
+      expect(eff?.value).toBe(1000);
+
+      setConstantOverrides({ rho_w: 1025 });
+      expect(getEffectiveConstant("rho_w")?.value).toBe(1025);
+      expect(getEffectiveConstant("rho_w")?.overridden).toBe(true);
+
+      setConstantOverrides({});
+      setCustomConstants({});
+      expect(getEffectiveConstant("rho_w")).toBeUndefined();
     });
   });
 

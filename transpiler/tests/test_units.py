@@ -206,3 +206,59 @@ def test_physical_constant_overrides(tmp_path):
         assert loaded["atm"] == 100000.0
     finally:
         set_constant_overrides({})
+
+
+def test_custom_physical_constants(tmp_path):
+    from physpy.units import (
+        get_custom_constants,
+        get_effective_constant_value,
+        has_constant,
+        load_custom_constants_from_config,
+        set_constant_overrides,
+        set_custom_constants,
+    )
+
+    try:
+        applied = set_custom_constants(
+            {
+                "rho_w": {"value": 1000, "unit": "kg/m^3", "label": "water density"},
+                "k_custom": {"value": 42.5, "unit": ""},
+                "g": {"value": 1.0, "unit": "m/s^2"},  # cannot shadow built-in
+                "bad name!": {"value": 1.0, "unit": "m"},
+            }
+        )
+        assert set(applied.keys()) == {"rho_w", "k_custom"}
+        assert applied["k_custom"]["unit"] == "dimensionless"
+        assert has_constant("rho_w")
+        assert get_custom_constants()["rho_w"]["value"] == 1000.0
+
+        session = NotebookSession()
+        res = session.run_cell(
+            "V = 2 [m^3]\n"
+            "m = \\const{rho_w} * V\n"
+            "print(f'{m:.0f}', '|', f'{\\const{k_custom}.magnitude:.1f}')\n"
+        )
+        assert res.code == 0, res.stderr
+        assert "2000 kg | 42.5" in res.stdout
+
+        # Override on custom constant
+        set_constant_overrides({"rho_w": 1025})
+        assert get_effective_constant_value("rho_w") == 1025.0
+
+        # Workspace YAML loading for custom_constants
+        ws_cfg = tmp_path / ".physpy-config.yaml"
+        ws_cfg.write_text(
+            "custom_constants:\n"
+            "  c_water:\n"
+            "    value: 4184\n"
+            "    unit: \"J/(kg*K)\"\n"
+            "    label: \"specific heat\"\n",
+            encoding="utf-8",
+        )
+        loaded_custom = load_custom_constants_from_config(str(tmp_path))
+        assert loaded_custom["c_water"]["value"] == 4184.0
+        assert loaded_custom["c_water"]["unit"] == "J/(kg*K)"
+        assert loaded_custom["c_water"]["label"] == "specific heat"
+    finally:
+        set_constant_overrides({})
+        set_custom_constants({})

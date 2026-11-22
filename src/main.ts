@@ -17,10 +17,14 @@ import {
 } from "./editor/setup";
 import {
   PHYSICAL_CONSTANTS,
+  type PhysicalConstantDef,
   getConstantOverrides,
+  getCustomConstants,
   getEffectiveConstant,
+  isValidConstantName,
   replaceSymbolsInIdent,
   setConstantOverrides,
+  setCustomConstants,
 } from "./editor/symbols";
 import { refreshMathSymbolsEffect } from "./editor/mathSymbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
@@ -1190,6 +1194,7 @@ async function applyHierarchicalConfig(
       }
     }
     await refreshInterpreterBadge();
+    applyCustomConstantsEverywhere(cfg.custom_constants ?? {}, true);
     applyConstantOverridesEverywhere(cfg.constants ?? {}, true);
     return cfg;
   } catch {
@@ -1229,13 +1234,51 @@ function updateTabSizeRowVisibility() {
 }
 
 const CONSTANTS_STORAGE_KEY = "physpy_constant_overrides_v1";
+const CUSTOM_CONSTANTS_STORAGE_KEY = "physpy_custom_constants_v1";
 let settingsConstantOverrides: Record<string, number> = {};
+let settingsCustomConstants: Record<string, PhysicalConstantDef> = {};
 
 function parseFiniteConstantValue(raw: string): number | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const num = Number(trimmed);
   return Number.isFinite(num) ? num : null;
+}
+
+function updateConstantsBadgeCount() {
+  const overrideCount = Object.keys(getConstantOverrides()).length;
+  const customCount = Object.keys(getCustomConstants()).length;
+  const count = overrideCount + customCount;
+  drawerConstCountEl.textContent = String(count);
+  drawerConstCountEl.hidden = count === 0;
+}
+
+function applyCustomConstantsEverywhere(
+  custom: Record<string, PhysicalConstantDef>,
+  syncWorker = true,
+) {
+  setCustomConstants(custom);
+  const activeCustom = getCustomConstants();
+  updateConstantsBadgeCount();
+
+  for (const c of cells) {
+    c.view.dispatch({ effects: refreshMathSymbolsEffect.of(null) });
+  }
+  renderDrawerConstantsTable();
+
+  if (syncWorker && backend.inTauri) {
+    void backend.setCustomConstants(activeCustom);
+  } else if (!backend.inTauri) {
+    try {
+      if (Object.keys(activeCustom).length > 0) {
+        localStorage.setItem(CUSTOM_CONSTANTS_STORAGE_KEY, JSON.stringify(activeCustom));
+      } else {
+        localStorage.removeItem(CUSTOM_CONSTANTS_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
 }
 
 function applyConstantOverridesEverywhere(
@@ -1245,8 +1288,7 @@ function applyConstantOverridesEverywhere(
   setConstantOverrides(overrides);
   const active = getConstantOverrides();
   const count = Object.keys(active).length;
-  drawerConstCountEl.textContent = String(count);
-  drawerConstCountEl.hidden = count === 0;
+  updateConstantsBadgeCount();
 
   for (const c of cells) {
     c.view.dispatch({ effects: refreshMathSymbolsEffect.of(null) });
@@ -1285,7 +1327,15 @@ function renderSettingsConstantsTable() {
     </thead>
   `;
   const tbody = document.createElement("tbody");
-  for (const [name, info] of Object.entries(PHYSICAL_CONSTANTS)) {
+  const combined: Array<[string, PhysicalConstantDef, boolean]> = [
+    ...Object.entries(settingsCustomConstants).map(
+      ([n, def]) => [n, def, true] as [string, PhysicalConstantDef, boolean],
+    ),
+    ...Object.entries(PHYSICAL_CONSTANTS).map(
+      ([n, def]) => [n, def, false] as [string, PhysicalConstantDef, boolean],
+    ),
+  ];
+  for (const [name, info, isCustom] of combined) {
     if (
       filter &&
       !name.toLowerCase().includes(filter) &&
@@ -1302,6 +1352,12 @@ function renderSettingsConstantsTable() {
     const code = document.createElement("code");
     code.textContent = `\\const{${name}}`;
     tdName.append(code);
+    if (isCustom) {
+      const badge = document.createElement("span");
+      badge.className = "constants-custom-badge";
+      badge.textContent = "Custom";
+      tdName.append(badge);
+    }
 
     const tdLabel = document.createElement("td");
     tdLabel.textContent = info.label;
@@ -1372,6 +1428,21 @@ function renderSettingsConstantsTable() {
     });
 
     group.append(input, resetBtn);
+    if (isCustom) {
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "constants-delete-btn";
+      delBtn.textContent = "✕";
+      delBtn.title = `Delete custom constant \\const{${name}}`;
+      delBtn.addEventListener("click", () => {
+        delete settingsCustomConstants[name];
+        delete settingsConstantOverrides[name];
+        renderSettingsConstantsTable();
+        cfgRawYamlInput.value = buildYamlFromSettingsForm();
+        markSettingsTabDirty(true);
+      });
+      group.append(delBtn);
+    }
     tdVal.append(group);
     tr.append(tdName, tdLabel, tdUnit, tdDefault, tdVal);
     tbody.append(tr);
@@ -1452,6 +1523,25 @@ function buildYamlFromSettingsForm(): string {
     }
     lines.push("");
   }
+  const customKeys = Object.keys(settingsCustomConstants).sort();
+  if (customKeys.length > 0) {
+    lines.push("# 9. Custom Physical Constants", "custom_constants:");
+    for (const k of customKeys) {
+      const entry = settingsCustomConstants[k];
+      if (!entry || !Number.isFinite(entry.value)) continue;
+      const escUnit = (entry.unit || "dimensionless").replace(/"/g, '\\"');
+      const escLatex = (entry.latex || k).replace(/"/g, '\\"');
+      const escLabel = (entry.label || "").replace(/"/g, '\\"');
+      lines.push(`  ${k}:`, `    value: ${entry.value}`, `    unit: "${escUnit}"`);
+      if (escLatex && escLatex !== k) {
+        lines.push(`    latex: "${escLatex}"`);
+      }
+      if (escLabel) {
+        lines.push(`    label: "${escLabel}"`);
+      }
+    }
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -1524,12 +1614,20 @@ async function refreshAiModelsList(silent = false) {
 
 function syncSettingsFormFromYamlText(yamlText: string) {
   let inConstantsSection = false;
+  let inCustomConstantsSection = false;
+  let currentCustomName: string | null = null;
+  let currentCustomIndent = 0;
   const parsedConstants: Record<string, number> = {};
+  const parsedCustomDraft: Record<string, Partial<PhysicalConstantDef>> = {};
   for (const rawLine of yamlText.split("\n")) {
     const indent = rawLine.length - rawLine.trimStart().length;
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
-    if (indent === 0) inConstantsSection = false;
+    if (indent === 0) {
+      inConstantsSection = false;
+      inCustomConstantsSection = false;
+      currentCustomName = null;
+    }
     const colonIdx = line.indexOf(":");
     if (colonIdx < 0) continue;
     const key = line.slice(0, colonIdx).trim();
@@ -1548,10 +1646,38 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       inConstantsSection = true;
       continue;
     }
+    if (indent === 0 && key === "custom_constants" && !val) {
+      inCustomConstantsSection = true;
+      continue;
+    }
     if (inConstantsSection && indent > 0) {
-      if (key in PHYSICAL_CONSTANTS) {
-        const num = parseFiniteConstantValue(val);
-        if (num !== null) parsedConstants[key] = num;
+      const num = parseFiniteConstantValue(val);
+      if (num !== null && isValidConstantName(key)) parsedConstants[key] = num;
+      continue;
+    }
+    if (inCustomConstantsSection && indent > 0) {
+      if (currentCustomName === null || indent <= currentCustomIndent) {
+        if (!val && isValidConstantName(key) && !(key in PHYSICAL_CONSTANTS)) {
+          currentCustomName = key;
+          currentCustomIndent = indent;
+          parsedCustomDraft[key] = parsedCustomDraft[key] ?? {};
+        } else {
+          currentCustomName = null;
+        }
+        continue;
+      }
+      if (currentCustomName && indent > currentCustomIndent) {
+        const draft = parsedCustomDraft[currentCustomName];
+        if (key === "value") {
+          const num = parseFiniteConstantValue(val);
+          if (num !== null) draft.value = num;
+        } else if (key === "unit") {
+          draft.unit = val || "dimensionless";
+        } else if (key === "latex") {
+          draft.latex = val;
+        } else if (key === "label") {
+          draft.label = val;
+        }
       }
       continue;
     }
@@ -1625,7 +1751,25 @@ function syncSettingsFormFromYamlText(yamlText: string) {
   updateAutoSaveDelayRowVisibility();
   updateTabSizeRowVisibility();
   updateAiProviderRowsVisibility();
-  settingsConstantOverrides = parsedConstants;
+  const parsedCustom: Record<string, PhysicalConstantDef> = {};
+  for (const [k, d] of Object.entries(parsedCustomDraft)) {
+    if (typeof d.value === "number" && Number.isFinite(d.value)) {
+      parsedCustom[k] = {
+        value: d.value,
+        unit: d.unit && d.unit.trim() ? d.unit.trim() : "dimensionless",
+        latex: d.latex && d.latex.trim() ? d.latex.trim() : k,
+        label: d.label ? d.label.trim() : "",
+      };
+    }
+  }
+  const filteredOverrides: Record<string, number> = {};
+  for (const [k, v] of Object.entries(parsedConstants)) {
+    if (k in PHYSICAL_CONSTANTS || k in parsedCustom) {
+      filteredOverrides[k] = v;
+    }
+  }
+  settingsCustomConstants = parsedCustom;
+  settingsConstantOverrides = filteredOverrides;
   renderSettingsConstantsTable();
 }
 
@@ -1670,6 +1814,7 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgAiApiKeyInput.value = scope === "global" ? data.parsed.ai_api_key || "" : "";
     cfgAiSystemPromptInput.value = data.parsed.ai_system_prompt || "";
     settingsConstantOverrides = { ...(data.parsed.constants ?? {}) };
+    settingsCustomConstants = { ...(data.parsed.custom_constants ?? {}) };
     cfgRawYamlInput.value = data.raw_yaml;
     syncSettingsFormFromYamlText(data.raw_yaml);
     renderSettingsConstantsTable();
@@ -1807,6 +1952,77 @@ btnCfgResetAllConstants?.addEventListener("click", () => {
   cfgRawYamlInput.value = buildYamlFromSettingsForm();
   markSettingsTabDirty(true);
 });
+
+function wireAddConstantBar(
+  nameInputId: string,
+  valInputId: string,
+  unitInputId: string,
+  labelInputId: string,
+  btnId: string,
+  onAdd: (name: string, def: PhysicalConstantDef) => void,
+) {
+  const nameEl = document.getElementById(nameInputId) as HTMLInputElement | null;
+  const valEl = document.getElementById(valInputId) as HTMLInputElement | null;
+  const unitEl = document.getElementById(unitInputId) as HTMLInputElement | null;
+  const labelEl = document.getElementById(labelInputId) as HTMLInputElement | null;
+  const btnEl = document.getElementById(btnId) as HTMLButtonElement | null;
+  if (!nameEl || !valEl || !unitEl || !labelEl || !btnEl) return;
+
+  const submit = () => {
+    const rawName = nameEl.value.trim();
+    const parsedVal = parseFiniteConstantValue(valEl.value);
+    const nameValid = isValidConstantName(rawName) && !(rawName in PHYSICAL_CONSTANTS);
+    nameEl.classList.toggle("is-invalid", !nameValid);
+    valEl.classList.toggle("is-invalid", parsedVal === null);
+    if (!nameValid || parsedVal === null) {
+      if (rawName in PHYSICAL_CONSTANTS) {
+        setStatus(`"${rawName}" is a built-in constant — edit its Override Value in the table instead`);
+      } else if (!nameValid) {
+        setStatus("Constant name must match [A-Za-z0-9_]+ (e.g. rho_w)");
+      }
+      return;
+    }
+    const unit = unitEl.value.trim() || "dimensionless";
+    const label = labelEl.value.trim();
+    onAdd(rawName, {
+      value: parsedVal,
+      unit,
+      latex: rawName,
+      label,
+    });
+    nameEl.value = "";
+    valEl.value = "";
+    unitEl.value = "";
+    labelEl.value = "";
+    nameEl.classList.remove("is-invalid");
+    valEl.classList.remove("is-invalid");
+  };
+
+  btnEl.addEventListener("click", submit);
+  for (const el of [nameEl, valEl, unitEl, labelEl]) {
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      }
+    });
+  }
+}
+
+wireAddConstantBar(
+  "cfg-const-add-name",
+  "cfg-const-add-val",
+  "cfg-const-add-unit",
+  "cfg-const-add-label",
+  "btn-cfg-add-constant",
+  (name, def) => {
+    settingsCustomConstants[name] = def;
+    renderSettingsConstantsTable();
+    cfgRawYamlInput.value = buildYamlFromSettingsForm();
+    markSettingsTabDirty(true);
+    setStatus(`Added custom constant \\const{${name}} = ${def.value} ${def.unit}`);
+  },
+);
 
 $("btn-cfg-browse-python").addEventListener("click", async () => {
   if (!requireTauri()) return;
@@ -3446,8 +3662,17 @@ function renderDrawerConstantsTable() {
   const filter = (drawerConstantsFilterInput?.value ?? "").trim().toLowerCase();
   constantsTbodyEl.innerHTML = "";
   const active = getConstantOverrides();
+  const customMap = getCustomConstants();
+  const combined: Array<[string, PhysicalConstantDef, boolean]> = [
+    ...Object.entries(customMap).map(
+      ([n, def]) => [n, def, true] as [string, PhysicalConstantDef, boolean],
+    ),
+    ...Object.entries(PHYSICAL_CONSTANTS).map(
+      ([n, def]) => [n, def, false] as [string, PhysicalConstantDef, boolean],
+    ),
+  ];
 
-  for (const [name, info] of Object.entries(PHYSICAL_CONSTANTS)) {
+  for (const [name, info, isCustom] of combined) {
     if (
       filter &&
       !name.toLowerCase().includes(filter) &&
@@ -3464,6 +3689,12 @@ function renderDrawerConstantsTable() {
     const code = document.createElement("code");
     code.textContent = `\\const{${name}}`;
     tdName.append(code);
+    if (isCustom) {
+      const badge = document.createElement("span");
+      badge.className = "constants-custom-badge";
+      badge.textContent = "Custom";
+      tdName.append(badge);
+    }
 
     const tdDesc = document.createElement("td");
     tdDesc.textContent = info.label;
@@ -3545,6 +3776,25 @@ function renderDrawerConstantsTable() {
     });
 
     group.append(input, resetBtn);
+    if (eff.isCustom) {
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "constants-delete-btn";
+      delBtn.textContent = "✕";
+      delBtn.title = `Delete custom constant \\const{${name}}`;
+      delBtn.addEventListener("click", () => {
+        const nextCustom = { ...getCustomConstants() };
+        delete nextCustom[name];
+        const nextOverrides = { ...getConstantOverrides() };
+        if (name in nextOverrides) {
+          delete nextOverrides[name];
+          applyConstantOverridesEverywhere(nextOverrides, true);
+        }
+        applyCustomConstantsEverywhere(nextCustom, true);
+        setStatus(`Deleted custom constant \\const{${name}}`);
+      });
+      group.append(delBtn);
+    }
     tdVal.append(group);
     tr.append(tdName, tdDesc, tdUnit, tdDefault, tdVal);
     constantsTbodyEl.append(tr);
@@ -6821,6 +7071,18 @@ $("btn-drawer-reset-constants")?.addEventListener("click", () => {
   applyConstantOverridesEverywhere({}, true);
   setStatus("Reset all physical constants to defaults");
 });
+wireAddConstantBar(
+  "drawer-const-add-name",
+  "drawer-const-add-val",
+  "drawer-const-add-unit",
+  "drawer-const-add-label",
+  "btn-drawer-add-constant",
+  (name, def) => {
+    const nextCustom = { ...getCustomConstants(), [name]: def };
+    applyCustomConstantsEverywhere(nextCustom, true);
+    setStatus(`Added custom constant \\const{${name}} = ${def.value} ${def.unit}`);
+  },
+);
 $("btn-drawer-constants-settings")?.addEventListener("click", () => {
   openSettingsTab(rootDir ? "workspace" : "global");
 });
@@ -9160,6 +9422,20 @@ async function loadImagePreviewTab(filePath: string | null): Promise<void> {
 async function initializeAppStartup() {
   const cfg = await applyHierarchicalConfig(null, true);
   if (!backend.inTauri) {
+    try {
+      const savedCustomRaw = localStorage.getItem(CUSTOM_CONSTANTS_STORAGE_KEY);
+      if (savedCustomRaw) {
+        const parsedCustom = JSON.parse(savedCustomRaw);
+        if (parsedCustom && typeof parsedCustom === "object") {
+          applyCustomConstantsEverywhere(
+            parsedCustom as Record<string, PhysicalConstantDef>,
+            false,
+          );
+        }
+      }
+    } catch {
+      // ignore invalid stored custom constants
+    }
     try {
       const savedConstRaw = localStorage.getItem(CONSTANTS_STORAGE_KEY);
       if (savedConstRaw) {

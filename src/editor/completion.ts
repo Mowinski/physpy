@@ -1,7 +1,7 @@
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import type { EditorView } from "@codemirror/view";
 import { pythonLanguage } from "@codemirror/lang-python";
-import { ACCENTS, PHYSICAL_CONSTANTS, SYMBOLS, getEffectiveConstant } from "./symbols";
+import { ACCENTS, SYMBOLS, getAllConstants, getEffectiveConstant } from "./symbols";
 
 const ACCENT_PREVIEW: Record<string, string> = {
   bar: "x̄ (kreska nad)",
@@ -18,8 +18,8 @@ const ACCENT_PREVIEW: Record<string, string> = {
 const STATIC_OPTIONS: Completion[] = [
   ...Object.entries(SYMBOLS).map(([name, char]) => ({
     label: `\\${name}`,
-    detail: char,
-    type: "variable",
+    detail: name === "pi" ? "π (3.141592653589793)" : char,
+    type: name === "pi" ? "constant" : "variable",
   })),
   ...Object.keys(ACCENTS).map((name) => ({
     label: `\\${name}{}`,
@@ -45,12 +45,14 @@ const STATIC_OPTIONS: Completion[] = [
 function symbolCompletion(ctx: CompletionContext): CompletionResult | null {
   const word = ctx.matchBefore(/\\[A-Za-z]*/);
   if (!word) return null;
-  const constOptions: Completion[] = Object.keys(PHYSICAL_CONSTANTS).map((name) => {
+  const constOptions: Completion[] = Object.keys(getAllConstants()).map((name) => {
     const info = getEffectiveConstant(name)!;
-    const suffix = info.overridden ? " [modified]" : "";
+    const tags = [info.isCustom ? "custom" : "", info.overridden ? "modified" : ""].filter(Boolean);
+    const suffix = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
+    const labelText = info.label ? ` — ${info.label}` : "";
     return {
       label: `\\const{${name}}`,
-      detail: `${info.value} ${info.unit}${suffix} — ${info.label}`,
+      detail: `${info.value} ${info.unit}${suffix}${labelText}`,
       type: "constant",
     };
   });

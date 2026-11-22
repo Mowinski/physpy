@@ -25,7 +25,7 @@ from .pipeline import compile_source, to_ast
 from .plotting import PLOT_FN, copy_figure, render_plot_bundle, resolve_figure
 from .symbols import IDENTIFIERS
 from .tables import TABLE_FN, extract_table_data, is_tabular_object
-from .units import UNIT_FN, make_quantity, reset_ureg, set_constant_overrides
+from .units import UNIT_FN, make_quantity, reset_ureg, set_constant_overrides, set_custom_constants
 
 CELL_HEADER_RE = re.compile(r"^# %%[^\S\n]*(.*)$", re.MULTILINE)
 EXPORT_IMPORT_RE = re.compile(r"^[ \t]*export[ \t]+(?:import|from)\b.*$", re.MULTILINE)
@@ -748,6 +748,8 @@ def run_worker() -> int:
                         sys.path.insert(0, work_dir)
                 if doc_source:
                     session.ensure_global_imports(doc_source)
+                if isinstance(req.get("custom_constants"), dict):
+                    set_custom_constants(req["custom_constants"])
                 if isinstance(req.get("constants"), dict):
                     set_constant_overrides(req["constants"])
                 res = session.run_cell(source, label)
@@ -882,6 +884,8 @@ def run_worker() -> int:
                         sys.path.insert(0, work_dir)
                 if doc_source:
                     session.ensure_global_imports(doc_source)
+                if isinstance(req.get("custom_constants"), dict):
+                    set_custom_constants(req["custom_constants"])
                 if isinstance(req.get("constants"), dict):
                     set_constant_overrides(req["constants"])
                 res = debug_cell(session, source, label, cell_index, _send_rpc, _read_cmd)
@@ -913,9 +917,15 @@ def run_worker() -> int:
                 except OSError:
                     pass
         elif cmd == "set_constants":
+            if isinstance(req.get("custom_constants"), dict):
+                set_custom_constants(req["custom_constants"])
             overrides = req.get("constants")
             applied = set_constant_overrides(overrides if isinstance(overrides, dict) else {})
             resp = {"ok": True, "constants": applied}
+        elif cmd == "set_custom_constants":
+            custom = req.get("custom_constants")
+            applied_custom = set_custom_constants(custom if isinstance(custom, dict) else {})
+            resp = {"ok": True, "custom_constants": applied_custom}
         else:
             resp = {"ok": False, "error": f"unknown command: {cmd}"}
 

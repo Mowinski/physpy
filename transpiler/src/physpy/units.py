@@ -28,6 +28,8 @@ PHYSICAL_CONSTANTS: dict[str, dict[str, Any]] = json.loads(
 )
 
 _CONSTANT_OVERRIDES: dict[str, float] = {}
+CUSTOM_CONSTANTS: dict[str, dict[str, Any]] = {}
+_CONST_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _UREG: Any = None
 _MICRO_SPACE_RE = re.compile(r"μ\s+([A-Za-zΩ]+)")
@@ -123,13 +125,70 @@ def convert_quantity(value: Any, unit_str: str) -> Any:
     return get_ureg().Quantity(value, normalized)
 
 
+def has_constant(name: str) -> bool:
+    """Return True if ``name`` is a built-in or user-defined physical constant."""
+    return name in PHYSICAL_CONSTANTS or name in CUSTOM_CONSTANTS
+
+
+def get_all_constants() -> dict[str, dict[str, Any]]:
+    """Return combined dictionary of built-in and user-defined physical constants."""
+    merged = dict(PHYSICAL_CONSTANTS)
+    merged.update(CUSTOM_CONSTANTS)
+    return merged
+
+
+def set_custom_constants(custom: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Set session-wide user-defined physical constants."""
+    CUSTOM_CONSTANTS.clear()
+    if not custom:
+        return {}
+    for name, raw_entry in custom.items():
+        if not isinstance(name, str) or not _CONST_NAME_RE.match(name):
+            continue
+        if name in PHYSICAL_CONSTANTS:
+            continue
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_val = raw_entry.get("value")
+        if isinstance(raw_val, bool):
+            continue
+        try:
+            val = float(raw_val)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(val):
+            continue
+        raw_unit = raw_entry.get("unit")
+        unit = str(raw_unit).strip() if raw_unit is not None else ""
+        if not unit:
+            unit = "dimensionless"
+        raw_latex = raw_entry.get("latex")
+        latex = str(raw_latex).strip() if raw_latex is not None else ""
+        if not latex:
+            latex = name
+        raw_label = raw_entry.get("label")
+        label = str(raw_label).strip() if raw_label is not None else ""
+        CUSTOM_CONSTANTS[name] = {
+            "value": val,
+            "unit": unit,
+            "latex": latex,
+            "label": label,
+        }
+    return {k: dict(v) for k, v in CUSTOM_CONSTANTS.items()}
+
+
+def get_custom_constants() -> dict[str, dict[str, Any]]:
+    """Return a copy of active user-defined physical constants."""
+    return {k: dict(v) for k, v in CUSTOM_CONSTANTS.items()}
+
+
 def set_constant_overrides(overrides: dict[str, Any] | None) -> dict[str, float]:
-    """Set session-wide numeric overrides for built-in physical constants."""
+    """Set session-wide numeric overrides for physical constants."""
     _CONSTANT_OVERRIDES.clear()
     if not overrides:
         return {}
     for name, raw_val in overrides.items():
-        if name not in PHYSICAL_CONSTANTS:
+        if not has_constant(name):
             continue
         if isinstance(raw_val, bool):
             continue
@@ -149,11 +208,12 @@ def get_constant_overrides() -> dict[str, float]:
 
 def get_effective_constant_value(name: str) -> float:
     """Return the active numeric value (override or default) for a physical constant."""
-    if name not in PHYSICAL_CONSTANTS:
+    entry = PHYSICAL_CONSTANTS.get(name) or CUSTOM_CONSTANTS.get(name)
+    if entry is None:
         raise KeyError(f"unknown physical constant: {name}")
     if name in _CONSTANT_OVERRIDES:
         return _CONSTANT_OVERRIDES[name]
-    return float(PHYSICAL_CONSTANTS[name]["value"])
+    return float(entry["value"])
 
 
 def _parse_constants_from_yaml(text: str) -> dict[str, float]:
@@ -176,7 +236,7 @@ def _parse_constants_from_yaml(text: str) -> dict[str, float]:
             if key == "constants" and not val_clean:
                 in_constants = True
             continue
-        if in_constants and key in PHYSICAL_CONSTANTS:
+        if in_constants and has_constant(key):
             unquoted = val_clean.strip("\"'")
             try:
                 num = float(unquoted)
@@ -210,9 +270,82 @@ def load_constant_overrides_from_config(workspace_dir: str | None = None) -> dic
     return merged
 
 
+def _parse_custom_constants_from_yaml(text: str) -> dict[str, dict[str, Any]]:
+    """Extract ``custom_constants:`` section entries from a PhysPy YAML config string."""
+    out: dict[str, dict[str, Any]] = {}
+    in_section = False
+    current_name: str | None = None
+    section_indent = 0
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip())
+        if indent == 0:
+            in_section = False
+            current_name = None
+        if ":" not in stripped:
+            continue
+        key, val_raw = stripped.split(":", 1)
+        key = key.strip()
+        val_clean = val_raw.split("#", 1)[0].strip()
+        if (val_clean.startswith('"') and val_clean.endswith('"')) or (
+            val_clean.startswith("'") and val_clean.endswith("'")
+        ):
+            val_clean = val_clean[1:-1]
+        if indent == 0:
+            if key == "custom_constants" and not val_clean:
+                in_section = True
+            continue
+        if not in_section:
+            continue
+        if current_name is None or indent <= section_indent:
+            if not val_clean and _CONST_NAME_RE.match(key) and key not in PHYSICAL_CONSTANTS:
+                current_name = key
+                section_indent = indent
+                out.setdefault(current_name, {})
+            else:
+                current_name = None
+            continue
+        if current_name is not None and indent > section_indent:
+            if key == "value":
+                try:
+                    num = float(val_clean)
+                except ValueError:
+                    continue
+                if math.isfinite(num):
+                    out[current_name]["value"] = num
+            elif key in ("unit", "latex", "label"):
+                out[current_name][key] = val_clean
+    return {k: v for k, v in out.items() if "value" in v}
+
+
+def load_custom_constants_from_config(workspace_dir: str | None = None) -> dict[str, dict[str, Any]]:
+    """Load hierarchical custom constants from global and workspace YAML configs."""
+    merged: dict[str, dict[str, Any]] = {}
+    home = Path.home()
+    global_cfg = home / ".physpy" / "config.yaml"
+    if global_cfg.is_file():
+        try:
+            merged.update(_parse_custom_constants_from_yaml(global_cfg.read_text(encoding="utf-8")))
+        except OSError:
+            pass
+    if workspace_dir:
+        ws_path = Path(workspace_dir)
+        for fname in (".physpy-config.yaml", ".physpy-config.yml"):
+            ws_cfg = ws_path / fname
+            if ws_cfg.is_file():
+                try:
+                    merged.update(_parse_custom_constants_from_yaml(ws_cfg.read_text(encoding="utf-8")))
+                except OSError:
+                    pass
+                break
+    return merged
+
+
 def get_physical_constant(name: str) -> Any:
-    """Return a ``pint.Quantity`` for a built-in physical constant from ``physical_constants.json``."""
-    entry = PHYSICAL_CONSTANTS.get(name)
+    """Return a ``pint.Quantity`` for a built-in or user-defined physical constant."""
+    entry = PHYSICAL_CONSTANTS.get(name) or CUSTOM_CONSTANTS.get(name)
     if entry is None:
         raise KeyError(f"unknown physical constant: {name}")
     value = _CONSTANT_OVERRIDES.get(name, entry["value"])
