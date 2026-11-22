@@ -1956,6 +1956,12 @@ dialog:modal {
   overscroll-behavior: contain;
 }
 
+/* Hide native PDFKit/iframe overlays while a modal dialog is open (WKWebView renders PDFs above top-layer dialogs) */
+body:has(dialog[open]) .cell-pdf-frame,
+body:has(dialog[open]) .latex-pdf-frame {
+  visibility: hidden;
+}
+
 dialog::backdrop {
   overflow: hidden;
   overscroll-behavior: contain;
@@ -1965,7 +1971,8 @@ dialog::backdrop {
 
 #python-dialog[open],
 #ipynb-dialog[open],
-#export-html-dialog[open] {
+#export-html-dialog[open],
+#publish-cloud-dialog[open] {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border-subtle);
@@ -1977,7 +1984,8 @@ dialog::backdrop {
 
 #python-dialog h2,
 #ipynb-dialog h2,
-#export-html-dialog h2 {
+#export-html-dialog h2,
+#publish-cloud-dialog h2 {
   margin: 0 0 10px;
   font-size: 16px;
   color: #ffffff;
@@ -5134,4 +5142,219 @@ dialog.matrix-modal::backdrop {
 .cm-math-const-overridden {
   text-decoration: underline dotted #e5c07b;
   text-underline-offset: 3px;
+}
+
+/* --- Cloud Publish Dialog ------------------------------------------------ */
+
+.cloud-modal-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.cloud-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+#publish-cloud-dialog .cloud-modal-header h2 {
+  margin: 0;
+}
+
+#publish-cloud-dialog .dialog-hint {
+  margin: 0 0 14px;
+}
+
+#publish-cloud-dialog .dialog-footer {
+  margin-top: 16px;
+}
+
+.cloud-user-badge {
+  font-size: 11.5px;
+  color: var(--accent, #61afef);
+  background: rgba(97, 175, 239, 0.12);
+  border: 1px solid rgba(97, 175, 239, 0.3);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.cloud-account-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  margin-bottom: 14px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+
+.cloud-quota-text {
+  color: var(--text);
+}
+
+.cloud-result-box {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(152, 195, 121, 0.08);
+  border: 1px solid rgba(152, 195, 121, 0.35);
+}
+
+.cloud-result-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #98c379;
+  margin-bottom: 8px;
+}
+
+.cloud-result-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-result-row input {
+  flex: 1;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  background: var(--bg, #181a1f);
+  color: var(--text);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.cloud-result-row button {
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accent, #61afef);
+  background: var(--accent, #61afef);
+  color: #11161d;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cloud-open-link {
+  font-size: 12px;
+  color: var(--accent, #61afef);
+  text-decoration: none;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cloud-open-link:hover {
+  text-decoration: underline;
+}
+
+.cloud-error-msg {
+  color: #f87171;
+  font-size: 12px;
+  margin: 8px 0;
+}
+
+.cloud-reports-section {
+  margin-top: 4px;
+}
+
+.cloud-reports-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+.cloud-reports-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg, #181a1f);
+}
+
+.cloud-reports-empty {
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.cloud-report-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+
+.cloud-report-row:last-child {
+  border-bottom: none;
+}
+
+.cloud-report-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.cloud-report-title {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cloud-report-meta {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+.cloud-report-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.cfg-cloud-panel {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.02);
+  margin-bottom: 10px;
+}
+
+.cfg-cloud-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.cfg-cloud-actions button {
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg, #181a1f);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cfg-cloud-actions button.primary {
+  background: var(--accent, #61afef);
+  border-color: var(--accent, #61afef);
+  color: #11161d;
+  font-weight: 600;
 }

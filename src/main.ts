@@ -34,6 +34,19 @@ import {
   type CodeExportVisibility,
 } from "./htmlExport";
 import {
+  callCloudAiAssist,
+  callCloudAiChat,
+  deletePublishedReport,
+  getCloudAccountStatus,
+  getCurrentCloudUser,
+  listMyPublishedReports,
+  onCloudAuthChange,
+  publishHtmlReport,
+  signInCloud,
+  signOutCloud,
+  signUpCloud,
+} from "./firebaseCloud";
+import {
   findVariableAtOffset,
   findVariableDefinition,
   findVariableOccurrences,
@@ -262,6 +275,18 @@ const cfgAutoSaveSelect = $<HTMLSelectElement>("cfg-auto-save");
 const cfgAutoSaveDelayInput = $<HTMLInputElement>("cfg-auto-save-delay");
 const cfgAutoSaveDelayRow = $<HTMLDivElement>("cfg-auto-save-delay-row");
 const cfgAiProviderSelect = $<HTMLSelectElement>("cfg-ai-provider");
+const cfgAiCloudPanel = $<HTMLDivElement>("cfg-ai-cloud-panel");
+const cfgCloudSignedOut = $<HTMLDivElement>("cfg-cloud-signed-out");
+const cfgCloudSignedIn = $<HTMLDivElement>("cfg-cloud-signed-in");
+const cfgCloudEmailInput = $<HTMLInputElement>("cfg-cloud-email");
+const cfgCloudPasswordInput = $<HTMLInputElement>("cfg-cloud-password");
+const cfgCloudAuthError = $<HTMLParagraphElement>("cfg-cloud-auth-error");
+const btnCfgCloudSignin = $<HTMLButtonElement>("btn-cfg-cloud-signin");
+const btnCfgCloudSignup = $<HTMLButtonElement>("btn-cfg-cloud-signup");
+const cfgCloudUserInfo = $<HTMLSpanElement>("cfg-cloud-user-info");
+const btnCfgCloudSignout = $<HTMLButtonElement>("btn-cfg-cloud-signout");
+const cfgAiLocalModelRow = $<HTMLDivElement>("cfg-ai-local-model-row");
+const cfgAiApiKeyRow = $<HTMLDivElement>("cfg-ai-api-key-row");
 const cfgAiModelSelect = $<HTMLSelectElement>("cfg-ai-model-select");
 const cfgAiModelInput = $<HTMLInputElement>("cfg-ai-model");
 const btnCfgAiRefreshModels = $<HTMLButtonElement>("btn-cfg-ai-refresh-models");
@@ -340,6 +365,28 @@ const btnExportSelectAll = $<HTMLButtonElement>("btn-export-select-all");
 const btnExportDeselectAll = $<HTMLButtonElement>("btn-export-deselect-all");
 const btnExportSelectOutputs = $<HTMLButtonElement>("btn-export-select-outputs");
 const btnCancelExportHtml = $<HTMLButtonElement>("btn-cancel-export-html");
+const btnPublishHtmlCloud = $<HTMLButtonElement>("btn-publish-html-cloud");
+const publishCloudDialog = $<HTMLDialogElement>("publish-cloud-dialog");
+const cloudUserBadge = $<HTMLSpanElement>("cloud-user-badge");
+const cloudAuthForm = $<HTMLFormElement>("cloud-auth-form");
+const cloudAuthEmail = $<HTMLInputElement>("cloud-auth-email");
+const cloudAuthPassword = $<HTMLInputElement>("cloud-auth-password");
+const cloudAuthError = $<HTMLParagraphElement>("cloud-auth-error");
+const btnCloudCloseAuth = $<HTMLButtonElement>("btn-cloud-close-auth");
+const btnCloudSignup = $<HTMLButtonElement>("btn-cloud-signup");
+const btnCloudSignin = $<HTMLButtonElement>("btn-cloud-signin");
+const cloudPublishView = $<HTMLDivElement>("cloud-publish-view");
+const cloudQuotaText = $<HTMLSpanElement>("cloud-quota-text");
+const btnCloudSignout = $<HTMLButtonElement>("btn-cloud-signout");
+const cloudResultBox = $<HTMLDivElement>("cloud-result-box");
+const cloudResultUrl = $<HTMLInputElement>("cloud-result-url");
+const btnCloudCopyUrl = $<HTMLButtonElement>("btn-cloud-copy-url");
+const cloudResultOpen = $<HTMLAnchorElement>("cloud-result-open");
+const cloudPublishError = $<HTMLParagraphElement>("cloud-publish-error");
+const btnCloudRefresh = $<HTMLButtonElement>("btn-cloud-refresh");
+const cloudReportsList = $<HTMLDivElement>("cloud-reports-list");
+const btnCloudClose = $<HTMLButtonElement>("btn-cloud-close");
+const btnCloudPublishNow = $<HTMLButtonElement>("btn-cloud-publish-now");
 const contextMenuEl = $<HTMLDivElement>("context-menu");
 const contextMenuGroupEl = $<HTMLDivElement>("context-menu-group");
 const viewer = createViewer($("python"));
@@ -1049,6 +1096,7 @@ attachDialogLightDismiss(pythonDialog);
 attachDialogLightDismiss(ipynbDialog);
 attachDialogLightDismiss(matrixDialog);
 attachDialogLightDismiss(exportHtmlDialog);
+attachDialogLightDismiss(publishCloudDialog);
 
 let currentConfig: backend.AppConfig | null = null;
 let autoSaveTimer: number | undefined;
@@ -1561,7 +1609,10 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       const n = parseInt(val, 10);
       if (!Number.isNaN(n)) cfgAutoSaveDelayInput.value = String(n);
     } else if (key === "ai_provider" || key === "aiProvider" || key === "ai.provider") {
-      if (val.toLowerCase() === "gemini") cfgAiProviderSelect.value = "gemini";
+      const p = val.toLowerCase();
+      if (p === "gemini" || p === "physpy_cloud") {
+        cfgAiProviderSelect.value = p;
+      }
     } else if (key === "ai_model" || key === "aiModel" || key === "ai.model" || key === "gemini_model") {
       renderAiModelSelectOptions(val || DEFAULT_AI_MODEL);
     } else if (key === "ai_api_key" || key === "aiApiKey" || key === "ai.api_key" || key === "gemini_api_key") {
@@ -1573,6 +1624,7 @@ function syncSettingsFormFromYamlText(yamlText: string) {
   updateStartupFileRowVisibility();
   updateAutoSaveDelayRowVisibility();
   updateTabSizeRowVisibility();
+  updateAiProviderRowsVisibility();
   settingsConstantOverrides = parsedConstants;
   renderSettingsConstantsTable();
 }
@@ -2421,6 +2473,339 @@ exportHtmlForm.addEventListener("submit", async (e) => {
     }
   } catch (err) {
     setStatus(`Failed to export HTML: ${String(err)}`);
+  }
+});
+
+// --- Cloud Publish (Firebase) -----------------------------------------------
+
+interface PendingCloudReport {
+  html: string;
+  title: string;
+  notebookName: string;
+}
+
+let pendingCloudReport: PendingCloudReport | null = null;
+
+function collectExportHtmlPayload(): PendingCloudReport | null {
+  const selectedIds = new Set<number>();
+  exportHtmlCellList
+    .querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked")
+    .forEach((cb) => {
+      const id = Number(cb.dataset.cellId);
+      if (!Number.isNaN(id)) selectedIds.add(id);
+    });
+
+  if (selectedIds.size === 0) {
+    setStatus("No cells selected for HTML export.");
+    return null;
+  }
+
+  const title = exportHtmlDocTitle.value.trim();
+  const codeVisibility = (exportHtmlCodeMode.value || "folded") as CodeExportVisibility;
+  const notebookName = currentPath
+    ? currentPath.split(/[\\/]/).pop() ?? "notebook.ppy"
+    : (activeTab()?.untitledName ?? "notebook.ppy");
+
+  const html = generateStaticNotebookHtml(cells, {
+    title,
+    notebookName,
+    documentPath: currentPath,
+    codeVisibility,
+    selectedCellIds: selectedIds,
+  });
+
+  return {
+    html,
+    title: title || notebookName.replace(/\.ppy$/i, ""),
+    notebookName,
+  };
+}
+
+function setCloudAuthError(msg: string | null) {
+  if (!msg) {
+    cloudAuthError.hidden = true;
+    cloudAuthError.textContent = "";
+  } else {
+    cloudAuthError.hidden = false;
+    cloudAuthError.textContent = msg;
+  }
+}
+
+function setCloudPublishError(msg: string | null) {
+  if (!msg) {
+    cloudPublishError.hidden = true;
+    cloudPublishError.textContent = "";
+  } else {
+    cloudPublishError.hidden = false;
+    cloudPublishError.textContent = msg;
+  }
+}
+
+async function refreshCloudReportsList() {
+  if (!getCurrentCloudUser()) return;
+  cloudQuotaText.textContent = "Loading reports…";
+  setCloudPublishError(null);
+  try {
+    const res = await listMyPublishedReports();
+    cloudQuotaText.textContent = `Plan: ${res.plan.toUpperCase()} · ${res.reportsCount} / ${res.maxReports} reports`;
+    cloudReportsList.innerHTML = "";
+    if (res.reports.length === 0) {
+      cloudReportsList.innerHTML = `<div class="cloud-reports-empty">No published reports yet.</div>`;
+      return;
+    }
+    for (const item of res.reports) {
+      const row = document.createElement("div");
+      row.className = "cloud-report-row";
+
+      const info = document.createElement("div");
+      info.className = "cloud-report-info";
+
+      const titleEl = document.createElement("div");
+      titleEl.className = "cloud-report-title";
+      titleEl.textContent = item.title || item.notebookName;
+
+      const metaEl = document.createElement("div");
+      metaEl.className = "cloud-report-meta";
+      const kb = Math.max(1, Math.round(item.sizeBytes / 1024));
+      metaEl.textContent = `${kb} KB · ${item.views} views · /r/${item.reportId}`;
+
+      info.appendChild(titleEl);
+      info.appendChild(metaEl);
+
+      const actions = document.createElement("div");
+      actions.className = "cloud-report-actions";
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "export-link-btn";
+      copyBtn.textContent = "Copy";
+      copyBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(item.url);
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+        }, 1500);
+      });
+
+      const openLink = document.createElement("a");
+      openLink.href = item.url;
+      openLink.target = "_blank";
+      openLink.rel = "noopener noreferrer";
+      openLink.className = "export-link-btn";
+      openLink.textContent = "Open";
+      openLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        void backend.openExternalUrl(item.url);
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "export-link-btn";
+      delBtn.style.color = "#f87171";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", async () => {
+        delBtn.disabled = true;
+        try {
+          await deletePublishedReport(item.reportId);
+          await refreshCloudReportsList();
+        } catch (err) {
+          setCloudPublishError(`Delete failed: ${String(err)}`);
+          delBtn.disabled = false;
+        }
+      });
+
+      actions.appendChild(copyBtn);
+      actions.appendChild(openLink);
+      actions.appendChild(delBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      cloudReportsList.appendChild(row);
+    }
+  } catch (err) {
+    cloudQuotaText.textContent = "Could not load reports";
+    setCloudPublishError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function updateAiProviderRowsVisibility() {
+  const isCloud = cfgAiProviderSelect.value === "physpy_cloud";
+  cfgAiCloudPanel.hidden = !isCloud;
+  cfgAiLocalModelRow.hidden = isCloud;
+  cfgAiApiKeyRow.hidden = isCloud;
+  if (isCloud && getCurrentCloudUser()) {
+    void refreshSettingsCloudStatus();
+  }
+}
+
+async function refreshSettingsCloudStatus() {
+  const user = getCurrentCloudUser();
+  if (!user) return;
+  cfgCloudUserInfo.textContent = `${user.email || user.uid} · Loading quota…`;
+  try {
+    const st = await getCloudAccountStatus();
+    cfgCloudUserInfo.textContent = `${st.email || st.uid} · ${st.plan.toUpperCase()} (${st.aiRequestsToday}/${st.aiDailyLimit} AI today)`;
+  } catch {
+    cfgCloudUserInfo.textContent = `${user.email || user.uid} · Signed in`;
+  }
+}
+
+cfgAiProviderSelect.addEventListener("change", () => {
+  updateAiProviderRowsVisibility();
+});
+
+btnCfgCloudSignin.addEventListener("click", async () => {
+  cfgCloudAuthError.hidden = true;
+  btnCfgCloudSignin.disabled = true;
+  try {
+    await signInCloud(cfgCloudEmailInput.value.trim(), cfgCloudPasswordInput.value);
+  } catch (err) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btnCfgCloudSignin.disabled = false;
+  }
+});
+
+btnCfgCloudSignup.addEventListener("click", async () => {
+  cfgCloudAuthError.hidden = true;
+  const email = cfgCloudEmailInput.value.trim();
+  const password = cfgCloudPasswordInput.value;
+  if (!email || password.length < 6) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = "Enter a valid email and a password of at least 6 characters.";
+    return;
+  }
+  btnCfgCloudSignup.disabled = true;
+  try {
+    await signUpCloud(email, password);
+  } catch (err) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btnCfgCloudSignup.disabled = false;
+  }
+});
+
+btnCfgCloudSignout.addEventListener("click", async () => {
+  await signOutCloud();
+});
+
+onCloudAuthChange((user) => {
+  if (user) {
+    cloudAuthForm.hidden = true;
+    cloudPublishView.hidden = false;
+    cloudUserBadge.hidden = false;
+    cloudUserBadge.textContent = user.email || user.uid;
+    cfgCloudSignedOut.hidden = true;
+    cfgCloudSignedIn.hidden = false;
+    void refreshSettingsCloudStatus();
+    if (publishCloudDialog.open) {
+      void refreshCloudReportsList();
+    }
+  } else {
+    cloudAuthForm.hidden = false;
+    cloudPublishView.hidden = true;
+    cloudUserBadge.hidden = true;
+    cloudUserBadge.textContent = "";
+    cloudResultBox.hidden = true;
+    cfgCloudSignedOut.hidden = false;
+    cfgCloudSignedIn.hidden = true;
+    cfgCloudUserInfo.textContent = "Signed out";
+  }
+});
+
+btnPublishHtmlCloud.addEventListener("click", () => {
+  const payload = collectExportHtmlPayload();
+  if (!payload) return;
+  pendingCloudReport = payload;
+  exportHtmlDialog.close();
+  cloudResultBox.hidden = true;
+  setCloudAuthError(null);
+  setCloudPublishError(null);
+  btnCloudPublishNow.disabled = false;
+  btnCloudPublishNow.textContent = "Publish Current Report";
+  publishCloudDialog.showModal();
+  if (getCurrentCloudUser()) {
+    void refreshCloudReportsList();
+  }
+});
+
+btnCloudCloseAuth.addEventListener("click", () => publishCloudDialog.close());
+btnCloudClose.addEventListener("click", () => publishCloudDialog.close());
+
+cloudAuthForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  setCloudAuthError(null);
+  btnCloudSignin.disabled = true;
+  try {
+    await signInCloud(cloudAuthEmail.value.trim(), cloudAuthPassword.value);
+  } catch (err) {
+    setCloudAuthError(err instanceof Error ? err.message : String(err));
+  } finally {
+    btnCloudSignin.disabled = false;
+  }
+});
+
+btnCloudSignup.addEventListener("click", async () => {
+  setCloudAuthError(null);
+  const email = cloudAuthEmail.value.trim();
+  const password = cloudAuthPassword.value;
+  if (!email || password.length < 6) {
+    setCloudAuthError("Enter a valid email and a password of at least 6 characters.");
+    return;
+  }
+  btnCloudSignup.disabled = true;
+  try {
+    await signUpCloud(email, password);
+  } catch (err) {
+    setCloudAuthError(err instanceof Error ? err.message : String(err));
+  } finally {
+    btnCloudSignup.disabled = false;
+  }
+});
+
+btnCloudSignout.addEventListener("click", async () => {
+  await signOutCloud();
+});
+
+btnCloudRefresh.addEventListener("click", () => {
+  void refreshCloudReportsList();
+});
+
+btnCloudCopyUrl.addEventListener("click", async () => {
+  if (!cloudResultUrl.value) return;
+  await navigator.clipboard.writeText(cloudResultUrl.value);
+  btnCloudCopyUrl.textContent = "Copied!";
+  setTimeout(() => {
+    btnCloudCopyUrl.textContent = "Copy";
+  }, 1500);
+});
+
+cloudResultOpen.addEventListener("click", (e) => {
+  e.preventDefault();
+  if (cloudResultUrl.value) {
+    void backend.openExternalUrl(cloudResultUrl.value);
+  }
+});
+
+btnCloudPublishNow.addEventListener("click", async () => {
+  if (!pendingCloudReport) return;
+  setCloudPublishError(null);
+  btnCloudPublishNow.disabled = true;
+  btnCloudPublishNow.textContent = "Publishing…";
+  try {
+    const res = await publishHtmlReport(pendingCloudReport);
+    cloudResultUrl.value = res.url;
+    cloudResultOpen.href = res.url;
+    cloudResultBox.hidden = false;
+    setStatus(`Published report online: ${res.url}`);
+    await refreshCloudReportsList();
+  } catch (err) {
+    setCloudPublishError(err instanceof Error ? err.message : String(err));
+  } finally {
+    btnCloudPublishNow.disabled = false;
+    btnCloudPublishNow.textContent = "Publish Current Report";
   }
 });
 
@@ -4652,13 +5037,23 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     aiProposal.hidden = true;
 
     try {
-      const res = await backend.aiAssist({
-        prompt: promptText,
-        cellSource: state.view.state.doc.toString(),
-        contextBefore,
-        exports: exportsCtx,
-        workspaceDir: rootDir,
-      });
+      const activeProvider = (currentConfig?.ai_provider || cfgAiProviderSelect.value || "gemini").toLowerCase();
+      const res =
+        activeProvider === "physpy_cloud"
+          ? await callCloudAiAssist({
+              prompt: promptText,
+              cellSource: state.view.state.doc.toString(),
+              contextBefore,
+              exports: exportsCtx,
+              extraSystemPrompt: currentConfig?.ai_system_prompt || cfgAiSystemPromptInput.value.trim(),
+            })
+          : await backend.aiAssist({
+              prompt: promptText,
+              cellSource: state.view.state.doc.toString(),
+              contextBefore,
+              exports: exportsCtx,
+              workspaceDir: rootDir,
+            });
       proposedAiCode = res.code;
       aiStatusBar.hidden = true;
       const tokParts: string[] = [];
@@ -8467,12 +8862,21 @@ async function sendAiChatMessage(): Promise<void> {
       : "";
     const exportsPayload = includeCtx ? { ...sessionRuntimeExports } : {};
 
-    const res = await backend.aiChat({
-      messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
-      notebookSource,
-      exports: exportsPayload,
-      workspaceDir: rootDir,
-    });
+    const activeProvider = (currentConfig?.ai_provider || cfgAiProviderSelect.value || "gemini").toLowerCase();
+    const res =
+      activeProvider === "physpy_cloud"
+        ? await callCloudAiChat({
+            messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+            notebookSource,
+            exports: exportsPayload,
+            extraSystemPrompt: currentConfig?.ai_system_prompt || cfgAiSystemPromptInput.value.trim(),
+          })
+        : await backend.aiChat({
+            messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+            notebookSource,
+            exports: exportsPayload,
+            workspaceDir: rootDir,
+          });
 
     session.messages.push({
       role: "assistant",

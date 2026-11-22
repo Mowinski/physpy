@@ -160,14 +160,7 @@ export function generateStaticNotebookHtml(
     // Outputs
     const outputParts: string[] = [];
 
-    // 1. Exported bar
-    const exportedKeys = Object.keys(c.lastExported || {});
-    if (exportedKeys.length > 0) {
-      const formatted = exportedKeys.map((k) => `${k} = ${c.lastExported[k]}`).join(", ");
-      outputParts.push(`<div class="nb-exported">↳ exported: ${escapeHtml(formatted)}</div>`);
-    }
-
-    // 2. KaTeX LaTeX display
+    // 1. KaTeX LaTeX display
     if (c.lastLatex) {
       outputParts.push(`<div class="nb-latex">${c.latexWrap.innerHTML}</div>`);
     }
@@ -432,16 +425,6 @@ export function generateStaticNotebookHtml(
       padding: 12px 16px;
       background: var(--card-bg);
       border-top: 1px solid var(--border);
-    }
-    .nb-exported {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--green);
-      padding: 4px 8px;
-      background: rgba(152, 195, 121, 0.08);
-      border-left: 3px solid var(--green);
-      margin-bottom: 10px;
-      border-radius: 2px;
     }
     .nb-latex {
       padding: 10px 0;
