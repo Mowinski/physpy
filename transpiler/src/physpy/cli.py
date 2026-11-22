@@ -19,7 +19,12 @@ from .ai import run_ai_cli
 from .errors import TranspileError
 from .notebook import NotebookSession, run_worker, split_cells
 from .pipeline import compile_source, transpile
-from .units import load_constant_overrides_from_config, set_constant_overrides
+from .units import (
+    load_constant_overrides_from_config,
+    load_custom_constants_from_config,
+    set_constant_overrides,
+    set_custom_constants,
+)
 
 
 def _read(path: str) -> str:
@@ -60,6 +65,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     sys.argv = [filename]
 
     cells = split_cells(src)
+    set_custom_constants(load_custom_constants_from_config(script_dir))
     set_constant_overrides(load_constant_overrides_from_config(script_dir))
     # Multi-cell or `export`/`global`-using file: run cell by cell with isolated scopes
     session = NotebookSession()

@@ -11,13 +11,50 @@ export interface PhysicalConstantDef {
 /** Built-in physical constants with Pint units. Single source of truth shared with the Python transpiler. */
 export const PHYSICAL_CONSTANTS: Record<string, PhysicalConstantDef> = physicalConstantsTable;
 
+const CONST_NAME_RE = /^[A-Za-z0-9_]+$/;
+let customConstants: Record<string, PhysicalConstantDef> = {};
 let constantOverrides: Record<string, number> = {};
 
-/** Set active numeric overrides for built-in physical constants. */
+/** Return true if `name` is a valid `\const{name}` identifier. */
+export function isValidConstantName(name: string): boolean {
+  return CONST_NAME_RE.test(name);
+}
+
+/** Set active user-defined physical constants. */
+export function setCustomConstants(custom: Record<string, PhysicalConstantDef>): void {
+  const next: Record<string, PhysicalConstantDef> = {};
+  for (const [k, v] of Object.entries(custom)) {
+    if (
+      CONST_NAME_RE.test(k) &&
+      !(k in PHYSICAL_CONSTANTS) &&
+      v &&
+      typeof v.value === "number" &&
+      Number.isFinite(v.value)
+    ) {
+      const unit = typeof v.unit === "string" && v.unit.trim() ? v.unit.trim() : "dimensionless";
+      const latex = typeof v.latex === "string" && v.latex.trim() ? v.latex.trim() : k;
+      const label = typeof v.label === "string" ? v.label.trim() : "";
+      next[k] = { value: v.value, unit, latex, label };
+    }
+  }
+  customConstants = next;
+}
+
+/** Return a shallow copy of active user-defined physical constants. */
+export function getCustomConstants(): Record<string, PhysicalConstantDef> {
+  return { ...customConstants };
+}
+
+/** Return combined built-in and user-defined physical constants. */
+export function getAllConstants(): Record<string, PhysicalConstantDef> {
+  return { ...PHYSICAL_CONSTANTS, ...customConstants };
+}
+
+/** Set active numeric overrides for built-in and custom physical constants. */
 export function setConstantOverrides(overrides: Record<string, number>): void {
   const next: Record<string, number> = {};
   for (const [k, v] of Object.entries(overrides)) {
-    if (k in PHYSICAL_CONSTANTS && typeof v === "number" && Number.isFinite(v)) {
+    if ((k in PHYSICAL_CONSTANTS || k in customConstants) && typeof v === "number" && Number.isFinite(v)) {
       next[k] = v;
     }
   }
@@ -29,11 +66,12 @@ export function getConstantOverrides(): Record<string, number> {
   return { ...constantOverrides };
 }
 
-/** Return effective definition (with any active override applied) for a built-in physical constant. */
+/** Return effective definition (with any active override applied) for a built-in or custom physical constant. */
 export function getEffectiveConstant(
   name: string,
-): (PhysicalConstantDef & { overridden: boolean; defaultValue: number }) | undefined {
-  const base = PHYSICAL_CONSTANTS[name];
+): (PhysicalConstantDef & { overridden: boolean; defaultValue: number; isCustom: boolean }) | undefined {
+  const isCustom = !(name in PHYSICAL_CONSTANTS) && name in customConstants;
+  const base = PHYSICAL_CONSTANTS[name] ?? customConstants[name];
   if (!base) return undefined;
   const hasOverride = Object.prototype.hasOwnProperty.call(constantOverrides, name);
   return {
@@ -41,6 +79,7 @@ export function getEffectiveConstant(
     value: hasOverride ? constantOverrides[name] : base.value,
     overridden: hasOverride,
     defaultValue: base.value,
+    isCustom,
   };
 }
 

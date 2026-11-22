@@ -326,8 +326,15 @@
                     </div>
                   </div>
                   <p class="settings-hint">
-                    Override built-in <code>\const{name}</code> values globally or per workspace (e.g. local gravity <code>g = 9.8123</code>). Leave empty to use the CODATA/SI default.
+                    Override built-in <code>\const{name}</code> values or define custom <code>\const{name}</code> constants globally or per workspace. Leave overrides empty to use defaults.
                   </p>
+                  <div class="constants-add-bar">
+                    <input id="cfg-const-add-name" type="text" class="constants-filter-input constants-add-name" placeholder="Name (e.g. rho_w)" autocomplete="off" spellcheck="false" />
+                    <input id="cfg-const-add-val" type="text" inputmode="decimal" class="constants-filter-input constants-add-val" placeholder="Value (e.g. 1000)" autocomplete="off" spellcheck="false" />
+                    <input id="cfg-const-add-unit" type="text" class="constants-filter-input constants-add-unit" placeholder="Unit (e.g. kg/m^3)" autocomplete="off" spellcheck="false" />
+                    <input id="cfg-const-add-label" type="text" class="constants-filter-input constants-add-label" placeholder="Description (optional)" autocomplete="off" />
+                    <button id="btn-cfg-add-constant" type="button" class="constants-add-btn">+ Add Constant</button>
+                  </div>
                   <div id="cfg-constants-list" class="constants-table-wrap"></div>
                 </div>
               </div>
@@ -412,6 +419,13 @@
                   <button id="btn-drawer-reset-constants" type="button" title="Reset all constant overrides to default">↺ Reset All</button>
                   <button id="btn-drawer-constants-settings" type="button" title="Open Settings to persist overrides to Global or Workspace YAML">⚙ Persist in Settings…</button>
                 </div>
+              </div>
+              <div class="constants-add-bar constants-add-bar-drawer">
+                <input id="drawer-const-add-name" type="text" class="constants-filter-input constants-add-name" placeholder="Name (e.g. rho_w)" autocomplete="off" spellcheck="false" />
+                <input id="drawer-const-add-val" type="text" inputmode="decimal" class="constants-filter-input constants-add-val" placeholder="Value (e.g. 1000)" autocomplete="off" spellcheck="false" />
+                <input id="drawer-const-add-unit" type="text" class="constants-filter-input constants-add-unit" placeholder="Unit (e.g. kg/m^3)" autocomplete="off" spellcheck="false" />
+                <input id="drawer-const-add-label" type="text" class="constants-filter-input constants-add-label" placeholder="Description (optional)" autocomplete="off" />
+                <button id="btn-drawer-add-constant" type="button" class="constants-add-btn">+ Add Constant</button>
               </div>
               <div class="table-wrapper">
                 <table id="constants-table">

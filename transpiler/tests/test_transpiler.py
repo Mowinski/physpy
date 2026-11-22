@@ -113,3 +113,11 @@ def test_accented_symbol_errors():
         to_source("x = \\bar{\\unknown}\n")
     with pytest.raises(TranspileError):
         to_source("x = \\bar{\\i}\n")
+
+
+def test_pi_constant():
+    assert to_source("a = \\pi\n") == "a = 3.141592653589793\n"
+    assert to_source("c = 2\\pi * r\n") == "c = 2* 3.141592653589793 * r\n"
+    assert to_source("c = 2.5\\pi\n") == "c = 2.5* 3.141592653589793\n"
+    assert to_source("x = -\\pi\n") == "x = -3.141592653589793\n"
+    assert to_source("\\pi_0 = 1\n") == "π_0 = 1\n"

@@ -177,6 +177,13 @@ export interface SignatureHelpInfo {
   doc?: string;
 }
 
+export interface CustomConstantDef {
+  value: number;
+  unit: string;
+  latex: string;
+  label: string;
+}
+
 export interface AppConfig {
   font_family: string;
   font_size: number;
@@ -196,6 +203,7 @@ export interface AppConfig {
   ai_api_key?: string;
   ai_system_prompt?: string;
   constants?: Record<string, number>;
+  custom_constants?: Record<string, CustomConstantDef>;
   resolved_startup_dir: string;
   global_config_path: string;
   workspace_config_path: string | null;
@@ -240,6 +248,9 @@ export const saveConfigScope = (
 
 export const setConstantOverrides = (constants: Record<string, number>) =>
   invoke<void>("set_constant_overrides", { constants });
+
+export const setCustomConstants = (customConstants: Record<string, CustomConstantDef>) =>
+  invoke<void>("set_custom_constants", { customConstants });
 
 export function onMenuOpenSettings(handler: () => void): void {
   if (!inTauri) return;
