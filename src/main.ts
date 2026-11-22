@@ -34,7 +34,10 @@ import {
   type CodeExportVisibility,
 } from "./htmlExport";
 import {
+  callCloudAiAssist,
+  callCloudAiChat,
   deletePublishedReport,
+  getCloudAccountStatus,
   getCurrentCloudUser,
   listMyPublishedReports,
   onCloudAuthChange,
@@ -272,6 +275,18 @@ const cfgAutoSaveSelect = $<HTMLSelectElement>("cfg-auto-save");
 const cfgAutoSaveDelayInput = $<HTMLInputElement>("cfg-auto-save-delay");
 const cfgAutoSaveDelayRow = $<HTMLDivElement>("cfg-auto-save-delay-row");
 const cfgAiProviderSelect = $<HTMLSelectElement>("cfg-ai-provider");
+const cfgAiCloudPanel = $<HTMLDivElement>("cfg-ai-cloud-panel");
+const cfgCloudSignedOut = $<HTMLDivElement>("cfg-cloud-signed-out");
+const cfgCloudSignedIn = $<HTMLDivElement>("cfg-cloud-signed-in");
+const cfgCloudEmailInput = $<HTMLInputElement>("cfg-cloud-email");
+const cfgCloudPasswordInput = $<HTMLInputElement>("cfg-cloud-password");
+const cfgCloudAuthError = $<HTMLParagraphElement>("cfg-cloud-auth-error");
+const btnCfgCloudSignin = $<HTMLButtonElement>("btn-cfg-cloud-signin");
+const btnCfgCloudSignup = $<HTMLButtonElement>("btn-cfg-cloud-signup");
+const cfgCloudUserInfo = $<HTMLSpanElement>("cfg-cloud-user-info");
+const btnCfgCloudSignout = $<HTMLButtonElement>("btn-cfg-cloud-signout");
+const cfgAiLocalModelRow = $<HTMLDivElement>("cfg-ai-local-model-row");
+const cfgAiApiKeyRow = $<HTMLDivElement>("cfg-ai-api-key-row");
 const cfgAiModelSelect = $<HTMLSelectElement>("cfg-ai-model-select");
 const cfgAiModelInput = $<HTMLInputElement>("cfg-ai-model");
 const btnCfgAiRefreshModels = $<HTMLButtonElement>("btn-cfg-ai-refresh-models");
@@ -1594,7 +1609,10 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       const n = parseInt(val, 10);
       if (!Number.isNaN(n)) cfgAutoSaveDelayInput.value = String(n);
     } else if (key === "ai_provider" || key === "aiProvider" || key === "ai.provider") {
-      if (val.toLowerCase() === "gemini") cfgAiProviderSelect.value = "gemini";
+      const p = val.toLowerCase();
+      if (p === "gemini" || p === "physpy_cloud") {
+        cfgAiProviderSelect.value = p;
+      }
     } else if (key === "ai_model" || key === "aiModel" || key === "ai.model" || key === "gemini_model") {
       renderAiModelSelectOptions(val || DEFAULT_AI_MODEL);
     } else if (key === "ai_api_key" || key === "aiApiKey" || key === "ai.api_key" || key === "gemini_api_key") {
@@ -1606,6 +1624,7 @@ function syncSettingsFormFromYamlText(yamlText: string) {
   updateStartupFileRowVisibility();
   updateAutoSaveDelayRowVisibility();
   updateTabSizeRowVisibility();
+  updateAiProviderRowsVisibility();
   settingsConstantOverrides = parsedConstants;
   renderSettingsConstantsTable();
 }
@@ -2609,12 +2628,78 @@ async function refreshCloudReportsList() {
   }
 }
 
+function updateAiProviderRowsVisibility() {
+  const isCloud = cfgAiProviderSelect.value === "physpy_cloud";
+  cfgAiCloudPanel.hidden = !isCloud;
+  cfgAiLocalModelRow.hidden = isCloud;
+  cfgAiApiKeyRow.hidden = isCloud;
+  if (isCloud && getCurrentCloudUser()) {
+    void refreshSettingsCloudStatus();
+  }
+}
+
+async function refreshSettingsCloudStatus() {
+  const user = getCurrentCloudUser();
+  if (!user) return;
+  cfgCloudUserInfo.textContent = `${user.email || user.uid} · Loading quota…`;
+  try {
+    const st = await getCloudAccountStatus();
+    cfgCloudUserInfo.textContent = `${st.email || st.uid} · ${st.plan.toUpperCase()} (${st.aiRequestsToday}/${st.aiDailyLimit} AI today)`;
+  } catch {
+    cfgCloudUserInfo.textContent = `${user.email || user.uid} · Signed in`;
+  }
+}
+
+cfgAiProviderSelect.addEventListener("change", () => {
+  updateAiProviderRowsVisibility();
+});
+
+btnCfgCloudSignin.addEventListener("click", async () => {
+  cfgCloudAuthError.hidden = true;
+  btnCfgCloudSignin.disabled = true;
+  try {
+    await signInCloud(cfgCloudEmailInput.value.trim(), cfgCloudPasswordInput.value);
+  } catch (err) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btnCfgCloudSignin.disabled = false;
+  }
+});
+
+btnCfgCloudSignup.addEventListener("click", async () => {
+  cfgCloudAuthError.hidden = true;
+  const email = cfgCloudEmailInput.value.trim();
+  const password = cfgCloudPasswordInput.value;
+  if (!email || password.length < 6) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = "Enter a valid email and a password of at least 6 characters.";
+    return;
+  }
+  btnCfgCloudSignup.disabled = true;
+  try {
+    await signUpCloud(email, password);
+  } catch (err) {
+    cfgCloudAuthError.hidden = false;
+    cfgCloudAuthError.textContent = err instanceof Error ? err.message : String(err);
+  } finally {
+    btnCfgCloudSignup.disabled = false;
+  }
+});
+
+btnCfgCloudSignout.addEventListener("click", async () => {
+  await signOutCloud();
+});
+
 onCloudAuthChange((user) => {
   if (user) {
     cloudAuthForm.hidden = true;
     cloudPublishView.hidden = false;
     cloudUserBadge.hidden = false;
     cloudUserBadge.textContent = user.email || user.uid;
+    cfgCloudSignedOut.hidden = true;
+    cfgCloudSignedIn.hidden = false;
+    void refreshSettingsCloudStatus();
     if (publishCloudDialog.open) {
       void refreshCloudReportsList();
     }
@@ -2624,6 +2709,9 @@ onCloudAuthChange((user) => {
     cloudUserBadge.hidden = true;
     cloudUserBadge.textContent = "";
     cloudResultBox.hidden = true;
+    cfgCloudSignedOut.hidden = false;
+    cfgCloudSignedIn.hidden = true;
+    cfgCloudUserInfo.textContent = "Signed out";
   }
 });
 
@@ -4949,13 +5037,23 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     aiProposal.hidden = true;
 
     try {
-      const res = await backend.aiAssist({
-        prompt: promptText,
-        cellSource: state.view.state.doc.toString(),
-        contextBefore,
-        exports: exportsCtx,
-        workspaceDir: rootDir,
-      });
+      const activeProvider = (currentConfig?.ai_provider || cfgAiProviderSelect.value || "gemini").toLowerCase();
+      const res =
+        activeProvider === "physpy_cloud"
+          ? await callCloudAiAssist({
+              prompt: promptText,
+              cellSource: state.view.state.doc.toString(),
+              contextBefore,
+              exports: exportsCtx,
+              extraSystemPrompt: currentConfig?.ai_system_prompt || cfgAiSystemPromptInput.value.trim(),
+            })
+          : await backend.aiAssist({
+              prompt: promptText,
+              cellSource: state.view.state.doc.toString(),
+              contextBefore,
+              exports: exportsCtx,
+              workspaceDir: rootDir,
+            });
       proposedAiCode = res.code;
       aiStatusBar.hidden = true;
       const tokParts: string[] = [];
@@ -8764,12 +8862,21 @@ async function sendAiChatMessage(): Promise<void> {
       : "";
     const exportsPayload = includeCtx ? { ...sessionRuntimeExports } : {};
 
-    const res = await backend.aiChat({
-      messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
-      notebookSource,
-      exports: exportsPayload,
-      workspaceDir: rootDir,
-    });
+    const activeProvider = (currentConfig?.ai_provider || cfgAiProviderSelect.value || "gemini").toLowerCase();
+    const res =
+      activeProvider === "physpy_cloud"
+        ? await callCloudAiChat({
+            messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+            notebookSource,
+            exports: exportsPayload,
+            extraSystemPrompt: currentConfig?.ai_system_prompt || cfgAiSystemPromptInput.value.trim(),
+          })
+        : await backend.aiChat({
+            messages: session.messages.map((m) => ({ role: m.role, content: m.content })),
+            notebookSource,
+            exports: exportsPayload,
+            workspaceDir: rootDir,
+          });
 
     session.messages.push({
       role: "assistant",

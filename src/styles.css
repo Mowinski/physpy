@@ -5327,3 +5327,34 @@ dialog.matrix-modal::backdrop {
   gap: 8px;
   flex-shrink: 0;
 }
+
+.cfg-cloud-panel {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.02);
+  margin-bottom: 10px;
+}
+
+.cfg-cloud-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.cfg-cloud-actions button {
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg, #181a1f);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cfg-cloud-actions button.primary {
+  background: var(--accent, #61afef);
+  border-color: var(--accent, #61afef);
+  color: #11161d;
+  font-weight: 600;
+}

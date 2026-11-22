@@ -232,14 +232,42 @@
                 </div>
 
                 <div class="settings-card">
-                  <h3>7. AI Cell Assistant (Gemini)</h3>
+                  <h3>7. AI Cell Assistant</h3>
                   <div class="settings-field">
                     <label for="cfg-ai-provider">Provider (<code>ai_provider</code>)</label>
                     <select id="cfg-ai-provider" class="settings-select">
-                      <option value="gemini">Google Gemini</option>
+                      <option value="gemini">Google Gemini (Own API Key)</option>
+                      <option value="physpy_cloud">PhysPy Cloud Agent (Managed)</option>
                     </select>
                   </div>
-                  <div class="settings-field">
+
+                  <div id="cfg-ai-cloud-panel" class="cfg-cloud-panel" hidden>
+                    <div id="cfg-cloud-signed-out">
+                      <div class="settings-field">
+                        <label for="cfg-cloud-email">PhysPy Cloud Email</label>
+                        <input id="cfg-cloud-email" type="email" placeholder="you@example.com" autocomplete="email" />
+                      </div>
+                      <div class="settings-field">
+                        <label for="cfg-cloud-password">Password</label>
+                        <input id="cfg-cloud-password" type="password" placeholder="Min. 6 characters" autocomplete="current-password" />
+                      </div>
+                      <p id="cfg-cloud-auth-error" class="cloud-error-msg" hidden></p>
+                      <div class="cfg-cloud-actions">
+                        <button id="btn-cfg-cloud-signin" type="button" class="primary">Sign In</button>
+                        <button id="btn-cfg-cloud-signup" type="button">Create Account</button>
+                      </div>
+                    </div>
+
+                    <div id="cfg-cloud-signed-in" hidden>
+                      <div class="cloud-account-bar">
+                        <span id="cfg-cloud-user-info" class="cloud-quota-text">Signed in</span>
+                        <button id="btn-cfg-cloud-signout" type="button" class="export-link-btn">Sign Out</button>
+                      </div>
+                      <span class="settings-hint">Model is managed automatically by PhysPy Cloud based on your plan.</span>
+                    </div>
+                  </div>
+
+                  <div class="settings-field" id="cfg-ai-local-model-row">
                     <label for="cfg-ai-model-select">Model (<code>ai_model</code>)</label>
                     <div class="dialog-input-group">
                       <select id="cfg-ai-model-select" class="settings-select">
@@ -257,7 +285,7 @@
                     />
                     <span id="cfg-ai-models-status" class="settings-hint">Click "Fetch Models" after entering an API key to load available models.</span>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" id="cfg-ai-api-key-row">
                     <label for="cfg-ai-api-key">Gemini API Key (<code>ai_api_key</code>)</label>
                     <div class="dialog-input-group">
                       <input

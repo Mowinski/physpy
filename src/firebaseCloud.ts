@@ -191,3 +191,98 @@ export async function deletePublishedReport(reportId: string): Promise<void> {
     throw new Error(await parseErrorResponse(res));
   }
 }
+
+export interface CloudAccountStatus {
+  uid: string;
+  email: string | null;
+  plan: "free" | "pro";
+  maxReports: number;
+  reportsCount: number;
+  aiDailyLimit: number;
+  aiRequestsToday: number;
+  aiTokensTotal: number;
+}
+
+export async function getCloudAccountStatus(): Promise<CloudAccountStatus> {
+  const token = await getRequiredIdToken();
+  const res = await fetch(`${getFunctionsBaseUrl()}/getCloudAccountStatus`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res));
+  }
+  return (await res.json()) as CloudAccountStatus;
+}
+
+export interface CloudAiAssistParams {
+  prompt: string;
+  cellSource: string;
+  contextBefore: string;
+  exports: Record<string, string>;
+  extraSystemPrompt?: string;
+  model?: string;
+}
+
+export interface CloudAiAssistResult {
+  code: string;
+  explanation?: string;
+  model?: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+export async function callCloudAiAssist(
+  params: CloudAiAssistParams,
+): Promise<CloudAiAssistResult> {
+  const token = await getRequiredIdToken();
+  const res = await fetch(`${getFunctionsBaseUrl()}/cloudAiAssist`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res));
+  }
+  return (await res.json()) as CloudAiAssistResult;
+}
+
+export interface CloudAiChatParams {
+  messages: { role: string; content: string }[];
+  notebookSource: string;
+  exports: Record<string, string>;
+  extraSystemPrompt?: string;
+  model?: string;
+}
+
+export interface CloudAiChatResult {
+  reply: string;
+  model?: string;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+export async function callCloudAiChat(
+  params: CloudAiChatParams,
+): Promise<CloudAiChatResult> {
+  const token = await getRequiredIdToken();
+  const res = await fetch(`${getFunctionsBaseUrl()}/cloudAiChat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res));
+  }
+  return (await res.json()) as CloudAiChatResult;
+}

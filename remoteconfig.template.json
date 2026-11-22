@@ -1,0 +1,18 @@
+{
+  "parameters": {
+    "ai_model_free": {
+      "defaultValue": {
+        "value": "gemini-2.5-flash"
+      },
+      "description": "Gemini model used by PhysPy Cloud Agent for Free plan users.",
+      "valueType": "STRING"
+    },
+    "ai_model_pro": {
+      "defaultValue": {
+        "value": "gemini-2.5-pro"
+      },
+      "description": "Gemini model used by PhysPy Cloud Agent for Pro plan users.",
+      "valueType": "STRING"
+    }
+  }
+}
