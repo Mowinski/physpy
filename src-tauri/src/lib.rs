@@ -257,6 +257,8 @@ pub struct AppConfig {
     pub line_numbers: bool,
     #[serde(default = "default_true")]
     pub format_on_save: bool,
+    #[serde(default)]
+    pub hide_unsupported_files: bool,
     #[serde(default = "default_indent_type")]
     pub indent_type: String,
     #[serde(default = "default_tab_size")]
@@ -1215,6 +1217,11 @@ fn apply_yaml_config_str(yaml_src: &str, base_dir: Option<&Path>, cfg: &mut AppC
                     cfg.format_on_save = b;
                 }
             }
+            "hide_unsupported_files" | "hideUnsupportedFiles" => {
+                if let Some(b) = parse_yaml_bool(&scalar) {
+                    cfg.hide_unsupported_files = b;
+                }
+            }
             "indent_type" | "indentType" | "editor.indentType" | "tab_mode" | "tabMode" => {
                 let m = scalar.trim().to_ascii_lowercase();
                 if matches!(m.as_str(), "tab" | "tabs") {
@@ -1334,6 +1341,7 @@ fn resolve_hierarchical_config(workspace_dir: Option<String>) -> AppConfig {
         matrix_font_size: 135.0,
         line_numbers: true,
         format_on_save: true,
+        hide_unsupported_files: false,
         indent_type: "spaces".to_string(),
         tab_size: 4,
         python_path: String::new(),
@@ -1489,6 +1497,7 @@ fn read_config_scope(
             matrix_font_size: 135.0,
             line_numbers: true,
             format_on_save: true,
+            hide_unsupported_files: false,
             indent_type: "spaces".to_string(),
             tab_size: 4,
             python_path: String::new(),
@@ -2740,6 +2749,7 @@ mod tests {
             matrix_font_size: 135.0,
             line_numbers: true,
             format_on_save: true,
+            hide_unsupported_files: false,
             indent_type: "spaces".to_string(),
             tab_size: 4,
             python_path: String::new(),

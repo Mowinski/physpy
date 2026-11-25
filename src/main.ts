@@ -28,6 +28,7 @@ import { convertIpynbToPpy } from "./ipynbImport";
 import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLatex";
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
 import { LatexEditorController } from "./latexEditor";
+import { PdfViewerController } from "./pdfViewer";
 import { toRelativePath } from "./pathUtils";
 import {
   generateStaticNotebookHtml,
@@ -140,7 +141,7 @@ interface NotebookOutputsFile {
   cells: (SavedCellOutput | null)[];
 }
 
-type TabKind = "notebook" | "settings" | "csv" | "latex" | "image";
+type TabKind = "notebook" | "settings" | "csv" | "latex" | "image" | "pdf";
 
 interface TabDoc {
   id: number;
@@ -170,10 +171,23 @@ function isImagePath(path: string | null | undefined): boolean {
   return !!path && /\.(png|jpe?g|webp|svg|gif|bmp|ico)$/i.test(path.trim());
 }
 
+function isPdfPath(path: string | null | undefined): boolean {
+  return !!path && /\.pdf$/i.test(path.trim());
+}
+
+function isSupportedFilePath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  const lower = path.trim().toLowerCase();
+  return /\.(ppy|py|ipynb|tex|bib|sty|cls|csv|tsv|pdf|png|jpe?g|webp|svg|gif|bmp|ico|md|txt|json|toml|ya?ml)$/.test(
+    lower,
+  );
+}
+
 function resolveTabKindForPath(path: string | null | undefined): TabKind {
   if (isCsvPath(path)) return "csv";
   if (isLatexPath(path)) return "latex";
   if (isImagePath(path)) return "image";
+  if (isPdfPath(path)) return "pdf";
   return "notebook";
 }
 
@@ -196,8 +210,10 @@ const settingsViewEl = $<HTMLDivElement>("settings-view");
 const csvViewEl = $<HTMLDivElement>("csv-view");
 const latexViewEl = $<HTMLDivElement>("latex-view");
 const imageViewEl = $<HTMLDivElement>("image-view");
+const pdfViewEl = $<HTMLDivElement>("pdf-view");
 let csvEditor: CsvEditorController | null = null;
 let latexEditor: LatexEditorController | null = null;
+let pdfViewer: PdfViewerController | null = null;
 
 function getCsvEditor(): CsvEditorController {
   if (!csvEditor) {
@@ -241,6 +257,17 @@ function getLatexEditor(): LatexEditorController {
   return latexEditor;
 }
 
+function getPdfViewer(): PdfViewerController {
+  if (!pdfViewer) {
+    pdfViewer = new PdfViewerController({
+      container: pdfViewEl,
+      readBinaryFile: (path) => backend.readBinaryFile(path, null),
+      setStatus: (msg) => setStatus(msg),
+    });
+  }
+  return pdfViewer;
+}
+
 function getActiveTabSerializedContent(): string {
   const cur = activeTab();
   if (cur?.kind === "csv") {
@@ -249,7 +276,7 @@ function getActiveTabSerializedContent(): string {
   if (cur?.kind === "latex") {
     return latexEditor ? latexEditor.serialize() : cur.content;
   }
-  if (cur?.kind === "image") {
+  if (cur?.kind === "image" || cur?.kind === "pdf") {
     return "";
   }
   return serializeDocument();
@@ -263,6 +290,7 @@ const cfgFontSizeInput = $<HTMLInputElement>("cfg-font-size");
 const cfgMatrixFontSizeInput = $<HTMLInputElement>("cfg-matrix-font-size");
 const cfgLineNumbersInput = $<HTMLInputElement>("cfg-line-numbers");
 const cfgFormatOnSaveInput = $<HTMLInputElement>("cfg-format-on-save");
+const cfgHideUnsupportedFilesInput = $<HTMLInputElement>("cfg-hide-unsupported-files");
 const cfgIndentTypeSelect = $<HTMLSelectElement>("cfg-indent-type");
 const cfgTabSizeInput = $<HTMLInputElement>("cfg-tab-size");
 const cfgTabSizeRow = $<HTMLDivElement>("cfg-tab-size-row");
@@ -764,6 +792,9 @@ function saveActiveTabSnapshot() {
       cur.csvDelimiter = s.delimiter;
       cur.csvHasHeader = s.hasHeader;
     }
+    if (cur.kind === "pdf" && pdfViewer) {
+      pdfViewer.saveCurrentPosition();
+    }
     cur.path = currentPath;
     cur.dirty = dirty;
     if (currentConfig?.auto_save === "onFocusChange" || currentConfig?.auto_save === "onWindowChange") {
@@ -922,6 +953,7 @@ function switchToTab(tabId: number) {
     csvViewEl.hidden = true;
     latexViewEl.hidden = true;
     imageViewEl.hidden = true;
+    pdfViewEl.hidden = true;
     settingsViewEl.hidden = false;
     updateTitle();
     renderOutline();
@@ -933,6 +965,7 @@ function switchToTab(tabId: number) {
     notebookEl.hidden = true;
     latexViewEl.hidden = true;
     imageViewEl.hidden = true;
+    pdfViewEl.hidden = true;
     csvViewEl.hidden = false;
     currentPath = target.path;
     dirty = target.dirty;
@@ -954,6 +987,7 @@ function switchToTab(tabId: number) {
     notebookEl.hidden = true;
     csvViewEl.hidden = true;
     imageViewEl.hidden = true;
+    pdfViewEl.hidden = true;
     latexViewEl.hidden = false;
     currentPath = target.path;
     dirty = target.dirty;
@@ -972,6 +1006,7 @@ function switchToTab(tabId: number) {
     notebookEl.hidden = true;
     csvViewEl.hidden = true;
     latexViewEl.hidden = true;
+    pdfViewEl.hidden = true;
     imageViewEl.hidden = false;
     currentPath = target.path;
     dirty = false;
@@ -981,10 +1016,30 @@ function switchToTab(tabId: number) {
     saveSessionState();
     return;
   }
+  if (target.kind === "pdf") {
+    settingsViewEl.hidden = true;
+    notebookEl.hidden = true;
+    csvViewEl.hidden = true;
+    latexViewEl.hidden = true;
+    imageViewEl.hidden = true;
+    pdfViewEl.hidden = false;
+    currentPath = target.path;
+    dirty = false;
+    updateTitle();
+    renderOutline();
+    void getPdfViewer().load(target.path).then(() => {
+      if (activeTabId === target.id) {
+        getPdfViewer().focus();
+      }
+    });
+    saveSessionState();
+    return;
+  }
   settingsViewEl.hidden = true;
   csvViewEl.hidden = true;
   latexViewEl.hidden = true;
   imageViewEl.hidden = true;
+  pdfViewEl.hidden = true;
   notebookEl.hidden = false;
   currentPath = target.path;
   dirty = target.dirty;
@@ -1030,6 +1085,9 @@ function switchToTab(tabId: number) {
 function closeTab(tabId: number) {
   const idx = tabs.findIndex((t) => t.id === tabId);
   if (idx < 0) return;
+  if (tabId === activeTabId && tabs[idx]?.kind === "pdf") {
+    pdfViewer?.saveCurrentPosition();
+  }
   if (tabs.length === 1) {
     // Keep one clean untitled tab open
     tabs[0].kind = "notebook";
@@ -1156,6 +1214,7 @@ async function applyHierarchicalConfig(
 ): Promise<backend.AppConfig | null> {
   if (!backend.inTauri) return null;
   try {
+    const prevHideUnsupported = Boolean(currentConfig?.hide_unsupported_files);
     const cfg = await backend.loadConfig(workspaceDir);
     currentConfig = cfg;
     if (cfg.font_family) {
@@ -1176,6 +1235,9 @@ async function applyHierarchicalConfig(
     setGlobalIndentConfig(useTabs, tabSize);
     for (const c of cells) {
       reconfigureEditorIndent(c.view, useTabs, tabSize);
+    }
+    if (!isInitialBoot && prevHideUnsupported !== Boolean(cfg.hide_unsupported_files)) {
+      void refreshFileTree();
     }
 
     if (isInitialBoot && !rootDir && cfg.resolved_startup_dir) {
@@ -1391,6 +1453,7 @@ function buildYamlFromSettingsForm(): string {
   const matrixSize = Number(cfgMatrixFontSizeInput.value) || 135;
   const lineNums = cfgLineNumbersInput.checked;
   const formatOnSave = cfgFormatOnSaveInput.checked;
+  const hideUnsupported = cfgHideUnsupportedFilesInput.checked;
   const indentType = cfgIndentTypeSelect.value === "tab" ? "tab" : "spaces";
   const tabSize = Math.max(1, Math.min(16, Math.round(Number(cfgTabSizeInput.value) || 4)));
   const pyPath = cfgPythonPathInput.value.trim().replace(/"/g, '\\"');
@@ -1417,6 +1480,9 @@ function buildYamlFromSettingsForm(): string {
     "",
     "# 3. Format code cells on save (true / false)",
     `format_on_save: ${formatOnSave}`,
+    "",
+    "# 3b. Hide unsupported file types from file explorer (true / false)",
+    `hide_unsupported_files: ${hideUnsupported}`,
     "",
     "# 4. Indentation: spaces | tab, and spaces per Tab",
     `indent_type: ${indentType}`,
@@ -1567,6 +1633,8 @@ function syncSettingsFormFromYamlText(yamlText: string) {
       cfgLineNumbersInput.checked = /^(true|yes|on|1)$/i.test(val);
     } else if (key === "format_on_save" || key === "formatOnSave" || key === "linter_on_save") {
       cfgFormatOnSaveInput.checked = /^(true|yes|on|1)$/i.test(val);
+    } else if (key === "hide_unsupported_files" || key === "hideUnsupportedFiles") {
+      cfgHideUnsupportedFilesInput.checked = /^(true|yes|on|1)$/i.test(val);
     } else if (key === "indent_type" || key === "indentType" || key === "tab_mode" || key === "tabMode") {
       const m = val.toLowerCase();
       cfgIndentTypeSelect.value = m === "tab" || m === "tabs" ? "tab" : "spaces";
@@ -1657,6 +1725,7 @@ async function loadSettingsScope(scope: "global" | "workspace") {
     cfgMatrixFontSizeInput.value = String(data.parsed.matrix_font_size || 135);
     cfgLineNumbersInput.checked = data.parsed.line_numbers;
     cfgFormatOnSaveInput.checked = data.parsed.format_on_save !== false;
+    cfgHideUnsupportedFilesInput.checked = Boolean(data.parsed.hide_unsupported_files);
     cfgIndentTypeSelect.value = data.parsed.indent_type === "tab" ? "tab" : "spaces";
     cfgTabSizeInput.value = String(data.parsed.tab_size || 4);
     cfgPythonPathInput.value = data.parsed.python_path;
@@ -1716,6 +1785,7 @@ for (const inputEl of [
   cfgMatrixFontSizeInput,
   cfgLineNumbersInput,
   cfgFormatOnSaveInput,
+  cfgHideUnsupportedFilesInput,
   cfgTabSizeInput,
   cfgPythonPathInput,
   cfgStartupDirInput,
@@ -2836,8 +2906,8 @@ function fileIcon(name: string): string {
   if (lower.endsWith(".pdf")) return "📕";
   if (/\.(png|jpe?g|webp|svg|gif)$/.test(lower)) return "🖼";
   if (lower.endsWith(".md") || lower.endsWith(".txt")) return "📄";
-  if (lower.endsWith(".json") || lower.endsWith(".toml") || lower.endsWith(".yaml")) return "⚙";
-  return "•";
+  if (lower.endsWith(".json") || lower.endsWith(".toml") || lower.endsWith(".yaml") || lower.endsWith(".yml")) return "⚙";
+  return "❓";
 }
 
 async function promptNewFileIn(dirPath: string) {
@@ -2905,6 +2975,16 @@ async function confirmDeleteEntry(entry: backend.DirEntryItem) {
   }
 }
 
+function formatHiddenUnsupportedCount(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (count === 1) return "1 ukryty nieobsługiwany plik";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${count} ukryte nieobsługiwane pliki`;
+  }
+  return `${count} ukrytych nieobsługiwanych plików`;
+}
+
 async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: number) {
   const seq = Number(container.dataset.renderSeq || "0") + 1;
   container.dataset.renderSeq = String(seq);
@@ -2925,15 +3005,23 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
   if (container.dataset.renderSeq !== String(seq)) return;
   container.innerHTML = "";
 
-  if (entries.length === 0 && depth === 0) {
+  const visibleEntries = currentConfig?.hide_unsupported_files
+    ? entries.filter((entry) => entry.is_dir || isSupportedFilePath(entry.name))
+    : entries;
+  const hiddenCount = entries.length - visibleEntries.length;
+
+  if (visibleEntries.length === 0 && depth === 0) {
     const emptyEl = document.createElement("div");
     emptyEl.className = "tree-empty";
-    emptyEl.textContent = "Empty folder";
+    emptyEl.textContent =
+      hiddenCount > 0
+        ? `Brak obsługiwanych plików (${formatHiddenUnsupportedCount(hiddenCount)})`
+        : "Empty folder";
     container.append(emptyEl);
     return;
   }
 
-  for (const entry of entries) {
+  for (const entry of visibleEntries) {
     const itemWrap = document.createElement("div");
     itemWrap.className = "tree-item";
 
@@ -3000,12 +3088,18 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
     } else {
       const isIpynb = entry.name.toLowerCase().endsWith(".ipynb");
       const isImage = isImagePath(entry.name);
+      const isPdf = isPdfPath(entry.name);
       const isMedia = isMediaFilename(entry.name);
+      const isSupported = isSupportedFilePath(entry.name);
       icon.textContent = fileIcon(entry.name);
+      if (!isSupported) {
+        row.classList.add("is-unsupported");
+        row.title = `${entry.path} (nieobsługiwany typ pliku)`;
+      }
       row.addEventListener("click", () => {
         if (isIpynb) {
           void openIpynbImportDialog(entry.path);
-        } else if (isImage) {
+        } else if (isImage || isPdf) {
           void openFileByPath(entry.path);
         } else if (isMedia) {
           insertMediaCellWithFile(entry.path);
@@ -3033,6 +3127,12 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
             run: () => openFileByPath(entry.path),
           });
         }
+        if (isPdf) {
+          actions.push({
+            label: "📕 Open PDF in Tab",
+            run: () => openFileByPath(entry.path),
+          });
+        }
         if (isMedia) {
           actions.push(
             {
@@ -3044,7 +3144,11 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
         }
         if (!isMedia) {
           actions.push({
-            label: isIpynb ? "Open Raw JSON in Tab" : "Open in Tab",
+            label: isIpynb
+              ? "Open Raw JSON in Tab"
+              : isSupported
+                ? "Open in Tab"
+                : "❓ Open as Text in Tab",
             run: () => openFileByPath(entry.path),
           });
         }
@@ -3062,6 +3166,14 @@ async function renderTreeBranch(container: HTMLElement, dirPath: string, depth: 
     }
 
     container.append(itemWrap);
+  }
+
+  if (hiddenCount > 0) {
+    const hiddenInfo = document.createElement("div");
+    hiddenInfo.className = "tree-hidden-info";
+    hiddenInfo.style.paddingLeft = `${10 + depth * 14}px`;
+    hiddenInfo.textContent = formatHiddenUnsupportedCount(hiddenCount);
+    container.append(hiddenInfo);
   }
 }
 
@@ -3157,7 +3269,10 @@ async function changeRootFolder(): Promise<boolean> {
   return true;
 }
 
-async function openFileByPath(path: string) {
+async function openFileByPath(
+  path: string,
+  opts?: { skipUnsupportedConfirm?: boolean },
+) {
   if (!requireTauri()) return;
   if (/\.physpy-config\.ya?ml$/i.test(path)) {
     openSettingsTab("workspace");
@@ -3173,8 +3288,15 @@ async function openFileByPath(path: string) {
     setStatus(`Switched to ${path}`);
     return;
   }
+  if (!opts?.skipUnsupportedConfirm && !isSupportedFilePath(path)) {
+    const fileName = path.split(/[\\/]/).pop() ?? path;
+    const confirmed = window.confirm(
+      `Plik "${fileName}" nie jest obsługiwany przez PhysPy.\n\nCzy na pewno chcesz otworzyć go jako plik tekstowy?`,
+    );
+    if (!confirmed) return;
+  }
   try {
-    const contents = isImagePath(path) ? "" : await backend.readFileByPath(path);
+    const contents = isImagePath(path) || isPdfPath(path) ? "" : await backend.readFileByPath(path);
     // Replace current tab if it is an untouched untitled tab
     const cur = activeTab();
     if (cur && !cur.path && !cur.dirty && tabs.length === 1) {
@@ -3947,7 +4069,7 @@ function markDirty() {
   const curKind = activeTab()?.kind;
   if (curKind === "latex") {
     renderOutline();
-  } else if (curKind !== "csv" && curKind !== "image" && curKind !== "settings") {
+  } else if (curKind !== "csv" && curKind !== "image" && curKind !== "pdf" && curKind !== "settings") {
     renderSessionExports();
     renderOutline();
     clearTimeout(transpileTimer);
@@ -6745,6 +6867,9 @@ async function saveFile(): Promise<boolean> {
     return true;
   }
   const cur = activeTab();
+  if (cur?.kind === "image" || cur?.kind === "pdf") {
+    return true;
+  }
   if (cur && cur.kind === "notebook") {
     const shouldFormat = currentConfig ? currentConfig.format_on_save !== false : true;
     if (shouldFormat) {
@@ -7101,7 +7226,7 @@ function renderOutline(): void {
   listEl.innerHTML = "";
 
   const cur = activeTab();
-  if (!cur || cur.kind === "settings" || cur.kind === "csv" || cur.kind === "image") {
+  if (!cur || cur.kind === "settings" || cur.kind === "csv" || cur.kind === "image" || cur.kind === "pdf") {
     countEl.textContent = "";
     const empty = document.createElement("div");
     empty.className = "outline-empty";
@@ -9187,7 +9312,7 @@ async function initializeAppStartup() {
         if (Array.isArray(session.fileTabs) && session.fileTabs.length > 0) {
           for (const filePath of session.fileTabs) {
             try {
-              const contents = isImagePath(filePath) ? "" : await backend.readFileByPath(filePath);
+              const contents = isImagePath(filePath) || isPdfPath(filePath) ? "" : await backend.readFileByPath(filePath);
               createNewTab({ path: filePath, content: contents, dirty: false });
               restoredAny = true;
             } catch {
@@ -9236,5 +9361,9 @@ async function initializeAppStartup() {
     cells[0].view.focus();
   }
 }
+
+window.addEventListener("beforeunload", () => {
+  pdfViewer?.saveCurrentPosition();
+});
 
 void initializeAppStartup();

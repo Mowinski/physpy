@@ -183,6 +183,7 @@ export interface AppConfig {
   matrix_font_size?: number;
   line_numbers: boolean;
   format_on_save?: boolean;
+  hide_unsupported_files?: boolean;
   indent_type?: "spaces" | "tab" | string;
   tab_size?: number;
   python_path: string;
@@ -215,9 +216,10 @@ export const inTauri = "__TAURI_INTERNALS__" in window;
 
 const FILTERS = [
   {
-    name: "PhysPy, LaTeX, Data & Images",
-    extensions: ["ppy", "py", "tex", "bib", "sty", "cls", "csv", "tsv", "png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"],
+    name: "PhysPy, LaTeX, PDF, Data & Images",
+    extensions: ["ppy", "py", "tex", "bib", "sty", "cls", "pdf", "csv", "tsv", "png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"],
   },
+  { name: "PDF Document", extensions: ["pdf"] },
   { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "svg", "gif", "bmp", "ico"] },
   { name: "LaTeX Document", extensions: ["tex", "bib", "sty", "cls"] },
   { name: "CSV / TSV", extensions: ["csv", "tsv"] },
@@ -413,7 +415,7 @@ export async function pickFolder(defaultDir: string | null = null): Promise<stri
 export async function openFile(): Promise<{ path: string; contents: string } | null> {
   const path = await open({ multiple: false, directory: false, filters: FILTERS });
   if (typeof path !== "string") return null;
-  if (/\.(png|jpe?g|webp|svg|gif|bmp|ico)$/i.test(path)) {
+  if (/\.(png|jpe?g|webp|svg|gif|bmp|ico|pdf)$/i.test(path)) {
     return { path, contents: "" };
   }
   return { path, contents: await invoke<string>("read_file", { path }) };
