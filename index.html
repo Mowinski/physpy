@@ -154,6 +154,19 @@
                 </div>
 
                 <div class="settings-card">
+                  <h3>File Explorer</h3>
+                  <div class="settings-field">
+                    <label class="ipynb-checkbox">
+                      <input id="cfg-hide-unsupported-files" type="checkbox" />
+                      <span>Ukryj nieobsługiwane pliki (<code>hide_unsupported_files</code>)</span>
+                    </label>
+                    <p class="settings-hint">
+                      Hides files with unsupported extensions (marked with ❓) from the sidebar file tree.
+                    </p>
+                  </div>
+                </div>
+
+                <div class="settings-card">
                   <h3>Indentation (Tab / Shift+Tab)</h3>
                   <div class="settings-field">
                     <label for="cfg-indent-type">Indent Using (<code>indent_type</code>)</label>
@@ -343,6 +356,7 @@
           <div id="csv-view" hidden></div>
           <div id="latex-view" hidden></div>
           <div id="image-view" hidden></div>
+          <div id="pdf-view" hidden></div>
           <section id="variables-drawer" hidden aria-label="Bottom panel">
             <div class="drawer-header">
               <div class="drawer-tabs" role="tablist">
