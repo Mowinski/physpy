@@ -380,13 +380,14 @@
                   <thead>
                     <tr>
                       <th scope="col" id="vars-sort-name" class="sortable-th is-sorted" title="Sort by variable name">Variable <span class="sort-indicator">▲</span></th>
+                      <th scope="col">Description</th>
                       <th scope="col" id="vars-sort-defined" class="sortable-th" title="Sort by cell and line">Defined in <span class="sort-indicator"></span></th>
                       <th scope="col">Value</th>
                     </tr>
                   </thead>
                   <tbody id="variables-tbody">
                     <tr>
-                      <td colspan="3" class="exports-empty">No exported variables in this file (use <code>export x = …</code> in a cell)</td>
+                      <td colspan="4" class="exports-empty">No exported variables in this file (use <code>export x = …</code> in a cell)</td>
                     </tr>
                   </tbody>
                 </table>
@@ -747,6 +748,27 @@
         <div class="dialog-footer">
           <button type="button" id="btn-cancel-refactor">Cancel</button>
           <button type="submit" id="btn-confirm-refactor" value="refactor" class="primary">Rename</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="var-desc-dialog" class="export-html-modal" style="max-width: 440px;">
+      <form id="var-desc-form" method="dialog">
+        <h2>Opis zmiennej</h2>
+        <p id="var-desc-target" class="dialog-hint var-desc-target"></p>
+
+        <div class="dialog-custom-row">
+          <label for="var-desc-input">Opis:</label>
+          <div class="dialog-input-group">
+            <input id="var-desc-input" type="text" placeholder="np. masa piknometru" autocomplete="off" />
+          </div>
+        </div>
+        <p id="var-desc-error" class="dialog-hint" style="color: #f87171; min-height: 1.2em; margin-top: 4px;"></p>
+
+        <div class="dialog-footer">
+          <button type="button" id="btn-clear-var-desc">Wyczyść</button>
+          <button type="button" id="btn-cancel-var-desc">Anuluj</button>
+          <button type="submit" id="btn-save-var-desc" value="save" class="primary">Zapisz</button>
         </div>
       </form>
     </dialog>
