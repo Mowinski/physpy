@@ -3,7 +3,7 @@ import { indentWithTab } from "@codemirror/commands";
 import { indentUnit } from "@codemirror/language";
 import { python } from "@codemirror/lang-python";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { EditorView, keymap, tooltips } from "@codemirror/view";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { mathSymbols } from "./mathSymbols";
 import { matrixConcealField } from "./matrixConceal";
@@ -76,6 +76,10 @@ export function createEditor({
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
+    tooltips({
+      position: "fixed",
+      parent: typeof document !== "undefined" ? document.body : undefined,
+    }),
     keymap.of([indentWithTab]),
     indentConfigCompartment.of(buildIndentExtensions(defaultUseTabs, defaultTabSize)),
     codeModeCompartment.of(buildCodeModeExtensions(isCode)),
@@ -101,6 +105,10 @@ export function createPlainTextEditor({ parent, doc, onChange, onBlur, keys = []
   const extensions: Extension[] = [
     keymap.of(keys.map((k) => ({ key: k.key, run: k.run, preventDefault: true }))),
     basicSetup,
+    tooltips({
+      position: "fixed",
+      parent: typeof document !== "undefined" ? document.body : undefined,
+    }),
     keymap.of([indentWithTab]),
     indentConfigCompartment.of(buildIndentExtensions(defaultUseTabs, defaultTabSize)),
     oneDark,

@@ -21,6 +21,7 @@ import {
   getEffectiveConstant,
   replaceSymbolsInIdent,
   setConstantOverrides,
+  varNameToLatex,
 } from "./editor/symbols";
 import { refreshMathSymbolsEffect } from "./editor/mathSymbols";
 import { type ConstLocation, setNotebookExportedConsts } from "./editor/constLint";
@@ -29,6 +30,10 @@ import { renderMarkdownWithLatex, renderStdoutWithLatexHtml } from "./markdownLa
 import { type CsvDelimiter, CsvEditorController, type CsvViewMode } from "./csvEditor";
 import { LatexEditorController } from "./latexEditor";
 import { PdfViewerController } from "./pdfViewer";
+import {
+  extractVariableDescriptions,
+  updateVariableDescriptionInSource,
+} from "./variableDescriptions";
 import { toRelativePath } from "./pathUtils";
 import {
   generateStaticNotebookHtml,
@@ -3474,6 +3479,24 @@ function parseImportTargets(clause: string): string[] {
   return out.filter(Boolean);
 }
 
+function scanVariableDescriptionsInCells(preferCell?: CellState): Map<string, string> {
+  const merged = new Map<string, string>();
+  for (const cell of cells) {
+    if (cell.kind !== "code" || cell === preferCell) continue;
+    const cellMap = extractVariableDescriptions(cell.view.state.doc.toString());
+    for (const [k, v] of cellMap) {
+      merged.set(k, v);
+    }
+  }
+  if (preferCell && preferCell.kind === "code") {
+    const localMap = extractVariableDescriptions(preferCell.view.state.doc.toString());
+    for (const [k, v] of localMap) {
+      merged.set(k, v);
+    }
+  }
+  return merged;
+}
+
 function scanExportsInCells(): Map<string, ScannedExport> {
   const map = new Map<string, ScannedExport>();
   const exportedConstsMap = new Map<string, ConstLocation[]>();
@@ -3902,6 +3925,7 @@ function renderSessionExports(allExports?: Record<string, string>) {
     sessionRuntimeExports = allExports;
   }
   const scanned = scanExportsInCells();
+  const descriptions = scanVariableDescriptionsInCells();
   // Also include any runtime exports that might still be in session
   for (const k of Object.keys(sessionRuntimeExports)) {
     if (!scanned.has(k)) {
@@ -3936,7 +3960,7 @@ function renderSessionExports(allExports?: Record<string, string>) {
   if (items.length === 0) {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 3;
+    td.colSpan = 4;
     td.className = "exports-empty";
     td.innerHTML = "No exported variables in this file (use <code>export x = …</code> in a cell)";
     tr.append(td);
@@ -3980,6 +4004,25 @@ function renderSessionExports(allExports?: Record<string, string>) {
         th.append(cBadge);
       }
 
+      const tdDesc = document.createElement("td");
+      tdDesc.className = "var-desc is-editable";
+      tdDesc.title = "Kliknij, aby dodać lub edytować opis zmiennej";
+      const descText = descriptions.get(item.name);
+      if (descText) {
+        const descSpan = document.createElement("span");
+        descSpan.textContent = descText;
+        tdDesc.append(descSpan);
+      } else {
+        const emptyDesc = document.createElement("span");
+        emptyDesc.className = "var-desc-empty";
+        emptyDesc.textContent = "+ dodaj opis";
+        tdDesc.append(emptyDesc);
+      }
+      tdDesc.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openVarDescriptionDialog(item.name);
+      });
+
       const tdCells = document.createElement("td");
       tdCells.className = "var-cells";
       tdCells.textContent =
@@ -4013,7 +4056,7 @@ function renderSessionExports(allExports?: Record<string, string>) {
         tdVal.append(pending);
       }
 
-      tr.append(th, tdCells, tdVal);
+      tr.append(th, tdDesc, tdCells, tdVal);
       variablesTbodyEl.append(tr);
     }
   }
@@ -4968,6 +5011,10 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
           .filter((c) => c !== state && c.kind === "code")
           .map((c) => c.view.state.doc.toString())
           .join("\n\n"),
+      getVariableDescription: (varName) => {
+        const map = scanVariableDescriptionsInCells(state);
+        return map.get(varName) ?? map.get(replaceSymbolsInIdent(varName));
+      },
       complete: (req) =>
         backend.inTauri ? backend.completePython(req) : Promise.resolve([]),
       signature: (req) =>
@@ -4976,6 +5023,7 @@ const CHECK_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="no
     codeIntelligence: {
       getHoverInfo: (varName) => getHoverInfoForVar(varName, state),
       onGoToDefinition: (varName) => goToVariableDefinition(varName, state),
+      onEditDescription: (varName) => openVarDescriptionDialog(varName, state),
     },
   });
 
@@ -7147,6 +7195,114 @@ function openRefactorDialog(cell: CellState, varName: string, isExported: boolea
   input.select();
 }
 
+let varDescDialogBound = false;
+let activeVarDescState: { varName: string; targetCell: CellState | null } | null = null;
+
+function findCellDefiningVariable(varName: string, preferCell?: CellState): CellState | null {
+  const candidates = preferCell
+    ? [preferCell, ...cells.filter((c) => c !== preferCell && c.kind === "code")]
+    : cells.filter((c) => c.kind === "code");
+  for (const cell of candidates) {
+    if (cell.kind !== "code") continue;
+    const probe = updateVariableDescriptionInSource(cell.view.state.doc.toString(), varName, "probe");
+    if (probe.changed) return cell;
+  }
+  return null;
+}
+
+function applyVarDescriptionSave(nextDesc: string): boolean {
+  if (!activeVarDescState) return false;
+  const errorEl = $<HTMLParagraphElement>("var-desc-error");
+  const { varName, targetCell } = activeVarDescState;
+  const cell = targetCell ?? findCellDefiningVariable(varName);
+  if (!cell) {
+    errorEl.textContent = `Nie znaleziono definicji zmiennej "${varName}" w komórkach kodu.`;
+    return false;
+  }
+  const currentDoc = cell.view.state.doc.toString();
+  const res = updateVariableDescriptionInSource(currentDoc, varName, nextDesc);
+  if (!res.changed) {
+    errorEl.textContent = `Nie udało się zaktualizować definicji "${varName}".`;
+    return false;
+  }
+  if (res.updated !== currentDoc) {
+    cell.view.dispatch({
+      changes: { from: 0, to: cell.view.state.doc.length, insert: res.updated },
+    });
+    markDirty();
+  }
+  renderSessionExports();
+  setStatus(
+    nextDesc.trim()
+      ? `Zapisano opis zmiennej ${varName}`
+      : `Usunięto opis zmiennej ${varName}`,
+  );
+  return true;
+}
+
+function openVarDescriptionDialog(varName: string, preferCell?: CellState): void {
+  const dialog = $<HTMLDialogElement>("var-desc-dialog");
+  const form = $<HTMLFormElement>("var-desc-form");
+  const targetEl = $<HTMLParagraphElement>("var-desc-target");
+  const input = $<HTMLInputElement>("var-desc-input");
+  const errorEl = $<HTMLParagraphElement>("var-desc-error");
+  const btnClear = $<HTMLButtonElement>("btn-clear-var-desc");
+  const btnCancel = $<HTMLButtonElement>("btn-cancel-var-desc");
+
+  if (!varDescDialogBound) {
+    varDescDialogBound = true;
+    attachDialogLightDismiss(dialog);
+    btnCancel.addEventListener("click", () => {
+      if (dialog.open) dialog.close();
+    });
+    btnClear.addEventListener("click", () => {
+      if (applyVarDescriptionSave("") && dialog.open) {
+        dialog.close();
+      }
+    });
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (applyVarDescriptionSave(input.value) && dialog.open) {
+        dialog.close();
+      }
+    });
+  }
+
+  const defCell = findCellDefiningVariable(varName, preferCell);
+  activeVarDescState = { varName, targetCell: defCell };
+
+  const descriptions = scanVariableDescriptionsInCells(defCell ?? preferCell);
+  const currentDesc = descriptions.get(varName) ?? descriptions.get(replaceSymbolsInIdent(varName)) ?? "";
+
+  targetEl.innerHTML = "";
+  const labelPrefix = document.createTextNode("Zmienna: ");
+  targetEl.append(labelPrefix);
+  const latex = varNameToLatex(varName);
+  if (latex) {
+    const mathSpan = document.createElement("span");
+    mathSpan.className = "var-desc-target-math";
+    katex.render(latex, mathSpan, { throwOnError: false, output: "html" });
+    targetEl.append(mathSpan);
+    const rawCode = document.createElement("code");
+    rawCode.textContent = ` (${varName})`;
+    targetEl.append(rawCode);
+  } else {
+    const rawCode = document.createElement("code");
+    rawCode.textContent = varName;
+    targetEl.append(rawCode);
+  }
+
+  input.value = currentDesc;
+  btnClear.hidden = !currentDesc;
+  errorEl.textContent = defCell
+    ? ""
+    : `Zmienna "${varName}" pochodzi z sesji i nie ma definicji w komórce kodu.`;
+
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+
 function getHoverInfoForVar(varName: string, cell: CellState): VariableHoverInfo | null {
   const pyName = replaceSymbolsInIdent(varName);
   const scanned = scanExportsInCells();
@@ -7165,9 +7321,13 @@ function getHoverInfoForVar(varName: string, cell: CellState): VariableHoverInfo
     if (!def) return null;
   }
 
+  const descriptions = scanVariableDescriptionsInCells(cell);
+  const description = descriptions.get(varName) ?? descriptions.get(pyName);
+
   return {
     name: varName,
     value: runtimeVal,
+    description,
     isExported,
     isConst,
   };
@@ -8596,6 +8756,10 @@ function initPlotLightbox(): void {
           .filter((c) => c.kind === "code")
           .map((c) => c.view.state.doc.toString())
           .join("\n\n"),
+      getVariableDescription: (varName) => {
+        const map = scanVariableDescriptionsInCells();
+        return map.get(varName) ?? map.get(replaceSymbolsInIdent(varName));
+      },
       complete: (req) =>
         backend.inTauri ? backend.completePython(req) : Promise.resolve([]),
       signature: (req) =>

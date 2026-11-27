@@ -137,6 +137,26 @@ export function toLatex(name: string, tail: string): string {
   return base + formatSubscriptTail(tail);
 }
 
+/** Converts a variable identifier (e.g. `\m_0`, `\rho_w`, `u_T`) to LaTeX for KaTeX rendering, or `null` if plain. */
+export function varNameToLatex(varName: string): string | null {
+  const trimmed = varName.trim();
+  if (!trimmed) return null;
+  const symMatch = new RegExp(`^${SYMBOL_RE.source}$`).exec(trimmed);
+  if (symMatch) {
+    if (symMatch[1] !== undefined && symMatch[2] !== undefined) {
+      return accentToLatex(symMatch[1], symMatch[2], symMatch[4] ?? "");
+    }
+    if (symMatch[3] !== undefined) {
+      return toLatex(symMatch[3], symMatch[4] ?? "");
+    }
+  }
+  const subMatch = /^([A-Za-z]+)(_[A-Za-z0-9]+)$/.exec(trimmed);
+  if (subMatch) {
+    return toLatex(subMatch[1], subMatch[2]);
+  }
+  return null;
+}
+
 /** `\bar` + `u` + `_a` -> `\bar{u}_{a}`; `\overline` + `czas` + `` -> `\overline{\text{czas}}`. */
 export function accentToLatex(accent: string, inner: string, tail: string): string {
   let innerLatex: string;

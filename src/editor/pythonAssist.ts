@@ -19,6 +19,7 @@ import type { PythonCompletionItem, SignatureHelpInfo } from "../backend";
 export interface PythonAssistProvider {
   isEnabled?: () => boolean;
   getDocSource: () => string;
+  getVariableDescription?: (varName: string) => string | undefined;
   complete: (params: {
     prefix: string;
     attrTarget: string | null;
@@ -469,10 +470,23 @@ export function createPythonAssistExtension(provider: PythonAssistProvider): Ext
     });
     if (ctx.aborted || items.length === 0) return null;
 
+    const enrichedItems = provider.getVariableDescription
+      ? items.map((item) => {
+          if (item.kind !== "variable" && item.kind !== "constant") return item;
+          const desc = provider.getVariableDescription?.(item.label);
+          if (!desc) return item;
+          return {
+            ...item,
+            detail: desc,
+            doc: item.doc ? `${desc}\n\n${item.doc}` : desc,
+          };
+        })
+      : items;
+
     return {
       from: wordMatch ? wordMatch.from : ctx.pos,
-      options: items.map(toCodeMirrorCompletion),
-      validFor: items.length < COMPLETION_LIMIT ? /^[A-Za-z0-9_]*$/ : undefined,
+      options: enrichedItems.map(toCodeMirrorCompletion),
+      validFor: enrichedItems.length < COMPLETION_LIMIT ? /^[A-Za-z0-9_]*$/ : undefined,
     };
   };
 
